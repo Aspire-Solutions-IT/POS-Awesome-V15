@@ -75,8 +75,14 @@
 							<v-list-item-subtitle v-if="(item?.raw && item.raw.country) || item.country">
 								<div v-html="(item?.raw && item.raw.country) || item.country"></div>
 							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.mobile_no) || item.mobile_no">
-								<div v-html="(item?.raw && item.raw.mobile_no) || item.mobile_no"></div>
+							<v-list-item-subtitle v-if="(item?.raw && item.raw.pincode) || item.pincode">
+								<div v-html="(item?.raw && item.raw.pincode) || item.pincode"></div>
+							</v-list-item-subtitle>
+							<v-list-item-subtitle v-if="(item?.raw && item.raw.email_id) || item.email_id">
+								<div v-html="(item?.raw && item.raw.email_id) || item.email_id"></div>
+							</v-list-item-subtitle>
+							<v-list-item-subtitle v-if="(item?.raw && item.raw.phone) || item.phone">
+								<div v-html="(item?.raw && item.raw.phone) || item.phone"></div>
 							</v-list-item-subtitle>
 							<v-list-item-subtitle
 								v-if="(item?.raw && item.raw.address_type) || item.address_type"

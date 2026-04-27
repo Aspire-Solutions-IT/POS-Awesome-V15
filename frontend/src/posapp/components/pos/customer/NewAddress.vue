@@ -57,6 +57,36 @@
 									v-model="address.state"
 								></v-text-field>
 							</v-col>
+							<v-col cols="6">
+								<v-text-field
+									:label="frappe._('Postal Code')"
+									density="compact"
+									color="primary"
+									class="pos-themed-input"
+									hide-details
+									v-model="address.pincode"
+								></v-text-field>
+							</v-col>
+							<v-col cols="6">
+								<v-text-field
+									:label="frappe._('Phone')"
+									density="compact"
+									color="primary"
+									class="pos-themed-input"
+									hide-details
+									v-model="address.phone"
+								></v-text-field>
+							</v-col>
+							<v-col cols="12">
+								<v-text-field
+									:label="frappe._('Email Address')"
+									density="compact"
+									color="primary"
+									class="pos-themed-input"
+									hide-details
+									v-model="address.email_id"
+								></v-text-field>
+							</v-col>
 						</v-row>
 					</v-container>
 				</v-card-text>

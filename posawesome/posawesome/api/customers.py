@@ -212,6 +212,9 @@ def get_customer_info(customer=None, company=None):
 	    address.city,
 	    address.state,
 	    address.country,
+	    address.pincode,
+	    address.email_id,
+	    address.phone,
 	    address.address_type
 	FROM `tabAddress` address
 	INNER JOIN `tabDynamic Link` link
@@ -235,6 +238,9 @@ def get_customer_info(customer=None, company=None):
         res["city"] = addr.city or ""
         res["state"] = addr.state or ""
         res["country"] = addr.country or ""
+        res["pincode"] = addr.pincode or ""
+        res["address_email_id"] = addr.email_id or ""
+        res["address_phone"] = addr.phone or ""
 
     return res
 
@@ -422,6 +428,9 @@ def get_customer_addresses(customer):
             address.city,
             address.state,
             address.country,
+            address.pincode,
+            address.email_id,
+            address.phone,
             address.address_type
         FROM `tabAddress` as address
         INNER JOIN `tabDynamic Link` AS link
@@ -438,7 +447,9 @@ def get_customer_addresses(customer):
 
 @frappe.whitelist()
 def make_address(args):
-    args = json.loads(args)
+    if isinstance(args, str):
+        args = json.loads(args)
+    args = args or {}
     address = frappe.get_doc(
         {
             "doctype": "Address",
@@ -448,6 +459,8 @@ def make_address(args):
             "city": args.get("city"),
             "state": args.get("state"),
             "pincode": args.get("pincode"),
+            "email_id": args.get("email_id"),
+            "phone": args.get("phone"),
             "country": args.get("country"),
             "address_type": "Shipping",
             "links": [{"link_doctype": args.get("doctype"), "link_name": args.get("customer")}],

@@ -55,6 +55,9 @@ export interface Address {
 	city?: string;
 	state?: string;
 	country?: string;
+	pincode?: string;
+	email_id?: string;
+	phone?: string;
 	display_title?: string;
 }
 
@@ -241,6 +244,9 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 			"city",
 			"state",
 			"country",
+			"pincode",
+			"email_id",
+			"phone",
 			"name",
 		];
 		return fields.some((field) => {
