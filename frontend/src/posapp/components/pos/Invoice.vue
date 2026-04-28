@@ -640,6 +640,21 @@ export default {
 				});
 				if (r.message && r.message.length) {
 					this.delivery_charges = r.message;
+					const defaultDeliveryCharge = this.delivery_charges.find(
+						(charge) => Number(charge.is_default) === 1,
+					);
+					this.selected_delivery_charge = defaultDeliveryCharge || null;
+					this.update_delivery_charges(
+						this.conversion_rate,
+						this.currency_precision,
+					);
+				} else {
+					this.delivery_charges = [];
+					this.selected_delivery_charge = null;
+					this.update_delivery_charges(
+						this.conversion_rate,
+						this.currency_precision,
+					);
 				}
 			} catch (error) {
 				console.error("Failed to fetch delivery charges", error);

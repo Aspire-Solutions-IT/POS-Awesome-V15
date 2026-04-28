@@ -58,15 +58,14 @@ def _map_delivery_dates(data):
         except Exception:
             return None
 
-    # Map order level delivery date with robust fallback.
+    # Map only explicit order-level delivery dates. Sales Order defaults should
+    # apply when the POS flow does not provide one.
     order_delivery_date = (
         parse_date(data.get("delivery_date"))
         or parse_date(data.get("posa_delivery_date"))
-        or parse_date(data.get("transaction_date"))
-        or parse_date(data.get("posting_date"))
-        or str(getdate(nowdate()))
     )
-    data["delivery_date"] = order_delivery_date
+    if order_delivery_date:
+        data["delivery_date"] = order_delivery_date
 
     # Map item level delivery dates
     for item in data.get("items", []):

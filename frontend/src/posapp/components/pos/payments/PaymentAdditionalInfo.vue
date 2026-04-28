@@ -2,18 +2,6 @@
 	<div v-if="invoiceDoc">
 		<!-- Additional Invoice Information (Delivery, Address, Notes) -->
 		<v-row class="pa-1">
-			<!-- Delivery Date and Address (if applicable) -->
-			<v-col cols="6" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
-				<VueDatePicker
-					:model-value="newDeliveryDate"
-					model-type="format"
-					format="dd-MM-yyyy"
-					:min-date="new Date()"
-					auto-apply
-					class="sleek-field pos-themed-input"
-					@update:model-value="$emit('update:newDeliveryDate', $event)"
-				/>
-			</v-col>
 			<v-col cols="6" v-if="returnValidityEnabled && !invoiceDoc.is_return">
 				<VueDatePicker
 					:model-value="returnValidUptoDate"
@@ -27,71 +15,21 @@
 					@update:model-value="$emit('update:returnValidUptoDate', $event)"
 				/>
 			</v-col>
-			<!-- Shipping Address Selection (if delivery date is set) -->
-			<v-col cols="12" v-if="invoiceDoc.posa_delivery_date">
-				<v-autocomplete
-					density="compact"
-					clearable
-					auto-select-first
-					variant="solo"
-					color="primary"
-					:label="$frappe._('Address')"
-					v-model="invoiceDoc.shipping_address_name"
-					:items="addresses"
-					item-title="display_title"
-					item-value="name"
-					class="sleek-field pos-themed-input"
-					:no-data-text="$__('Address not found')"
-					hide-details
-					:custom-filter="addressFilter"
-					append-icon="mdi-plus"
-					@click:append="$emit('new-address')"
-				>
-					<template v-slot:item="{ props, item }">
-						<v-list-item v-bind="props">
-							<v-list-item-title class="text-primary text-subtitle-1">
-								<div
-									v-html="(item?.raw && item.raw.address_title) || item.address_title"
-								></div>
-							</v-list-item-title>
-							<v-list-item-subtitle>
-								<div
-									v-html="(item?.raw && item.raw.address_line1) || item.address_line1"
-								></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle
-								v-if="(item?.raw && item.raw.address_line2) || item.address_line2"
-							>
-								<div
-									v-html="(item?.raw && item.raw.address_line2) || item.address_line2"
-								></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.city) || item.city">
-								<div v-html="(item?.raw && item.raw.city) || item.city"></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.state) || item.state">
-								<div v-html="(item?.raw && item.raw.state) || item.state"></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.country) || item.country">
-								<div v-html="(item?.raw && item.raw.country) || item.country"></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.pincode) || item.pincode">
-								<div v-html="(item?.raw && item.raw.pincode) || item.pincode"></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.email_id) || item.email_id">
-								<div v-html="(item?.raw && item.raw.email_id) || item.email_id"></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle v-if="(item?.raw && item.raw.phone) || item.phone">
-								<div v-html="(item?.raw && item.raw.phone) || item.phone"></div>
-							</v-list-item-subtitle>
-							<v-list-item-subtitle
-								v-if="(item?.raw && item.raw.address_type) || item.address_type"
-							>
-								<div v-html="(item?.raw && item.raw.address_type) || item.address_type"></div>
-							</v-list-item-subtitle>
-						</v-list-item>
-					</template>
-				</v-autocomplete>
+			<!-- Shipping Address action -->
+			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+				<div class="address-action">
+					<v-btn
+						icon="mdi-plus"
+						color="primary"
+						variant="tonal"
+						size="small"
+						:aria-label="$frappe._('Add Customer Address')"
+						@click="$emit('new-address')"
+					></v-btn>
+					<span class="address-action__label">
+						{{ $frappe._("Add Customer Address") }}
+					</span>
+				</div>
 			</v-col>
 
 			<!-- Additional Notes (if enabled in POS profile) -->
@@ -150,32 +88,31 @@ defineProps({
 		type: Date,
 		default: () => new Date(),
 	},
-	addresses: {
-		type: Array,
-		default: () => [],
-	},
-	newDeliveryDate: {
-		type: String,
-		default: null,
-	},
 	returnValidUptoDate: {
 		type: String,
 		default: null,
 	},
-	addressFilter: {
-		type: Function,
-		default: () => true,
-	},
 });
 
-defineEmits(["update:newDeliveryDate", "update:returnValidUptoDate", "new-address"]);
+defineEmits(["update:returnValidUptoDate", "new-address"]);
 
 const $frappe = inject("frappe", window.frappe);
-const $__ = inject("__", window.__);
 </script>
 
 <style scoped>
 .pos-themed-input :deep(.v-field__input) {
+	font-weight: 500;
+}
+
+.address-action {
+	align-items: center;
+	display: flex;
+	gap: 10px;
+	min-height: 40px;
+}
+
+.address-action__label {
+	font-size: 0.95rem;
 	font-weight: 500;
 }
 </style>

@@ -7,87 +7,94 @@
 				</v-card-title>
 				<v-card-text class="pa-0">
 					<v-container>
-						<v-row>
-							<v-col cols="12">
-								<v-text-field
-									density="compact"
-									color="primary"
-									:label="frappe._('Address Name')"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.name"
-								></v-text-field>
-							</v-col>
-							<v-col cols="12">
-								<v-text-field
-									density="compact"
-									color="primary"
-									:label="frappe._('Address Line 1')"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.address_line1"
-								></v-text-field>
-							</v-col>
-							<v-col cols="12">
-								<v-text-field
-									density="compact"
-									color="primary"
-									:label="frappe._('Address Line 2')"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.address_line2"
-								></v-text-field>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									label="City"
-									density="compact"
-									color="primary"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.city"
-								></v-text-field>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									label="State"
-									density="compact"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.state"
-								></v-text-field>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									:label="frappe._('Postal Code')"
-									density="compact"
-									color="primary"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.pincode"
-								></v-text-field>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									:label="frappe._('Phone')"
-									density="compact"
-									color="primary"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.phone"
-								></v-text-field>
-							</v-col>
-							<v-col cols="12">
-								<v-text-field
-									:label="frappe._('Email Address')"
-									density="compact"
-									color="primary"
-									class="pos-themed-input"
-									hide-details
-									v-model="address.email_id"
-								></v-text-field>
-							</v-col>
-						</v-row>
+						<v-form ref="addressForm" @submit.prevent="submit_dialog">
+							<v-row>
+								<v-col cols="12">
+									<v-text-field
+										density="compact"
+										color="primary"
+										:label="frappe._('Address Name')"
+										class="pos-themed-input"
+										hide-details="auto"
+										:rules="[requiredRule]"
+										v-model="address.name"
+									></v-text-field>
+								</v-col>
+								<v-col cols="12">
+									<v-text-field
+										density="compact"
+										color="primary"
+										:label="frappe._('Address Line 1')"
+										class="pos-themed-input"
+										hide-details="auto"
+										:rules="[requiredRule]"
+										v-model="address.address_line1"
+									></v-text-field>
+								</v-col>
+								<v-col cols="12">
+									<v-text-field
+										density="compact"
+										color="primary"
+										:label="frappe._('Address Line 2')"
+										class="pos-themed-input"
+										hide-details
+										v-model="address.address_line2"
+									></v-text-field>
+								</v-col>
+								<v-col cols="6">
+									<v-text-field
+										:label="frappe._('City')"
+										density="compact"
+										color="primary"
+										class="pos-themed-input"
+										hide-details="auto"
+										:rules="[requiredRule]"
+										v-model="address.city"
+									></v-text-field>
+								</v-col>
+								<v-col cols="6">
+									<v-text-field
+										:label="frappe._('County')"
+										density="compact"
+										class="pos-themed-input"
+										hide-details="auto"
+										:rules="[requiredRule]"
+										v-model="address.state"
+									></v-text-field>
+								</v-col>
+								<v-col cols="6">
+									<v-text-field
+										:label="frappe._('Postal Code')"
+										density="compact"
+										color="primary"
+										class="pos-themed-input"
+										hide-details="auto"
+										:rules="[requiredRule]"
+										v-model="address.pincode"
+									></v-text-field>
+								</v-col>
+								<v-col cols="6">
+									<v-text-field
+										:label="frappe._('Phone')"
+										density="compact"
+										color="primary"
+										class="pos-themed-input"
+										hide-details
+										v-model="address.phone"
+									></v-text-field>
+								</v-col>
+								<v-col cols="12">
+									<v-text-field
+										:label="frappe._('Email Address')"
+										density="compact"
+										color="primary"
+										class="pos-themed-input"
+										hide-details
+										v-model="address.email_id"
+									></v-text-field>
+								</v-col>
+							</v-row>
+						</v-form>
 					</v-container>
 				</v-card-text>
 				<v-card-actions>
@@ -120,7 +127,20 @@ export default {
 			this.addressDialog = false;
 		},
 
-		submit_dialog() {
+		requiredRule(value) {
+			return String(value || "").trim().length > 0 || __("This field is required");
+		},
+
+		async submit_dialog() {
+			const validation = await this.$refs.addressForm?.validate?.();
+			const isValid =
+				typeof validation === "boolean"
+					? validation
+					: validation?.valid !== false;
+			if (!isValid) {
+				return;
+			}
+
 			var vm = this;
 			this.address.customer = this.customer;
 			this.address.doctype = "Customer";
@@ -139,6 +159,9 @@ export default {
 						vm.addressDialog = false;
 						vm.customer = "";
 						vm.address = {};
+						vm.$nextTick(() => {
+							vm.$refs.addressForm?.resetValidation?.();
+						});
 					}
 				},
 			});
@@ -148,6 +171,9 @@ export default {
 		this.eventBus.on("open_new_address", (data) => {
 			this.addressDialog = true;
 			this.customer = data;
+			this.$nextTick(() => {
+				this.$refs.addressForm?.resetValidation?.();
+			});
 		});
 	},
 };

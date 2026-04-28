@@ -389,6 +389,11 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 	const base_delivery_charges_rate = ref(0);
 	const delivery_charges_rate = ref(0);
 
+	const select_default_delivery_charge = (charges: any[]) => {
+		selected_delivery_charge.value =
+			charges.find((charge) => Number(charge.is_default) === 1) || null;
+	};
+
 	const fetch_delivery_charges = async (customer: string) => {
 		if (!pos_profile.value) return;
 		try {
@@ -400,14 +405,13 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 					customer: customer,
 				},
 			});
-			if (r.message) {
-				delivery_charges.value = r.message;
-				saveDeliveryChargesCache(
-					pos_profile.value.name,
-					customer,
-					r.message,
-				);
-			}
+			delivery_charges.value = Array.isArray(r.message) ? r.message : [];
+			select_default_delivery_charge(delivery_charges.value);
+			saveDeliveryChargesCache(
+				pos_profile.value.name,
+				customer,
+				delivery_charges.value,
+			);
 		} catch (error) {
 			console.error("Failed to fetch delivery charges", error);
 			const cachedCharges = getCachedDeliveryCharges(
@@ -417,6 +421,7 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 			delivery_charges.value = Array.isArray(cachedCharges)
 				? cachedCharges
 				: [];
+			select_default_delivery_charge(delivery_charges.value);
 		}
 	};
 

@@ -128,16 +128,7 @@
 							:invoice-type="invoiceType"
 							:return-validity-enabled="returnValidityEnabled"
 							:return-validity-min-date="returnValidityMinDate"
-							:addresses="addresses"
-							:new-delivery-date="new_delivery_date"
 							:return-valid-upto-date="return_valid_upto_date"
-							:address-filter="addressFilter"
-							@update:new-delivery-date="
-								(val) => {
-									new_delivery_date = val;
-									update_delivery_date();
-								}
-							"
 							@update:return-valid-upto-date="
 								(val) => {
 									return_valid_upto_date = val;
@@ -257,6 +248,11 @@
 			@update:phone-dialog="phone_dialog = $event"
 			@request-payment="request_payment"
 		/>
+		<MissingOrderAddressDialog
+			v-model="missingOrderAddressDialog"
+			@customer-collected="confirmCustomerCollectedOrder"
+			@enter-address="openMissingOrderAddressEntry"
+		/>
 		<GiftCardDialog
 			:model-value="giftCardDialogOpen"
 			:card-code="giftCardCode"
@@ -324,6 +320,7 @@ import PaymentCustomerCreditDetails from "./payments/PaymentCustomerCreditDetail
 import PaymentOptions from "./payments/PaymentOptions.vue";
 import PaymentSelectionFields from "./payments/PaymentSelectionFields.vue";
 import PaymentDialogs from "./payments/PaymentDialogs.vue";
+import MissingOrderAddressDialog from "./payments/MissingOrderAddressDialog.vue";
 
 const props = defineProps({
 	dialogMode: {
@@ -391,6 +388,8 @@ const _shortcutHandlers = ref({});
 const readonly = ref(false); // Add missing readonly ref
 const submissionInFlight = ref(false);
 const queuedShortcutSubmit = ref(null);
+const missingOrderAddressDialog = ref(false);
+const pendingMissingAddressSubmit = ref(null);
 const giftCardDialogOpen = ref(false);
 const giftCardInlineExpanded = ref(false);
 const activeGiftCardPayment = ref(null);
@@ -429,15 +428,7 @@ const netInvoiceSettlementAmount = computed(() => {
 });
 
 const validatePayment = computed(() => {
-	const profile = pos_profile.value;
-	if (!profile || !profile.posa_allow_sales_order) {
-		return false;
-	}
-	if (invoiceType.value !== "Order") {
-		return false;
-	}
-	const doc = invoice_doc.value;
-	return !doc || !doc.posa_delivery_date;
+	return false;
 });
 
 const getWriteOffLimit = (profile) => {
@@ -1016,6 +1007,8 @@ const queueSearchRefocusRecovery = () => {
 const back_to_invoice = () => {
 	releaseActiveFocus();
 	paymentVisible.value = false;
+	missingOrderAddressDialog.value = false;
+	pendingMissingAddressSubmit.value = null;
 	if (paymentDialogOpen.value) {
 		uiStore.closePaymentDialog();
 	}
@@ -1503,7 +1496,54 @@ const submit = async (_event, payment_received = false, print = false) => {
 	});
 };
 
+const shouldConfirmMissingOrderAddress = (options = {}) => {
+	if (options.skipMissingAddressConfirmation) {
+		return false;
+	}
+	if (invoiceType.value !== "Order") {
+		return false;
+	}
+	if (!pos_profile.value?.posa_create_only_sales_order) {
+		return false;
+	}
+	const shippingAddress = invoice_doc.value?.shipping_address_name;
+	return !String(shippingAddress || "").trim();
+};
+
+const confirmCustomerCollectedOrder = async () => {
+	const pendingSubmit = pendingMissingAddressSubmit.value;
+	pendingMissingAddressSubmit.value = null;
+	missingOrderAddressDialog.value = false;
+	if (!pendingSubmit) {
+		return;
+	}
+	await submitInvoiceWrapper(
+		pendingSubmit.print,
+		pendingSubmit.callbackOverrides,
+		{
+			...pendingSubmit.options,
+			skipMissingAddressConfirmation: true,
+		},
+	);
+};
+
+const openMissingOrderAddressEntry = () => {
+	pendingMissingAddressSubmit.value = null;
+	missingOrderAddressDialog.value = false;
+	new_address();
+};
+
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	if (shouldConfirmMissingOrderAddress(options)) {
+		pendingMissingAddressSubmit.value = {
+			print,
+			callbackOverrides,
+			options,
+		};
+		missingOrderAddressDialog.value = true;
+		return;
+	}
+
 	if (submissionInFlight.value) {
 		return;
 	}
@@ -1643,8 +1683,8 @@ watch(
 			invoice_doc.value.posa_authorization_code = null;
 			invoice_doc.value.shipping_address_name = null;
 		} else if (invoice_doc.value && data === "Order") {
-			new_delivery_date.value = formatDateDisplay(frappe.datetime.now_date());
-			update_delivery_date();
+			new_delivery_date.value = null;
+			invoice_doc.value.posa_delivery_date = null;
 		}
 		if (invoice_doc.value && data === "Return") {
 			invoice_doc.value.is_return = 1;
@@ -1926,6 +1966,8 @@ onMounted(() => {
 		eventBus.on("clear_invoice", () => {
 			invoiceStore.clear();
 			invoiceStore.resetPostingDate();
+			missingOrderAddressDialog.value = false;
+			pendingMissingAddressSubmit.value = null;
 			is_return.value = false;
 			is_credit_return.value = false;
 			return_valid_upto_date.value = null;
@@ -1939,6 +1981,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+	missingOrderAddressDialog.value = false;
+	pendingMissingAddressSubmit.value = null;
 	eventBus.off("send_invoice_doc_payment");
 	eventBus.off("register_pos_profile");
 	eventBus.off("add_the_new_address");
@@ -2236,4 +2280,3 @@ onBeforeUnmount(() => {
 
 }
 </style>
-
