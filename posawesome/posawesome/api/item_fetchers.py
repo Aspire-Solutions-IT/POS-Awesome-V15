@@ -12,6 +12,8 @@ from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt, nowdate
 from frappe.utils.caching import redis_cache
 
+STOCK_SOURCE_WAREHOUSE = "Agile Depot - AI"
+
 
 def _resolve_cache_ttl(ttl: Optional[int]) -> int:
     """Return a numeric TTL value while falling back to the default window."""
@@ -116,12 +118,67 @@ def _fetch_bin_qty(warehouse: str, item_codes: Tuple[str, ...]):
     if not item_codes or not warehouse:
         return []
 
+    def _kit_qty_map(codes: Sequence[str], target_warehouse: str) -> Dict[str, float]:
+        if not codes or not target_warehouse:
+            return {}
+        if not frappe.db.has_column("Item", "is_kit_item"):
+            return {}
+
+        kit_rows = frappe.get_all(
+            "Item",
+            filters={"name": ["in", list(codes)], "is_kit_item": 1},
+            fields=["name"],
+        )
+        kit_codes = [row.name for row in kit_rows]
+        if not kit_codes:
+            return {}
+
+        try:
+            from customer_due_dates.item_due_dates.page.allocation_planner.allocation_planner import (
+                fetch_item_warehouse_summary,
+            )
+        except Exception:
+            return {}
+
+        out: Dict[str, float] = {}
+        for code in kit_codes:
+            try:
+                rows = fetch_item_warehouse_summary(code) or []
+            except Exception:
+                continue
+            wh_row = next((r for r in rows if r.get("warehouse") == target_warehouse), None)
+            if wh_row is not None:
+                out[code] = max(0.0, flt(wh_row.get("available")))
+            else:
+                out[code] = 0.0
+        return out
+
+    def _reserved_qty_map(warehouses: Sequence[str], codes: Sequence[str]) -> Dict[Tuple[str, str], float]:
+        if not warehouses or not codes:
+            return {}
+        rows = frappe.db.sql(
+            """
+            SELECT
+                warehouse,
+                item_code,
+                SUM(GREATEST(0, reserved_qty - COALESCE(delivered_qty, 0))) AS reserved_qty
+            FROM `tabStock Reservation Entry`
+            WHERE docstatus = 1
+              AND warehouse IN %(warehouses)s
+              AND item_code IN %(item_codes)s
+            GROUP BY warehouse, item_code
+            """,
+            {"warehouses": tuple(warehouses), "item_codes": tuple(codes)},
+            as_dict=True,
+        )
+        return {(row.warehouse, row.item_code): flt(row.reserved_qty) for row in rows}
+
     if frappe.db.get_value("Warehouse", warehouse, "is_group"):
         warehouses = frappe.db.get_descendants("Warehouse", warehouse) or []
         if not warehouses:
             return []
         bin_doctype = DocType("Bin")
-        return (
+        rows = (
             frappe.qb.from_(bin_doctype)
             .select(bin_doctype.item_code, Sum(bin_doctype.actual_qty).as_("actual_qty"))
             .where(bin_doctype.warehouse.isin(warehouses))
@@ -129,12 +186,46 @@ def _fetch_bin_qty(warehouse: str, item_codes: Tuple[str, ...]):
             .groupby(bin_doctype.item_code)
             .run(as_dict=True)
         )
+        on_hand_map = {row.item_code: flt(row.actual_qty) for row in rows}
+        reserved_map = _reserved_qty_map(warehouses, item_codes)
+        base_rows = [
+            frappe._dict(
+                item_code=code,
+                actual_qty=max(
+                    0.0,
+                    on_hand_map.get(code, 0.0)
+                    - sum(flt(reserved_map.get((wh, code), 0.0)) for wh in warehouses),
+                ),
+            )
+            for code in item_codes
+        ]
+        kit_map = _kit_qty_map(item_codes, warehouse)
+        if kit_map:
+            for row in base_rows:
+                if row.item_code in kit_map:
+                    row.actual_qty = flt(kit_map.get(row.item_code))
+        return base_rows
 
-    return frappe.get_all(
+    rows = frappe.get_all(
         "Bin",
         fields=["item_code", "actual_qty"],
         filters={"warehouse": warehouse, "item_code": ["in", item_codes]},
     )
+    on_hand_map = {row.item_code: flt(row.actual_qty) for row in rows}
+    reserved_map = _reserved_qty_map([warehouse], item_codes)
+    base_rows = [
+        frappe._dict(
+            item_code=code,
+            actual_qty=max(0.0, on_hand_map.get(code, 0.0) - flt(reserved_map.get((warehouse, code), 0.0))),
+        )
+        for code in item_codes
+    ]
+    kit_map = _kit_qty_map(item_codes, warehouse)
+    if kit_map:
+        for row in base_rows:
+            if row.item_code in kit_map:
+                row.actual_qty = flt(kit_map.get(row.item_code))
+    return base_rows
 
 
 def get_bin_qty(warehouse: Optional[str], item_codes: Sequence[str], ttl: Optional[int] = None):
@@ -571,7 +662,7 @@ class ItemDetailAggregator:
         self.price_list = price_list or pos_profile.get("selling_price_list")
         self.cache_ttl = self._resolve_ttl()
         self.today = nowdate()
-        self.warehouse = pos_profile.get("warehouse")
+        self.warehouse = STOCK_SOURCE_WAREHOUSE
         self.price_list_currency = self._determine_price_list_currency()
         self.exchange_rate = self._compute_exchange_rate()
 
