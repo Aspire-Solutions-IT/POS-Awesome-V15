@@ -17,6 +17,11 @@ export interface GetItemsArgs {
   modified_after?: string;
 }
 
+export interface GetItemsCountArgs {
+  pos_profile: string;
+  item_groups?: string[];
+}
+
 const itemService = {
   getItemGroups(): Promise<ItemGroup[]> {
     return api.call("posawesome.posawesome.api.items.get_items_groups");
@@ -24,6 +29,14 @@ const itemService = {
 
   getItems(args: GetItemsArgs, signal?: AbortSignal): Promise<Item[]> {
     return api.call("posawesome.posawesome.api.items.get_items", args, { signal });
+  },
+
+  searchItems(args: GetItemsArgs, signal?: AbortSignal): Promise<Item[]> {
+    return api.call("posawesome.posawesome.api.items.search_items", args, { signal });
+  },
+
+  getItemsCount(args: GetItemsCountArgs): Promise<number> {
+    return api.call("posawesome.posawesome.api.items.get_items_count", args);
   },
 
   getItemsFromBarcode(args: { selling_price_list: string; currency: string; barcode: string }): Promise<Item | null> {

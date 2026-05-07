@@ -181,6 +181,10 @@ export const useItemsStore = defineStore("items", () => {
 		return Boolean(value);
 	};
 
+	const forceServerItemsEnabled = computed(() =>
+		normalizeBooleanSetting(posProfile.value?.posa_force_server_items),
+	);
+
 	const limitSearchEnabled = computed(() => {
 		const rawValue =
 			posProfile.value?.posa_use_limit_search ??
@@ -502,6 +506,15 @@ export const useItemsStore = defineStore("items", () => {
 								limitSearchEnabled.value,
 							)
 						: null;
+			const shouldLazyBootstrap =
+				!limitSearchEnabled.value &&
+				!searchValue &&
+				normalizedGroup === "ALL" &&
+				!Number.isFinite(limit);
+			const effectiveLimit =
+				shouldLazyBootstrap && !resolvedLimit
+					? resolvePageSize(DEFAULT_PAGE_SIZE)
+					: resolvedLimit;
 
 			const canReadFromCache = !forceServer && !limitSearchEnabled.value;
 
@@ -577,8 +590,8 @@ export const useItemsStore = defineStore("items", () => {
 					) || [],
 			};
 
-			if (Number.isFinite(resolvedLimit) && resolvedLimit! > 0) {
-				args.limit = resolvedLimit;
+			if (Number.isFinite(effectiveLimit) && effectiveLimit! > 0) {
+				args.limit = effectiveLimit;
 			}
 
 			const fetchedItems = await itemService.getItems(
@@ -590,12 +603,33 @@ export const useItemsStore = defineStore("items", () => {
 				return;
 			}
 
-			cachedPagination.value.enabled = false;
+			cachedPagination.value.enabled = shouldLazyBootstrap;
 			cachedPagination.value.offset = fetchedItems.length;
 			cachedPagination.value.total = fetchedItems.length;
 			cachedPagination.value.loading = false;
+			cachedPagination.value.search = "";
+			cachedPagination.value.group = normalizedGroup;
 			setItems(fetchedItems);
 			itemsLoaded.value = true;
+
+			if (shouldLazyBootstrap) {
+				try {
+					const count = await itemService.getItemsCount({
+						pos_profile: JSON.stringify(requestProfile),
+						item_groups:
+							posProfile.value?.item_groups?.map(
+								(g: any) => g.item_group,
+							) || [],
+					});
+					const normalizedCount = Number.isFinite(count)
+						? Number(count)
+						: fetchedItems.length;
+					totalItemCount.value = normalizedCount;
+					cachedPagination.value.total = normalizedCount;
+				} catch (countError) {
+					console.warn("Failed to load total item count:", countError);
+				}
+			}
 
 			if (!limitSearchEnabled.value) {
 				await cacheItems(cacheKey, fetchedItems);
@@ -629,6 +663,7 @@ export const useItemsStore = defineStore("items", () => {
 					groupFilter: normalizedGroup,
 					initialBatch: fetchedItems,
 					reset: false,
+					hydrateInMemory: !shouldLazyBootstrap,
 				});
 			} else if (!searchValue && normalizedGroup === "ALL") {
 				syncBootstrapItemReadiness(0);
@@ -693,6 +728,41 @@ export const useItemsStore = defineStore("items", () => {
 		return filteredItems.value;
 	};
 
+	const searchServerItems = async (term: string, group: string) => {
+		if (!posProfile.value) {
+			return [];
+		}
+
+		const normalizedGroup =
+			typeof group === "string" && group.length > 0 ? group : "ALL";
+		const requestProfile = JSON.parse(JSON.stringify(posProfile.value));
+		const serverResults = await itemService.searchItems({
+			pos_profile: JSON.stringify(requestProfile),
+			price_list: activePriceList.value,
+			item_group:
+				normalizedGroup !== "ALL" ? normalizedGroup.toLowerCase() : "",
+			search_value: term,
+			customer: customer.value,
+			include_image: 1,
+			item_groups:
+				posProfile.value?.item_groups?.map(
+					(g: any) => g.item_group,
+				) || [],
+			limit: resolvePageSize(DEFAULT_PAGE_SIZE),
+		});
+
+		const searchResults = Array.isArray(serverResults) ? serverResults : [];
+		if (searchResults.length > 0) {
+			setItems(searchResults, {
+				append: true,
+				totalCount: totalItemCount.value,
+			});
+		}
+
+		filteredItems.value = filterItemsByGroup(searchResults, normalizedGroup);
+		return filteredItems.value;
+	};
+
 	const searchItems = async (term: string) => {
 		const previousTerm = searchTerm.value || "";
 		const canRefineSearch =
@@ -731,22 +801,23 @@ export const useItemsStore = defineStore("items", () => {
 			return filteredItems.value;
 		}
 
+		// When explicitly configured, always execute search against server
+		// so results are global and not limited by local/offline cache state.
+		if (forceServerItemsEnabled.value) {
+			try {
+				performanceMetrics.value.searchMisses++;
+				return await searchServerItems(term, itemGroup.value);
+			} catch (error) {
+				console.error("Server-backed search failed:", error);
+				performanceMetrics.value.searchMisses++;
+				return [];
+			}
+		}
+
 		if (limitSearchEnabled.value) {
 			try {
-				await loadItems({
-					searchValue: term,
-					groupFilter: itemGroup.value,
-					forceServer: true,
-				});
-
-				const serverResults = filterItemsByGroup(
-					items.value,
-					itemGroup.value,
-				);
-				filteredItems.value = serverResults;
 				performanceMetrics.value.searchMisses++;
-
-				return serverResults;
+				return await searchServerItems(term, itemGroup.value);
 			} catch (error) {
 				console.error("Search failed:", error);
 				performanceMetrics.value.searchMisses++;
@@ -787,6 +858,23 @@ export const useItemsStore = defineStore("items", () => {
 					cachedPagination.value.total,
 					searchResults.length,
 				);
+
+				// If local cache has no match, fall back to server search so large
+				// catalogs remain globally searchable without preloading all items.
+				if (
+					searchResults.length === 0 &&
+					term.length >= 2 &&
+					posProfile.value
+				) {
+					searchResults = await searchServerItems(
+						term,
+						normalizedGroup,
+					);
+					cachedPagination.value.offset = Math.max(
+						cachedPagination.value.offset,
+						searchResults.length,
+					);
+				}
 			} else {
 				const sourceItems = canRefineSearch
 					? filteredItems.value

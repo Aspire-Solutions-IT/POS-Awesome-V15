@@ -30,6 +30,7 @@ from .items import (
     get_items_count,
     get_items_details,
     get_items_from_barcode,
+    search_items,
     parse_scale_barcode,
     get_items_groups,
 )

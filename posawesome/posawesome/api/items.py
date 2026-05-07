@@ -43,6 +43,7 @@ from posawesome.posawesome.api.item_processing.price import (
 )
 from posawesome.posawesome.api.item_processing.search import (
     get_items,
+    search_items,
     get_items_groups,
     get_items_count,
     normalize_brand

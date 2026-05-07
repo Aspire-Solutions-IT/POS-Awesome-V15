@@ -195,6 +195,7 @@ export function useItemsSync() {
 			groupFilter?: string;
 			searchValue?: string;
 			initialBatch?: Item[];
+			hydrateInMemory?: boolean;
 		} = {},
 		posProfile: POSProfile | null,
 		activePriceList: string,
@@ -212,6 +213,7 @@ export function useItemsSync() {
 			groupFilter = "",
 			searchValue = "",
 			initialBatch = [],
+			hydrateInMemory = true,
 		} = options;
 
 		if (!shouldPersistItems) {
@@ -289,7 +291,9 @@ export function useItemsSync() {
 
 				primeItemDetailsCache(batch, posProfile, activePriceList);
 				await saveItemsBulk(batch, scope);
-				setItems(batch, { append: true });
+				if (hydrateInMemory) {
+					setItems(batch, { append: true });
+				}
 				appended.push(...batch);
 				loaded += batch.length;
 				lastItemName =

@@ -316,8 +316,13 @@ export const useItemsSelectorSearch = ({
 			return;
 		}
 
+		const forceServerItems = resolveBooleanSetting(
+			vm.pos_profile?.posa_force_server_items,
+		);
+
 		// If background loading is in progress, defer the search without changing the active query
-		if (vm.isBackgroundLoading) {
+		// except when server-only search is explicitly enabled.
+		if (vm.isBackgroundLoading && !forceServerItems) {
 			vm.pendingItemSearch = trimmedQuery;
 			return;
 		}
@@ -325,6 +330,23 @@ export const useItemsSelectorSearch = ({
 		vm.search = trimmedQuery;
 
 		const fromScanner = vm.search_from_scanner;
+		if (forceServerItems) {
+			if (typeof vm.itemsIntegration?.searchFromServer === "function") {
+				await vm.itemsIntegration.searchFromServer(trimmedQuery);
+			} else {
+				const getItems = getItemsLoader(vm);
+				if (getItems) {
+					await getItems(true);
+				}
+			}
+			triggerEnterEvent(vm);
+			if (fromScanner) {
+				vm.clearSearch();
+				vm.focusItemSearch();
+				vm.search_from_scanner = false;
+			}
+			return;
+		}
 
 		if (usesLimitSearch(vm)) {
 			if (typeof runLimitSearch === "function") {
@@ -342,12 +364,24 @@ export const useItemsSelectorSearch = ({
 				}
 			}
 		} else if (hasStorageAvailable(vm)) {
-			const loadVisibleItems = getVisibleItemsLoader(vm);
-			if (loadVisibleItems) {
-				await loadVisibleItems(true);
+			const searchItems = getSearchExecutor(vm);
+			if (searchItems) {
+				await searchItems(trimmedQuery);
+			} else {
+				const loadVisibleItems = getVisibleItemsLoader(vm);
+				if (loadVisibleItems) {
+					await loadVisibleItems(true);
+				}
 			}
 			triggerEnterEvent(vm);
 		} else {
+			const searchItems = getSearchExecutor(vm);
+			if (searchItems) {
+				await searchItems(trimmedQuery);
+				triggerEnterEvent(vm);
+				return;
+			}
+
 			// When local storage is disabled, always fetch items
 			// from the server so searches aren't limited to the
 			// initially loaded set.

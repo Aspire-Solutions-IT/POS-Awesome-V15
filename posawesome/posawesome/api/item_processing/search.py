@@ -661,6 +661,81 @@ def get_items(
 
 
 @frappe.whitelist()
+def search_items(
+    pos_profile,
+    price_list=None,
+    item_group="",
+    search_value="",
+    customer=None,
+    limit=50,
+    include_description=False,
+    include_image=False,
+    item_groups=None,
+):
+    """Return a small server-side item search result without reloading the catalog."""
+
+    search_value = cstr(search_value).strip()
+    if len(search_value) < 2:
+        return []
+
+    profile_ctx = _normalize_profile_context(pos_profile)
+    groups_ctx = _prepare_item_groups(profile_ctx.profile_name, item_groups)
+    search_limit = _to_positive_int(limit) or 50
+    search_limit = max(1, min(search_limit, 100))
+
+    search_profile = dict(profile_ctx.pos_profile)
+    search_profile["posa_use_limit_search"] = 1
+    search_profile["posa_search_limit"] = search_limit
+    search_profile["posa_force_reload_items"] = 0
+
+    if not price_list:
+        price_list = search_profile.get("selling_price_list")
+
+    plan = _build_search_plan(
+        search_profile,
+        item_group,
+        search_value,
+        search_limit,
+        None,
+        None,
+        None,
+        include_description,
+        include_image,
+        groups_ctx.groups,
+    )
+
+    if plan.item_code_for_search:
+        prefix = plan.item_code_for_search
+        object.__setattr__(
+            plan,
+            "or_filters",
+            [
+                ["name", "like", f"{prefix}%"],
+                ["item_name", "like", f"{prefix}%"],
+                ["item_code", "like", f"{prefix}%"],
+            ],
+        )
+        object.__setattr__(plan, "item_code_for_search", None)
+
+    started_at = time.perf_counter()
+    result = _run_item_query(
+        search_profile,
+        price_list,
+        customer,
+        plan,
+    )
+    log_perf_event(
+        "search_items",
+        started_at,
+        profile=profile_ctx.profile_name,
+        rows=len(result or []),
+        search=1,
+        groups=len(groups_ctx.groups),
+    )
+    return result
+
+
+@frappe.whitelist()
 def get_items_groups():
     return frappe.db.sql(
         """select name from `tabItem Group`

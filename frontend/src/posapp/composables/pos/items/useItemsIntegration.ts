@@ -136,6 +136,11 @@ export function useItemsIntegration(options: IntegrationOptions = {}) {
 		return await itemsStore.searchItems(term);
 	};
 
+	const searchFromServer = async (term: string) => {
+		const normalized = String(term || "").trim();
+		return await itemsStore.searchItems(normalized);
+	};
+
 	const update_items_details = async (_itemList: unknown[]) => {
 		// This is now handled automatically by the store in background
 		// Keep for compatibility but don't need to do anything
@@ -312,6 +317,7 @@ export function useItemsIntegration(options: IntegrationOptions = {}) {
 		forceReloadItems,
 		get_items_groups,
 		search_onchange,
+		searchFromServer,
 		update_items_details,
 		memoizedSearch,
 

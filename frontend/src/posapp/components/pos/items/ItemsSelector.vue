@@ -415,8 +415,11 @@ const displayedItems = computed(() => {
 	const baseItems = Array.isArray(filteredItems.value) ? filteredItems.value : [];
 	const rawTerm = first_search.value;
 	const term = (typeof rawTerm === "string" ? rawTerm : "").trim().toLowerCase();
+	const forceServerSearchMode =
+		parseBooleanSetting(pos_profile.value?.posa_force_server_items) &&
+		term.length >= 3;
 	return filterAndPaginate(baseItems, {
-		searchTerm: term,
+		searchTerm: forceServerSearchMode ? "" : term,
 		hideZeroRate: hide_zero_rate_items.value,
 		hideVariants: pos_profile.value?.posa_hide_variants_items,
 		onlyBarcode: showOnlyBarcodeItemsRef.value,
@@ -1042,6 +1045,20 @@ onBeforeUnmount(() => {
 watch(search_input, (val) => {
 	first_search.value = val;
 	itemSelection.clearHighlightedItem();
+
+	if (clearingSearch.value) {
+		return;
+	}
+
+	const query = String(val ?? "").trim();
+	if (/^\d{12,}$/.test(query)) {
+		itemsSelectorSearch.search_onchange();
+		return;
+	}
+
+	if (query.length >= 3 || itemsIntegration.searchTerm.value) {
+		itemsIntegration.debouncedSearch(query);
+	}
 });
 
 watch(searchFocusTrigger, () => {
