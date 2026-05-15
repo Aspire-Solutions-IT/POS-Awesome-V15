@@ -6,7 +6,7 @@ import json
 import frappe
 from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
-from frappe.utils import getdate, nowdate
+from frappe.utils import flt, getdate, nowdate
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
@@ -82,6 +82,62 @@ def _map_delivery_dates(data):
             item.setdefault("posa_delivery_date", item_delivery)
 
 
+def _apply_delivery_charges_tax_row(so_doc):
+    """Mirror POS Awesome delivery-charge behavior for Sales Orders.
+
+    Keeps Sales Taxes and Charges in sync with `posa_delivery_charges` selection.
+    """
+    old_doc = so_doc.get_doc_before_save() if not so_doc.is_new() else None
+    old_charge_name = getattr(old_doc, "posa_delivery_charges", None) if old_doc else None
+    current_charge_name = getattr(so_doc, "posa_delivery_charges", None)
+
+    removable_descriptions = {d for d in [old_charge_name, current_charge_name] if d}
+    recalc_needed = False
+
+    if removable_descriptions and so_doc.get("taxes"):
+        stale_rows = [
+            row
+            for row in so_doc.taxes
+            if row.charge_type == "Actual" and row.description in removable_descriptions
+        ]
+        for row in stale_rows:
+            so_doc.taxes.remove(row)
+            recalc_needed = True
+
+    if not current_charge_name:
+        if hasattr(so_doc, "white_glove"):
+            so_doc.white_glove = 0
+        if recalc_needed:
+            so_doc.calculate_taxes_and_totals()
+        return
+
+    charges_doc = frappe.get_cached_doc("Delivery Charges", current_charge_name)
+    if hasattr(so_doc, "white_glove"):
+        so_doc.white_glove = 1 if flt(getattr(charges_doc, "white_glove", 0)) else 0
+    charge_rate = flt(getattr(so_doc, "posa_delivery_charges_rate", 0))
+    if not charge_rate:
+        profile_rate = next(
+            (i.rate for i in charges_doc.profiles if i.pos_profile == so_doc.get("pos_profile")),
+            None,
+        )
+        charge_rate = flt(profile_rate if profile_rate is not None else charges_doc.default_rate)
+        conversion_rate = so_doc.get("conversion_rate") or 1
+        charge_rate = flt(charge_rate / conversion_rate, so_doc.precision("posa_delivery_charges_rate"))
+        so_doc.posa_delivery_charges_rate = charge_rate
+
+    so_doc.append(
+        "taxes",
+        {
+            "charge_type": "Actual",
+            "description": current_charge_name,
+            "tax_amount": charge_rate,
+            "cost_center": charges_doc.cost_center,
+            "account_head": charges_doc.shipping_account,
+        },
+    )
+    so_doc.calculate_taxes_and_totals()
+
+
 @frappe.whitelist()
 def update_sales_order(data):
     """Create or update a Sales Order document."""
@@ -96,6 +152,7 @@ def update_sales_order(data):
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
     so_doc.docstatus = 0
+    _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
     return so_doc
 
@@ -150,6 +207,7 @@ def submit_sales_order(order):
 
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
+    _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
     so_doc.submit()
 
