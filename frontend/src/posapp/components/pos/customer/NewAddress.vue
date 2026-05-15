@@ -3,7 +3,7 @@
 		<v-dialog v-model="addressDialog" max-width="600px">
 			<v-card>
 				<v-card-title>
-					<span class="text-h5 text-primary">{{ __("Add New Address") }}</span>
+					<span class="text-h5 text-primary">{{ dialogTitle }}</span>
 				</v-card-title>
 				<v-card-text class="pa-0">
 					<v-container>
@@ -20,7 +20,7 @@
 										v-model="address.name"
 									></v-text-field>
 								</v-col>
-								<v-col cols="12">
+								<v-col cols="12" v-if="!isCollectedMode">
 									<v-text-field
 										density="compact"
 										color="primary"
@@ -31,7 +31,7 @@
 										v-model="address.address_line1"
 									></v-text-field>
 								</v-col>
-								<v-col cols="12">
+								<v-col cols="12" v-if="!isCollectedMode">
 									<v-text-field
 										density="compact"
 										color="primary"
@@ -41,7 +41,7 @@
 										v-model="address.address_line2"
 									></v-text-field>
 								</v-col>
-								<v-col cols="6">
+								<v-col cols="6" v-if="!isCollectedMode">
 									<v-text-field
 										:label="frappe._('City')"
 										density="compact"
@@ -52,7 +52,7 @@
 										v-model="address.city"
 									></v-text-field>
 								</v-col>
-								<v-col cols="6">
+								<v-col cols="6" v-if="!isCollectedMode">
 									<v-text-field
 										:label="frappe._('County')"
 										density="compact"
@@ -62,7 +62,7 @@
 										v-model="address.state"
 									></v-text-field>
 								</v-col>
-								<v-col cols="6">
+								<v-col cols="6" v-if="!isCollectedMode">
 									<v-text-field
 										:label="frappe._('Postal Code')"
 										density="compact"
@@ -119,8 +119,18 @@ export default {
 		addressDialog: false,
 		address: {},
 		customer: "",
+		mode: "full",
 	}),
-	computed: {},
+	computed: {
+		isCollectedMode() {
+			return this.mode === "collected";
+		},
+		dialogTitle() {
+			return this.isCollectedMode
+				? __("Add Collection Contact")
+				: __("Add New Address");
+		},
+	},
 
 	methods: {
 		close_dialog() {
@@ -144,6 +154,14 @@ export default {
 			var vm = this;
 			this.address.customer = this.customer;
 			this.address.doctype = "Customer";
+			if (this.isCollectedMode) {
+				this.address.address_line1 =
+					String(this.address.address_line1 || "").trim() || __("Customer Collected");
+				this.address.city = String(this.address.city || "").trim() || __("Collected");
+				this.address.state = String(this.address.state || "").trim() || __("Collected");
+				this.address.pincode = String(this.address.pincode || "").trim() || "00000";
+				this.address.address_line2 = this.address.address_line2 || "";
+			}
 			frappe.call({
 				method: "posawesome.posawesome.api.customers.make_address",
 				args: {
@@ -159,6 +177,7 @@ export default {
 						vm.addressDialog = false;
 						vm.customer = "";
 						vm.address = {};
+						vm.mode = "full";
 						vm.$nextTick(() => {
 							vm.$refs.addressForm?.resetValidation?.();
 						});
@@ -170,7 +189,14 @@ export default {
 	created: function () {
 		this.eventBus.on("open_new_address", (data) => {
 			this.addressDialog = true;
-			this.customer = data;
+			if (typeof data === "string") {
+				this.customer = data;
+				this.mode = "full";
+			} else {
+				this.customer = data?.customer || "";
+				this.mode = data?.mode === "collected" ? "collected" : "full";
+			}
+			this.address = {};
 			this.$nextTick(() => {
 				this.$refs.addressForm?.resetValidation?.();
 			});

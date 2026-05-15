@@ -99,9 +99,7 @@ export function useInvoiceHandlers(
 		pos_opening_shift.value = data.pos_opening_shift;
 		stock_settings.value = data.stock_settings;
 
-		invoiceType.value = pos_profile.value.posa_default_sales_order
-			? "Order"
-			: "Invoice";
+		invoiceType.value = "Order";
 
 		fetch_price_lists();
 		update_price_list();

@@ -216,7 +216,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		});
 	};
 
-	const new_address = () => {
+	const new_address = (dialogOptions: Record<string, any> = {}) => {
 		const doc = unref(invoiceDoc);
 		if (!doc || !doc.customer) {
 			if (stores?.toastStore) {
@@ -228,7 +228,10 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 			return;
 		}
 		if (eventBus) {
-			eventBus.emit("open_new_address", doc.customer);
+			eventBus.emit("open_new_address", {
+				customer: doc.customer,
+				...dialogOptions,
+			});
 		}
 	};
 

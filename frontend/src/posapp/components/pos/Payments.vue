@@ -135,7 +135,7 @@
 									updateReturnValidUpto();
 								}
 							"
-							@new-address="new_address"
+							@new-address="handlePaymentNewAddress"
 						/>
 						<PaymentPurchaseOrder
 							:invoice-doc="invoice_doc"
@@ -354,7 +354,7 @@ const {
 
 const { selectedCustomer, customerInfo } = storeToRefs(customersStore);
 const { activeView, paymentDialogOpen } = storeToRefs(uiStore);
-const { invoiceType } = storeToRefs(invoiceStore);
+const { invoiceType, deliveryCharges, selectedDeliveryCharge } = storeToRefs(invoiceStore);
 const employeeStore = useEmployeeStore();
 const { currentCashier } = storeToRefs(employeeStore);
 
@@ -390,6 +390,7 @@ const submissionInFlight = ref(false);
 const queuedShortcutSubmit = ref(null);
 const missingOrderAddressDialog = ref(false);
 const pendingMissingAddressSubmit = ref(null);
+const pendingCollectedAddressSubmit = ref(false);
 const giftCardDialogOpen = ref(false);
 const giftCardInlineExpanded = ref(false);
 const activeGiftCardPayment = ref(null);
@@ -1510,21 +1511,38 @@ const shouldConfirmMissingOrderAddress = (options = {}) => {
 	return !String(shippingAddress || "").trim();
 };
 
-const confirmCustomerCollectedOrder = async () => {
-	const pendingSubmit = pendingMissingAddressSubmit.value;
-	pendingMissingAddressSubmit.value = null;
-	missingOrderAddressDialog.value = false;
-	if (!pendingSubmit) {
+const isCollectionDeliveryChargeSelected = () => {
+	const selectedName =
+		String(invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "").trim();
+	if (!selectedName) {
+		return false;
+	}
+	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+		(row) => String(row?.name || "").trim() === selectedName,
+	);
+	const collectionFlag = selectedRow?.collection;
+	return collectionFlag === 1 || collectionFlag === "1" || collectionFlag === true;
+};
+
+const shouldUseCollectedAddressEntry = (options = {}) => {
+	return shouldConfirmMissingOrderAddress(options) && isCollectionDeliveryChargeSelected();
+};
+
+const handlePaymentNewAddress = () => {
+	if (isCollectionDeliveryChargeSelected()) {
+		new_address({ mode: "collected" });
 		return;
 	}
-	await submitInvoiceWrapper(
-		pendingSubmit.print,
-		pendingSubmit.callbackOverrides,
-		{
-			...pendingSubmit.options,
-			skipMissingAddressConfirmation: true,
-		},
-	);
+	new_address();
+};
+
+const confirmCustomerCollectedOrder = async () => {
+	missingOrderAddressDialog.value = false;
+	if (!pendingMissingAddressSubmit.value) {
+		return;
+	}
+	pendingCollectedAddressSubmit.value = true;
+	new_address({ mode: "collected" });
 };
 
 const openMissingOrderAddressEntry = () => {
@@ -1534,6 +1552,17 @@ const openMissingOrderAddressEntry = () => {
 };
 
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	if (shouldUseCollectedAddressEntry(options)) {
+		pendingMissingAddressSubmit.value = {
+			print,
+			callbackOverrides,
+			options,
+		};
+		pendingCollectedAddressSubmit.value = true;
+		new_address({ mode: "collected" });
+		return;
+	}
+
 	if (shouldConfirmMissingOrderAddress(options)) {
 		pendingMissingAddressSubmit.value = {
 			print,
@@ -1950,6 +1979,19 @@ onMounted(() => {
 				if (invoice_doc.value) {
 					invoice_doc.value.shipping_address_name = normalized.name;
 				}
+				if (pendingCollectedAddressSubmit.value && pendingMissingAddressSubmit.value) {
+					const pendingSubmit = pendingMissingAddressSubmit.value;
+					pendingCollectedAddressSubmit.value = false;
+					pendingMissingAddressSubmit.value = null;
+					void submitInvoiceWrapper(
+						pendingSubmit.print,
+						pendingSubmit.callbackOverrides,
+						{
+							...pendingSubmit.options,
+							skipMissingAddressConfirmation: true,
+						},
+					);
+				}
 			}
 		});
 		eventBus.on("set_pos_settings", (data) => {
@@ -1968,6 +2010,7 @@ onMounted(() => {
 			invoiceStore.resetPostingDate();
 			missingOrderAddressDialog.value = false;
 			pendingMissingAddressSubmit.value = null;
+			pendingCollectedAddressSubmit.value = false;
 			is_return.value = false;
 			is_credit_return.value = false;
 			return_valid_upto_date.value = null;
@@ -1983,6 +2026,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
 	missingOrderAddressDialog.value = false;
 	pendingMissingAddressSubmit.value = null;
+	pendingCollectedAddressSubmit.value = false;
 	eventBus.off("send_invoice_doc_payment");
 	eventBus.off("register_pos_profile");
 	eventBus.off("add_the_new_address");

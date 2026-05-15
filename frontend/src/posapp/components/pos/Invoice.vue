@@ -376,7 +376,7 @@ export default {
 			total_tax: 0,
 			packed_dialog_items: [],
 			show_packed_dialog: false,
-			invoiceTypes: ["Invoice", "Order", "Quotation"],
+			invoiceTypes: ["Order"],
 			itemsPerPage: 1000,
 			itemSearch: "",
 			expanded: [],
@@ -744,7 +744,7 @@ export default {
 			this.pos_opening_shift = data.pos_opening_shift;
 			this.stock_settings = data.stock_settings;
 
-			this.invoiceType = this.pos_profile.posa_default_sales_order ? "Order" : "Invoice";
+			this.invoiceType = "Order";
 
 			this.fetch_price_lists();
 			this.update_price_list();
@@ -1029,8 +1029,8 @@ export default {
 			recalculate_return_discount: (payload) =>
 				this.applyReturnDiscountProration(payload),
 			reset_invoice_type_to_invoice: () => {
-				this.invoiceType = "Invoice";
-				this.invoiceTypes = ["Invoice", "Order", "Quotation"];
+				this.invoiceType = "Order";
+				this.invoiceTypes = ["Order"];
 			},
 		};
 

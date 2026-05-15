@@ -910,11 +910,6 @@ export function useItemAddition() {
 		options: { preserveStickies?: boolean } = {},
 	) => {
 		const { preserveStickies = false } = options;
-		const previousInvoiceType = context.invoiceType;
-		const wasReturn =
-			previousInvoiceType === "Return" ||
-			Boolean(context?.invoice_doc?.is_return);
-		const wasQuotation = previousInvoiceType === "Quotation";
 
 		if (context.invoiceStore) {
 			context.invoiceStore.clear({ preserveStickies });
@@ -949,12 +944,13 @@ export function useItemAddition() {
 		context.customer = context.pos_profile.customer;
 
 		context.eventBus.emit("set_customer_readonly", false);
-		context.invoiceType = wasReturn || wasQuotation
-			? "Invoice"
-			: context.pos_profile.posa_default_sales_order
-				? "Order"
-				: "Invoice";
-		context.invoiceTypes = ["Invoice", "Order", "Quotation"];
+		context.invoiceType = "Order";
+		context.invoiceTypes = ["Order"];
+
+		// Re-apply default delivery charge (if configured) after each clear cycle.
+		if (!preserveStickies && typeof context.set_delivery_charges === "function") {
+			void context.set_delivery_charges({ forceReset: true });
+		}
 
 		if (Object.prototype.hasOwnProperty.call(context, "itemSearch")) {
 			context.itemSearch = "";

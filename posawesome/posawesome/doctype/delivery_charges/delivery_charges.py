@@ -9,8 +9,10 @@ from frappe.model.document import Document
 
 class DeliveryCharges(Document):
     def validate(self):
-        if not self.default_rate or self.default_rate <= 0:
+        if self.default_rate is None or self.default_rate == "":
             frappe.throw(_("Default Rate is required"))
+        if self.default_rate < 0:
+            frappe.throw(_("Default Rate cannot be negative"))
         self.validate_profiles()
 
     def validate_profiles(self):
