@@ -138,6 +138,12 @@ def _apply_delivery_charges_tax_row(so_doc):
     so_doc.calculate_taxes_and_totals()
 
 
+def _sync_shopify_notes_from_posa(so_doc):
+    """Copy POS additional notes to Shopify notes when field exists."""
+    if hasattr(so_doc, "shopify_notes"):
+        so_doc.shopify_notes = getattr(so_doc, "posa_notes", None) or ""
+
+
 @frappe.whitelist()
 def update_sales_order(data):
     """Create or update a Sales Order document."""
@@ -152,6 +158,7 @@ def update_sales_order(data):
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
     so_doc.docstatus = 0
+    _sync_shopify_notes_from_posa(so_doc)
     _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
     return so_doc
@@ -207,6 +214,7 @@ def submit_sales_order(order):
 
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
+    _sync_shopify_notes_from_posa(so_doc)
     _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
     so_doc.submit()

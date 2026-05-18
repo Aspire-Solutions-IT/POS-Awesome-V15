@@ -7,6 +7,7 @@ authors = [
     { name = "Ateeq-Raheman", email = "ateeqraheman001195@gmail.com"},
     { name = "Ahmed Osama", email = "eng.ahmed.osama.1190@gmail.com"},
     { name = "Samarth Upare", email = "samarth.upare@redtra.com"},
+    { name = "Robert Dunne", email = "robert@aspire-solutions.co.uk},
 ]
 description = "POS project that's simply awesome"
 requires-python = ">=3.10"
@@ -68,6 +69,6 @@ target-version = ["py310"]
 
 
 [project.urls]
-Homepage = "https://github.com/defendicon/POS-Awesome-V15"
-Repository = "https://github.com/defendicon/POS-Awesome-V15.git"
-"Bug Reports" = "https://github.com/defendicon/POS-Awesome-V15/issues"
+Homepage = "https://github.com/Aspire-Solutions-IT/POS-Awesome-V15"
+Repository = "https://github.com/Aspire-Solutions-IT/POS-Awesome-V15.git"
+"Bug Reports" = "https://github.com/Aspire-Solutions-IT/POS-Awesome-V15/issues"

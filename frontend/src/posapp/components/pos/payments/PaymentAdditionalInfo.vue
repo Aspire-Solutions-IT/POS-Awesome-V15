@@ -23,11 +23,11 @@
 						color="primary"
 						variant="tonal"
 						size="small"
-						:aria-label="$frappe._('Add Customer Address')"
+						:aria-label="addressActionLabel"
 						@click="$emit('new-address')"
 					></v-btn>
 					<span class="address-action__label">
-						{{ $frappe._("Add Customer Address") }}
+						{{ addressActionLabel }}
 					</span>
 				</div>
 			</v-col>
@@ -91,6 +91,10 @@ defineProps({
 	returnValidUptoDate: {
 		type: String,
 		default: null,
+	},
+	addressActionLabel: {
+		type: String,
+		default: "Add Customer Address",
 	},
 });
 

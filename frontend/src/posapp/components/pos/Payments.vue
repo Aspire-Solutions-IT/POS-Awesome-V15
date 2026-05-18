@@ -18,8 +18,32 @@
 				ref="paymentContainer"
 				class="overflow-y-auto payment-scroll"
 			>
-				<div :class="['payment-sections', { 'payment-sections--dialog': dialogMode }]">
-					<section class="payment-section payment-section--summary">
+				<div v-if="isWizardFlow" class="payment-wizard-header">
+					<div class="payment-wizard-header__title">
+						{{ currentStep === 1 ? __("Step 1 of 2: Fulfillment") : __("Step 2 of 2: Payment") }}
+					</div>
+					<div class="payment-wizard-header__track">
+						<span
+							class="payment-wizard-header__dot"
+							:class="{ 'payment-wizard-header__dot--active': currentStep >= 1 }"
+						></span>
+						<span
+							class="payment-wizard-header__dot"
+							:class="{ 'payment-wizard-header__dot--active': currentStep >= 2 }"
+						></span>
+					</div>
+				</div>
+				<div
+					:class="[
+						'payment-sections',
+						{ 'payment-sections--dialog': dialogMode },
+						{
+							'payment-sections--wizard-step1':
+								dialogMode && isWizardFlow && currentStep === 1,
+						},
+					]"
+				>
+					<section v-if="showPaymentStep" class="payment-section payment-section--summary">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Payment Summary") }}</h3>
 						</div>
@@ -45,7 +69,7 @@
 					</section>
 
 					<section
-						v-if="is_cashback && invoice_doc"
+						v-if="is_cashback && invoice_doc && showPaymentStep"
 						class="payment-section payment-section--methods"
 					>
 						<div class="payment-section__header">
@@ -91,7 +115,46 @@
 						/>
 					</section>
 
-					<section class="payment-section payment-section--adjustments">
+					<section v-if="showFulfillmentStep" class="payment-section payment-section--adjustments">
+						<div class="payment-section__header">
+							<h3 class="payment-section__title">{{ __("Fulfillment Details") }}</h3>
+						</div>
+						<PaymentAdditionalInfo
+							:invoice-doc="invoice_doc"
+							:pos-profile="pos_profile"
+							:invoice-type="invoiceType"
+							:address-action-label="addressActionLabel"
+							:return-validity-enabled="returnValidityEnabled"
+							:return-validity-min-date="returnValidityMinDate"
+							:return-valid-upto-date="return_valid_upto_date"
+							@update:return-valid-upto-date="
+								(val) => {
+									return_valid_upto_date = val;
+									updateReturnValidUpto();
+								}
+							"
+							@new-address="handlePaymentNewAddress"
+						/>
+						<div class="payment-next-step">
+							<v-btn
+								variant="text"
+								color="error"
+								@click="back_to_invoice"
+							>
+								{{ __("Cancel") }}
+							</v-btn>
+							<v-btn
+								v-if="!isWizardFlow || canProceedToPayment"
+								color="primary"
+								:disabled="!canProceedToPayment"
+								@click="proceedToPaymentStep"
+							>
+								{{ __("Next") }}
+							</v-btn>
+						</div>
+					</section>
+
+					<section v-if="showPaymentStep" class="payment-section payment-section--adjustments">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Redemption and Totals") }}</h3>
 						</div>
@@ -117,26 +180,6 @@
 							:currencySymbol="currencySymbol"
 							:formatCurrency="formatCurrency"
 						/>
-						<div class="payment-section__subsection">
-							<h3 class="payment-section__title payment-section__title--subsection">
-								{{ __("Fulfillment Details") }}
-							</h3>
-						</div>
-						<PaymentAdditionalInfo
-							:invoice-doc="invoice_doc"
-							:pos-profile="pos_profile"
-							:invoice-type="invoiceType"
-							:return-validity-enabled="returnValidityEnabled"
-							:return-validity-min-date="returnValidityMinDate"
-							:return-valid-upto-date="return_valid_upto_date"
-							@update:return-valid-upto-date="
-								(val) => {
-									return_valid_upto_date = val;
-									updateReturnValidUpto();
-								}
-							"
-							@new-address="handlePaymentNewAddress"
-						/>
 						<PaymentPurchaseOrder
 							:invoice-doc="invoice_doc"
 							:pos-profile="pos_profile"
@@ -150,7 +193,7 @@
 						/>
 					</section>
 
-					<section class="payment-section payment-section--settlement">
+					<section v-if="showPaymentStep" class="payment-section payment-section--settlement">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Credit and Output") }}</h3>
 						</div>
@@ -203,7 +246,7 @@
 					/>
 				</section>
 
-				<section class="payment-section payment-section--meta">
+				<section v-if="showPaymentStep" class="payment-section payment-section--meta">
 					<div class="payment-section__header">
 						<h3 class="payment-section__title">{{ __("Sales Person and Print") }}</h3>
 					</div>
@@ -221,10 +264,15 @@
 					/>
 				</section>
 			</div>
-		</div>
+			</div>
 		</v-card>
 
-		<div :class="['payment-footer', { 'payment-footer--dialog': dialogMode }]">
+		<div v-if="showPaymentStep" :class="['payment-footer', { 'payment-footer--dialog': dialogMode }]">
+			<div v-if="isWizardFlow" class="payment-wizard-actions">
+				<v-btn variant="text" color="primary" @click="goToFulfillmentStep">
+					{{ __("Back") }}
+				</v-btn>
+			</div>
 			<PaymentActionButtons
 				ref="submitButton"
 				:loading="loading"
@@ -391,6 +439,7 @@ const queuedShortcutSubmit = ref(null);
 const missingOrderAddressDialog = ref(false);
 const pendingMissingAddressSubmit = ref(null);
 const pendingCollectedAddressSubmit = ref(false);
+const currentStep = ref(1);
 const giftCardDialogOpen = ref(false);
 const giftCardInlineExpanded = ref(false);
 const activeGiftCardPayment = ref(null);
@@ -427,6 +476,62 @@ const netInvoiceSettlementAmount = computed(() => {
 	const net = invoiceTotal - coveredAmount;
 	return invoice_doc.value?.is_return ? Math.min(net, 0) : Math.max(net, 0);
 });
+
+const needsFulfillmentStep = computed(
+	() =>
+		invoiceType.value === "Order" &&
+		Boolean(pos_profile.value?.posa_create_only_sales_order),
+);
+const isWizardFlow = computed(() => needsFulfillmentStep.value);
+
+const selectedFulfillmentAddress = computed(() => {
+	const selectedAddressName = String(invoice_doc.value?.shipping_address_name || "").trim();
+	if (!selectedAddressName) {
+		return null;
+	}
+	return (
+		(Array.isArray(addresses.value) ? addresses.value : []).find(
+			(addr) => String(addr?.name || "").trim() === selectedAddressName,
+		) || null
+	);
+});
+
+const hasAddressValue = (address, key) => Boolean(String(address?.[key] || "").trim());
+
+const hasFulfillmentAddress = computed(() => {
+	const selectedAddress = selectedFulfillmentAddress.value;
+	if (!selectedAddress) {
+		return false;
+	}
+
+	if (isCollectionDeliveryChargeSelected()) {
+		return hasAddressValue(selectedAddress, "name");
+	}
+
+	return (
+		hasAddressValue(selectedAddress, "name") &&
+		hasAddressValue(selectedAddress, "address_line1") &&
+		hasAddressValue(selectedAddress, "city") &&
+		hasAddressValue(selectedAddress, "state") &&
+		hasAddressValue(selectedAddress, "pincode")
+	);
+});
+
+const hasFulfillmentNotes = computed(() =>
+	Boolean(String(invoice_doc.value?.posa_notes || "").trim()),
+);
+
+const canProceedToPayment = computed(() => {
+	if (!needsFulfillmentStep.value) {
+		return true;
+	}
+	return hasFulfillmentAddress.value && hasFulfillmentNotes.value;
+});
+
+const showFulfillmentStep = computed(() => !isWizardFlow.value || currentStep.value === 1);
+const showPaymentStep = computed(
+	() => !isWizardFlow.value || currentStep.value === 2,
+);
 
 const validatePayment = computed(() => {
 	return false;
@@ -1492,6 +1597,12 @@ const scheduleBackgroundStatusCheck = ({
 
 // Submission Wrapper
 const submit = async (_event, payment_received = false, print = false) => {
+	if (isWizardFlow.value && currentStep.value === 1) {
+		if (canProceedToPayment.value) {
+			currentStep.value = 2;
+		}
+		return;
+	}
 	await submitInvoiceWrapper(print, undefined, {
 		paymentReceived: payment_received,
 	});
@@ -1528,12 +1639,43 @@ const shouldUseCollectedAddressEntry = (options = {}) => {
 	return shouldConfirmMissingOrderAddress(options) && isCollectionDeliveryChargeSelected();
 };
 
-const handlePaymentNewAddress = () => {
-	if (isCollectionDeliveryChargeSelected()) {
-		new_address({ mode: "collected" });
+const addressActionLabel = computed(() =>
+	isCollectionDeliveryChargeSelected()
+		? __("Add Customer Collection Information")
+		: __("Add Customer Address"),
+);
+
+const proceedToPaymentStep = () => {
+	if (!canProceedToPayment.value) {
 		return;
 	}
-	new_address();
+	currentStep.value = 2;
+};
+
+const goToFulfillmentStep = () => {
+	if (!isWizardFlow.value) {
+		return;
+	}
+	currentStep.value = 1;
+};
+
+const handlePaymentNewAddress = () => {
+	const selectedAddressName = String(invoice_doc.value?.shipping_address_name || "").trim();
+	const selectedAddress = (Array.isArray(addresses.value) ? addresses.value : []).find(
+		(addr) => String(addr?.name || "").trim() === selectedAddressName,
+	);
+
+	if (isCollectionDeliveryChargeSelected()) {
+		new_address({
+			mode: "collected",
+			address: selectedAddress || undefined,
+		});
+		return;
+	}
+	new_address({
+		mode: "full",
+		address: selectedAddress || undefined,
+	});
 };
 
 const confirmCustomerCollectedOrder = async () => {
@@ -1728,6 +1870,20 @@ watch(
 			return_valid_upto_date.value = null;
 			restoreReturnPayments();
 		}
+	},
+	{ immediate: true },
+);
+
+watch(canProceedToPayment, (ready) => {
+	if (!ready && isWizardFlow.value && currentStep.value === 2) {
+		currentStep.value = 1;
+	}
+});
+
+watch(
+	isWizardFlow,
+	(enabled) => {
+		currentStep.value = enabled ? 1 : 2;
 	},
 	{ immediate: true },
 );
@@ -1942,6 +2098,7 @@ onMounted(() => {
 
 	if (eventBus) {
 		eventBus.on("send_invoice_doc_payment", (doc) => {
+			currentStep.value = isWizardFlow.value ? 1 : 2;
 			invoiceStore.setInvoiceDoc(doc);
 			paid_change.value = flt(doc.paid_change || 0, currency_precision.value);
 			credit_change.value = flt(doc.credit_change || 0, currency_precision.value);
@@ -1978,6 +2135,7 @@ onMounted(() => {
 				addresses.value = [...existing, normalized];
 				if (invoice_doc.value) {
 					invoice_doc.value.shipping_address_name = normalized.name;
+					invoice_doc.value.customer_address = normalized.name;
 				}
 				if (pendingCollectedAddressSubmit.value && pendingMissingAddressSubmit.value) {
 					const pendingSubmit = pendingMissingAddressSubmit.value;
@@ -2006,6 +2164,7 @@ onMounted(() => {
 		eventBus.on("queue_submit_payment_shortcut", queueShortcutSubmit);
 		eventBus.on("submit_payment_shortcut", handleSubmitPaymentShortcut);
 		eventBus.on("clear_invoice", () => {
+			currentStep.value = isWizardFlow.value ? 1 : 2;
 			invoiceStore.clear();
 			invoiceStore.resetPostingDate();
 			missingOrderAddressDialog.value = false;
@@ -2024,6 +2183,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+	currentStep.value = 1;
 	missingOrderAddressDialog.value = false;
 	pendingMissingAddressSubmit.value = null;
 	pendingCollectedAddressSubmit.value = false;
@@ -2099,6 +2259,37 @@ onBeforeUnmount(() => {
 	gap: var(--pos-space-3);
 }
 
+.payment-wizard-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 4px 2px 0;
+}
+
+.payment-wizard-header__title {
+	font-size: 0.92rem;
+	font-weight: 700;
+	color: var(--pos-text-primary);
+}
+
+.payment-wizard-header__track {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.payment-wizard-header__dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 999px;
+	background: var(--pos-border-light);
+	transition: background-color 0.15s ease;
+}
+
+.payment-wizard-header__dot--active {
+	background: rgb(var(--v-theme-primary));
+}
+
 .payment-sections--dialog {
 	display: grid;
 	grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
@@ -2109,6 +2300,12 @@ onBeforeUnmount(() => {
 		"methods adjustments"
 		"settlement adjustments"
 		"settlement meta";
+}
+
+.payment-sections--wizard-step1 {
+	display: flex;
+	grid-template-columns: none;
+	grid-template-areas: none;
 }
 
 .payment-section {
@@ -2195,6 +2392,19 @@ onBeforeUnmount(() => {
 	z-index: 8;
 	padding-top: 8px;
 	background: linear-gradient(180deg, rgba(255, 255, 255, 0), var(--pos-surface) 30%);
+}
+
+.payment-wizard-actions {
+	display: flex;
+	justify-content: flex-start;
+	padding: 0 4px 8px;
+}
+
+.payment-next-step {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding-top: 4px;
 }
 
 .payment-footer--dialog {

@@ -462,7 +462,7 @@ def make_address(args):
             "email_id": args.get("email_id"),
             "phone": args.get("phone"),
             "country": args.get("country"),
-            "address_type": "Shipping",
+            "address_type": args.get("address_type") or "Shipping",
             "links": [{"link_doctype": args.get("doctype"), "link_name": args.get("customer")}],
         }
     ).insert()
