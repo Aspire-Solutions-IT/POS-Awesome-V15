@@ -167,6 +167,8 @@ def get_delta_items(
         "item_code",
         "item_name",
         "stock_uom",
+        "next_due_date",
+        "quantity_due_in",
         "is_stock_item",
         "has_variants",
         "variant_of",

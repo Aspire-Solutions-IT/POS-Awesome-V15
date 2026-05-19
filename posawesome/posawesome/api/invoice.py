@@ -126,13 +126,19 @@ def create_sales_order(doc):
     ):
         sales_order_doc = make_sales_order(doc.name)
         if sales_order_doc:
+            from posawesome.posawesome.api.sales_orders import _apply_kit_meta_fields
+
             sales_order_doc.posa_notes = getattr(doc, "posa_notes", None)
             if hasattr(sales_order_doc, "shopify_notes"):
                 sales_order_doc.shopify_notes = getattr(doc, "posa_notes", None) or ""
+            _apply_kit_meta_fields(sales_order_doc)
             sales_order_doc.flags.ignore_permissions = True
             sales_order_doc.flags.ignore_account_permission = True
             sales_order_doc.save()
             sales_order_doc.submit()
+            from posawesome.posawesome.api.sales_orders import _auto_create_delivery_note_for_non_ns_items
+
+            _auto_create_delivery_note_for_non_ns_items(sales_order_doc)
             url = frappe.utils.get_url_to_form(sales_order_doc.doctype, sales_order_doc.name)
             msgprint = f"Sales Order Created at <a href='{url}'>{sales_order_doc.name}</a>"
             frappe.msgprint(_(msgprint), title="Sales Order Created", indicator="green", alert=True)
@@ -144,6 +150,21 @@ def create_sales_order(doc):
 
 
 def make_sales_order(source_name, target_doc=None, ignore_permissions=True):
+    ns_warehouse_cache = {"value": None, "loaded": False}
+
+    def get_ns_warehouse(pos_profile):
+        if not pos_profile:
+            return None
+        if ns_warehouse_cache["loaded"]:
+            return ns_warehouse_cache["value"]
+        ns_warehouse_cache["value"] = frappe.db.get_value(
+            "POS Profile",
+            pos_profile,
+            "default_ns_warehouse",
+        )
+        ns_warehouse_cache["loaded"] = True
+        return ns_warehouse_cache["value"]
+
     def set_missing_values(source, target):
         target.ignore_pricing_rule = 1
         target.flags.ignore_permissions = ignore_permissions
@@ -155,6 +176,11 @@ def make_sales_order(source_name, target_doc=None, ignore_permissions=True):
         target.delivery_date = getattr(obj, "posa_delivery_date", None) or getattr(
             source_parent, "posa_delivery_date", None
         )
+        item_code = str(getattr(obj, "item_code", "") or "").strip()
+        if item_code.lower().startswith("ns"):
+            ns_warehouse = get_ns_warehouse(getattr(source_parent, "pos_profile", None))
+            if ns_warehouse:
+                target.warehouse = ns_warehouse
 
     doclist = get_mapped_doc(
         "Sales Invoice",

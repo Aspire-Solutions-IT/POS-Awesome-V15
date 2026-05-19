@@ -8,6 +8,34 @@ const showCompactPanel = (context: any, panel: "selector" | "invoice") => {
 	context?.eventBus?.emit?.("set_compact_panel", panel);
 };
 
+const isCollectionChargeSelected = (context: any): boolean => {
+	const selected = context?.selected_delivery_charge;
+	if (selected && typeof selected === "object") {
+		const flag = selected.collection;
+		return flag === 1 || flag === "1" || flag === true;
+	}
+
+	const selectedName = String(
+		context?.invoice_doc?.posa_delivery_charges || context?.selectedDeliveryCharge || "",
+	).trim();
+	if (!selectedName) {
+		return false;
+	}
+
+	const rows = Array.isArray(context?.delivery_charges) ? context.delivery_charges : [];
+	const row = rows.find((entry: any) => String(entry?.name || "").trim() === selectedName);
+	const flag = row?.collection;
+	return flag === 1 || flag === "1" || flag === true;
+};
+
+const hasOnlyNsItemsForCollection = (context: any): boolean => {
+	if (!isCollectionChargeSelected(context)) {
+		return true;
+	}
+	const lines = Array.isArray(context?.items) ? context.items : [];
+	return lines.every((line: any) => String(line?.item_code || "").trim().toLowerCase().startsWith("ns"));
+};
+
 export async function show_payment(context: any) {
 	if (context._suppressClosePaymentsTimer) {
 		clearTimeout(context._suppressClosePaymentsTimer);
@@ -28,6 +56,15 @@ export async function show_payment(context: any) {
 			context.toastStore.show({
 				title: __(`Select items to sell`),
 				color: "error",
+			});
+			return;
+		}
+
+		if (!hasOnlyNsItemsForCollection(context)) {
+			frappe.msgprint({
+				title: __("Collection Not Allowed"),
+				message: __("Only NS items can be collected."),
+				indicator: "red",
 			});
 			return;
 		}

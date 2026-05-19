@@ -521,11 +521,29 @@ const hasFulfillmentNotes = computed(() =>
 	Boolean(String(invoice_doc.value?.posa_notes || "").trim()),
 );
 
+const hasOnlyNsItemsForCollection = computed(() => {
+	if (!isCollectionDeliveryChargeSelected()) {
+		return true;
+	}
+	const lines = Array.isArray(invoice_doc.value?.items) ? invoice_doc.value.items : [];
+	return lines.every((line) => {
+		const itemCode = String(line?.item_code || "").trim();
+		if (!itemCode) {
+			return false;
+		}
+		return itemCode.toLowerCase().startsWith("ns");
+	});
+});
+
 const canProceedToPayment = computed(() => {
 	if (!needsFulfillmentStep.value) {
 		return true;
 	}
-	return hasFulfillmentAddress.value && hasFulfillmentNotes.value;
+	return (
+		hasFulfillmentAddress.value &&
+		hasFulfillmentNotes.value &&
+		hasOnlyNsItemsForCollection.value
+	);
 });
 
 const showFulfillmentStep = computed(() => !isWizardFlow.value || currentStep.value === 1);
@@ -1645,7 +1663,19 @@ const addressActionLabel = computed(() =>
 		: __("Add Customer Address"),
 );
 
+const showCollectionItemsValidationError = () => {
+	frappe.msgprint({
+		title: __("Collection Not Allowed"),
+		message: __("Only NS items can be collected."),
+		indicator: "red",
+	});
+};
+
 const proceedToPaymentStep = () => {
+	if (!hasOnlyNsItemsForCollection.value) {
+		showCollectionItemsValidationError();
+		return;
+	}
 	if (!canProceedToPayment.value) {
 		return;
 	}
@@ -1694,6 +1724,11 @@ const openMissingOrderAddressEntry = () => {
 };
 
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	if (!hasOnlyNsItemsForCollection.value) {
+		showCollectionItemsValidationError();
+		return;
+	}
+
 	if (shouldUseCollectedAddressEntry(options)) {
 		pendingMissingAddressSubmit.value = {
 			print,

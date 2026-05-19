@@ -192,6 +192,8 @@ def _build_search_plan(
         "item_code",
         "item_name",
         "stock_uom",
+        "next_due_date",
+        "quantity_due_in",
         "is_stock_item",
         "has_variants",
         "variant_of",
@@ -442,8 +444,8 @@ def _run_item_query(
             break
 
         details = get_items_details(
-            json.dumps(pos_profile),
-            json.dumps(items_data),
+            frappe.as_json(pos_profile),
+            frappe.as_json(items_data),
             price_list=price_list,
             customer=customer,
         )

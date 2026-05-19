@@ -5,7 +5,7 @@ import json
 
 import frappe
 from erpnext.accounts.party import get_party_account
-from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
+from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
 from frappe.utils import flt, getdate, nowdate
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
@@ -144,11 +144,108 @@ def _sync_shopify_notes_from_posa(so_doc):
         so_doc.shopify_notes = getattr(so_doc, "posa_notes", None) or ""
 
 
+def _apply_ns_default_warehouse(order_data):
+    """Apply POS Profile default NS warehouse to NS-prefixed item codes."""
+    if not isinstance(order_data, dict):
+        return
+
+    pos_profile = order_data.get("pos_profile")
+    if not pos_profile:
+        return
+
+    ns_warehouse = frappe.db.get_value("POS Profile", pos_profile, "default_ns_warehouse")
+    if not ns_warehouse:
+        return
+
+    for item in order_data.get("items", []) or []:
+        if not isinstance(item, dict):
+            continue
+        item_code = str(item.get("item_code") or "").strip()
+        if item_code.lower().startswith("ns"):
+            item["warehouse"] = ns_warehouse
+
+
+def _is_collection_delivery_charge_selected(so_doc):
+    charge_name = str(getattr(so_doc, "posa_delivery_charges", "") or "").strip()
+    if not charge_name:
+        return False
+    collection = frappe.get_cached_value("Delivery Charges", charge_name, "collection")
+    return bool(flt(collection))
+
+
+def _auto_create_delivery_note_for_non_ns_items(so_doc):
+    """Create and submit a Delivery Note from SO for NS items only."""
+    if not _is_collection_delivery_charge_selected(so_doc):
+        return None
+
+    dn_doc = make_delivery_note(so_doc.name)
+    if not dn_doc:
+        return None
+
+    filtered_items = []
+    for row in dn_doc.get("items", []) or []:
+        item_code = str(getattr(row, "item_code", "") or "").strip()
+        if item_code.lower().startswith("ns"):
+            filtered_items.append(row)
+
+    dn_doc.set("items", filtered_items)
+    if not dn_doc.items:
+        return None
+
+    dn_doc.flags.ignore_permissions = True
+    frappe.flags.ignore_account_permission = True
+    dn_doc.insert()
+    dn_doc.submit()
+    return dn_doc.name
+
+
+def _apply_kit_meta_fields(so_doc):
+    """Mark kit parent metadata on Sales Order items (Shopify-compatible pattern)."""
+    items = so_doc.get("items") or []
+    if not items:
+        return
+    if not frappe.db.has_column("Item", "is_kit_item"):
+        return
+
+    item_codes = [str(getattr(row, "item_code", "") or "").strip() for row in items]
+    item_codes = [code for code in item_codes if code]
+    if not item_codes:
+        return
+
+    kit_rows = frappe.get_all(
+        "Item",
+        filters={"name": ["in", item_codes], "is_kit_item": 1},
+        pluck="name",
+    )
+    kit_codes = set(kit_rows or [])
+    if not kit_codes:
+        return
+
+    for row in items:
+        item_code = str(getattr(row, "item_code", "") or "").strip()
+        if item_code not in kit_codes:
+            continue
+
+        if hasattr(row, "is_kit_parent"):
+            row.is_kit_parent = 1
+        if hasattr(row, "is_kit_component"):
+            row.is_kit_component = 0
+        if hasattr(row, "kit_group_id") and not getattr(row, "kit_group_id", None):
+            row.kit_group_id = frappe.generate_hash()
+        if hasattr(row, "kit_parent_item_code"):
+            row.kit_parent_item_code = item_code
+        if hasattr(row, "kit_parent_row_idx"):
+            row.kit_parent_row_idx = getattr(row, "idx", None)
+        if hasattr(row, "kit_qty_factor"):
+            row.kit_qty_factor = 1
+
+
 @frappe.whitelist()
 def update_sales_order(data):
     """Create or update a Sales Order document."""
     data = json.loads(data)
     _map_delivery_dates(data)
+    _apply_ns_default_warehouse(data)
     if data.get("name") and frappe.db.exists("Sales Order", data.get("name")):
         so_doc = frappe.get_doc("Sales Order", data.get("name"))
         so_doc.update(data)
@@ -159,6 +256,7 @@ def update_sales_order(data):
     frappe.flags.ignore_account_permission = True
     so_doc.docstatus = 0
     _sync_shopify_notes_from_posa(so_doc)
+    _apply_kit_meta_fields(so_doc)
     _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
     return so_doc
@@ -204,6 +302,7 @@ def submit_sales_order(order):
     """Submit sales order and create payment entries."""
     order = json.loads(order)
     _map_delivery_dates(order)
+    _apply_ns_default_warehouse(order)
     if order.get("name") and frappe.db.exists("Sales Order", order.get("name")):
         so_doc = frappe.get_doc("Sales Order", order.get("name"))
         so_doc.update(order)
@@ -215,9 +314,11 @@ def submit_sales_order(order):
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
     _sync_shopify_notes_from_posa(so_doc)
+    _apply_kit_meta_fields(so_doc)
     _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
     so_doc.submit()
+    _auto_create_delivery_note_for_non_ns_items(so_doc)
 
     if payments:
         frappe.enqueue(

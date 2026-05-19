@@ -100,6 +100,9 @@
 					{{ formatActualQty(item.actual_qty) }}
 				</span>
 			</template>
+			<template v-slot:item.next_due_date="{ item }">
+				<span>{{ formatDueDate(item.next_due_date) }}</span>
+			</template>
 		</v-data-table-virtual>
 	</div>
 </template>
@@ -147,6 +150,17 @@ const formatActualQty = (value) => {
 		return props.formatNumber(Math.round(numericQty), 0);
 	}
 	return props.formatNumber(numericQty, 4);
+};
+
+const formatDueDate = (value) => {
+	const normalized = String(value || "").trim();
+	if (!normalized) {
+		return "-";
+	}
+	if (window?.frappe?.datetime?.str_to_user) {
+		return window.frappe.datetime.str_to_user(normalized);
+	}
+	return normalized;
 };
 
 const tableRef = ref(null);
