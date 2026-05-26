@@ -7,7 +7,7 @@ authors = [
     { name = "Ateeq-Raheman", email = "ateeqraheman001195@gmail.com"},
     { name = "Ahmed Osama", email = "eng.ahmed.osama.1190@gmail.com"},
     { name = "Samarth Upare", email = "samarth.upare@redtra.com"},
-    { name = "Robert Dunne", email = "robert@aspire-solutions.co.uk},
+    { name = "Robert Dunne", email = "robert@aspire-solutions.co.uk"},
 ]
 description = "POS project that's simply awesome"
 requires-python = ">=3.10"
