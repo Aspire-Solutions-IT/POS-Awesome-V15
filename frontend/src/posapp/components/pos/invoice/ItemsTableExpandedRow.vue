@@ -261,6 +261,19 @@
 								prepend-inner-icon="mdi-folder-outline"
 							></v-text-field>
 						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Due Date')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatDueDate(item.next_due_date)"
+								disabled
+								prepend-inner-icon="mdi-calendar-clock"
+							></v-text-field>
+						</div>
 						<div class="posa-form-field" v-if="item.posa_offer_applied">
 							<v-checkbox
 								density="compact"
@@ -473,6 +486,17 @@ const frappe = (window as any).frappe || { _: (s: string) => s };
 
 const onQtyChange = (item: CartItem, event: any) => {
 	emit("qty-change", item, event);
+};
+
+const formatDueDate = (value: string | null | undefined) => {
+	const normalized = String(value || "").trim();
+	if (!normalized) {
+		return "-";
+	}
+	if (frappe?.datetime?.str_to_user) {
+		return frappe.datetime.str_to_user(normalized);
+	}
+	return normalized;
 };
 
 const getRaw = (item: any) => item?.raw || {};
