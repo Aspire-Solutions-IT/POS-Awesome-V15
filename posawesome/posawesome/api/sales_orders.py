@@ -28,6 +28,11 @@ def _get_receipt_email_settings(profile_name):
     return enabled, print_format
 
 
+def _get_receipt_sender():
+    email_account = frappe.get_cached_doc("Email Account", "ERP")
+    return getattr(email_account, "email_id", None) or getattr(email_account, "default_sender", None) or ""
+
+
 def _log_receipt_skip(so_doc, reason):
     frappe.log_error(
         f"Sales Order {getattr(so_doc, 'name', 'Unknown')}: {reason}",
@@ -179,12 +184,12 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
         )
         frappe.sendmail(
             recipients=[recipient],
+            sender=_get_receipt_sender(),
             subject=_("Your Receipt for Order - {0} - The Furniture Warehouse").format(
                 so_doc.name
             ),
             message=_("Please find your receipt attached."),
             attachments=[attachment],
-            email_account="ERP",
             reference_doctype=so_doc.doctype,
             reference_name=so_doc.name,
         )
