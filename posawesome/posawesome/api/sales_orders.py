@@ -4,9 +4,10 @@
 import json
 
 import frappe
+from frappe import _
 from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
-from frappe.utils import flt, getdate, nowdate
+from frappe.utils import cint, flt, getdate, nowdate
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
@@ -15,6 +16,187 @@ def _payment_entry_job(order_name, payments):
     """Background task to create payment entries."""
     so_doc = frappe.get_doc("Sales Order", order_name)
     _create_payment_entries(so_doc, payments)
+
+
+def _get_receipt_email_settings(profile_name):
+    if not profile_name:
+        return 0, ""
+
+    profile = frappe.get_cached_doc("POS Profile", profile_name)
+    enabled = cint(getattr(profile, "posa_auto_email_receipt_on_submit", 0) or 0)
+    print_format = str(getattr(profile, "posa_receipt_email_print_format", "") or "").strip()
+    return enabled, print_format
+
+
+def _log_receipt_skip(so_doc, reason):
+    frappe.log_error(
+        f"Sales Order {getattr(so_doc, 'name', 'Unknown')}: {reason}",
+        "POSAwesome Receipt Email Skipped",
+    )
+
+
+def _get_address_email(address_name):
+    if not address_name:
+        return ""
+
+    email = frappe.db.get_value("Address", address_name, "email_id")
+    return str(email or "").strip()
+
+
+def _resolve_customer_email(so_doc):
+    address_candidates = [
+        getattr(so_doc, "customer_address", None),
+        getattr(so_doc, "shipping_address_name", None),
+    ]
+
+    seen_addresses = set()
+    for address_name in address_candidates:
+        normalized = str(address_name or "").strip()
+        if not normalized or normalized in seen_addresses:
+            continue
+        seen_addresses.add(normalized)
+        email = _get_address_email(normalized)
+        if email:
+            return email
+
+    email = frappe.db.get_value("Customer", so_doc.customer, "email_id") if so_doc.customer else None
+    return str(email or "").strip()
+
+
+def _should_auto_email_receipt(so_doc, log_skip=False):
+    if not cint(getattr(so_doc, "is_pos", 0) or 0):
+        return False, ""
+
+    if not getattr(so_doc, "pos_profile", None):
+        return False, ""
+
+    enabled, print_format = _get_receipt_email_settings(so_doc.pos_profile)
+    if not enabled:
+        return False, ""
+
+    if not print_format:
+        if log_skip:
+            _log_receipt_skip(so_doc, "Receipt email is enabled but no print format is configured.")
+        return False, ""
+
+    return True, print_format
+
+
+def _is_dev_or_local_environment():
+    site_name = str(getattr(getattr(frappe, "local", None), "site", "") or "").strip().lower()
+    if site_name:
+        return site_name.endswith(".local") or "local" in site_name or "dev" in site_name
+
+    return False
+
+
+def on_submit(doc, method):
+    frappe.logger().info(
+        "POSAwesome receipt email: on_submit start for Sales Order %s",
+        getattr(doc, "name", "Unknown"),
+    )
+    should_send, print_format = _should_auto_email_receipt(doc, log_skip=True)
+    frappe.logger().info(
+        "POSAwesome receipt email: eligibility checked for Sales Order %s should_send=%s",
+        getattr(doc, "name", "Unknown"),
+        should_send,
+    )
+    if not should_send:
+        return
+
+    recipient = _resolve_customer_email(doc)
+    frappe.logger().info(
+        "POSAwesome receipt email: recipient resolved for Sales Order %s recipient=%s",
+        getattr(doc, "name", "Unknown"),
+        recipient or "<missing>",
+    )
+    if not recipient:
+        _log_receipt_skip(doc, "Customer email is missing.")
+        return
+
+    if _is_dev_or_local_environment():
+        frappe.logger().info(
+            "POSAwesome receipt email: skipping send for local/dev site on Sales Order %s",
+            getattr(doc, "name", "Unknown"),
+        )
+        return
+
+    frappe.logger().info(
+        "POSAwesome receipt email: queueing send for Sales Order %s",
+        getattr(doc, "name", "Unknown"),
+    )
+    frappe.enqueue(
+        "posawesome.posawesome.api.sales_orders._send_receipt_email_job",
+        queue="short",
+        enqueue_after_commit=True,
+        sales_order_name=doc.name,
+        recipient=recipient,
+        pos_profile=doc.pos_profile,
+        print_format=print_format,
+    )
+
+
+def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print_format=None):
+    try:
+        frappe.logger().info(
+            "POSAwesome receipt email: job start for Sales Order %s",
+            sales_order_name,
+        )
+        so_doc = frappe.get_doc("Sales Order", sales_order_name)
+        resolved_print_format = str(print_format or "").strip()
+        if not resolved_print_format and pos_profile:
+            enabled, resolved_print_format = _get_receipt_email_settings(pos_profile)
+            if not enabled:
+                frappe.logger().info(
+                    "POSAwesome receipt email: job disabled by POS Profile for Sales Order %s",
+                    sales_order_name,
+                )
+                return
+
+        if not resolved_print_format:
+            frappe.logger().info(
+                "POSAwesome receipt email: job missing print format for Sales Order %s",
+                sales_order_name,
+            )
+            return
+
+        frappe.logger().info(
+            "POSAwesome receipt email: before attach_print for Sales Order %s format=%s",
+            sales_order_name,
+            resolved_print_format,
+        )
+        attachment = frappe.attach_print(
+            doctype=so_doc.doctype,
+            name=so_doc.name,
+            print_format=resolved_print_format,
+            doc=so_doc,
+        )
+        frappe.logger().info(
+            "POSAwesome receipt email: before sendmail for Sales Order %s recipient=%s bytes=%s",
+            sales_order_name,
+            recipient,
+            len(attachment.get("fcontent") or b""),
+        )
+        frappe.sendmail(
+            recipients=[recipient],
+            subject=_("Your Receipt for Order - {0} - The Furniture Warehouse").format(
+                so_doc.name
+            ),
+            message=_("Please find your receipt attached."),
+            attachments=[attachment],
+            email_account="ERP",
+            reference_doctype=so_doc.doctype,
+            reference_name=so_doc.name,
+        )
+        frappe.logger().info(
+            "POSAwesome receipt email: after sendmail for Sales Order %s",
+            sales_order_name,
+        )
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"POSAwesome Receipt Email Error - Sales Order {sales_order_name}",
+        )
 
 
 @frappe.whitelist()

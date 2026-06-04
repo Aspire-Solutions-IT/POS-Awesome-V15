@@ -7905,6 +7905,27 @@
 	{
 		"doctype": "Custom Field",
 		"dt": "POS Profile",
+		"fieldname": "posa_auto_email_receipt_on_submit",
+		"fieldtype": "Check",
+		"label": "Auto Email Receipt on Submit",
+		"default": "0",
+		"insert_after": "posa_print_format_rules",
+		"name": "POS Profile-posa_auto_email_receipt_on_submit"
+	},
+	{
+		"doctype": "Custom Field",
+		"dt": "POS Profile",
+		"fieldname": "posa_receipt_email_print_format",
+		"fieldtype": "Link",
+		"label": "Receipt Email Print Format",
+		"options": "Print Format",
+		"depends_on": "eval:doc.posa_auto_email_receipt_on_submit==1",
+		"insert_after": "posa_auto_email_receipt_on_submit",
+		"name": "POS Profile-posa_receipt_email_print_format"
+	},
+	{
+		"doctype": "Custom Field",
+		"dt": "POS Profile",
 		"fieldname": "posa_enable_cash_movement",
 		"fieldtype": "Check",
 		"label": "Enable Cash Movement",
@@ -8057,7 +8078,7 @@
 		"fieldtype": "Section Break",
 		"label": "Cash Movement",
 		"collapsible": 1,
-		"insert_after": "posa_print_format_rules",
+		"insert_after": "posa_receipt_email_print_format",
 		"name": "POS Profile-posa_section_cash_movement"
 	},
 	{

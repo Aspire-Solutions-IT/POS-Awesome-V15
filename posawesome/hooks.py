@@ -99,6 +99,9 @@ after_migrate = [
 # Hook on document methods and events
 
 doc_events = {
+    "Sales Order": {
+        "on_submit": "posawesome.posawesome.api.sales_orders.on_submit",
+    },
     "Sales Invoice": {
         "validate": "posawesome.posawesome.api.invoice.validate",
         "before_submit": "posawesome.posawesome.api.invoice.before_submit",
@@ -321,6 +324,8 @@ fixtures = [
                     "POS Profile-posa_language",
                     "POS Profile-posa_enable_return_validity",
                     "POS Profile-posa_return_validity_days",
+                    "POS Profile-posa_auto_email_receipt_on_submit",
+                    "POS Profile-posa_receipt_email_print_format",
                     "POS Profile-posa_enable_cash_movement",
                     "POS Profile-posa_allow_pos_expense",
                     "POS Profile-posa_allow_cash_deposit",
