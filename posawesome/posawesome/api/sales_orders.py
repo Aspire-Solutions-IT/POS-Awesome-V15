@@ -68,6 +68,49 @@ def _resolve_customer_email(so_doc):
     return str(email or "").strip()
 
 
+def _get_print_format_override(print_format):
+    records = frappe.get_all(
+        "Print Format Overrides",
+        filters={"print_format": print_format, "enabled": 1},
+        fields=["height", "width"],
+        limit=1,
+    )
+    return records[0] if records else None
+
+
+def _build_receipt_attachment(so_doc, print_format):
+    override = _get_print_format_override(print_format)
+    height = override.get("height") if override else None
+    width = override.get("width") if override else None
+
+    if not (height and width):
+        return frappe.attach_print(
+            doctype=so_doc.doctype,
+            name=so_doc.name,
+            print_format=print_format,
+            doc=so_doc,
+        )
+
+    from frappe.utils.pdf import get_pdf
+    from frappe.utils.print_utils import get_print
+
+    html = get_print(
+        doctype=so_doc.doctype,
+        name=so_doc.name,
+        print_format=print_format,
+        doc=so_doc,
+    )
+    size_css = (
+        "<style>"
+        ".print-format { "
+        f"page-height: {height}cm; page-width: {width}cm; "
+        "}"
+        "</style>"
+    )
+    filename = str(so_doc.name).replace(" ", "").replace("/", "-") + ".pdf"
+    return {"fname": filename, "fcontent": get_pdf(f"{size_css}\n{html}")}
+
+
 def _should_auto_email_receipt(so_doc, log_skip=False):
     if not cint(getattr(so_doc, "is_pos", 0) or 0):
         return False, ""
@@ -170,12 +213,7 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
             sales_order_name,
             resolved_print_format,
         )
-        attachment = frappe.attach_print(
-            doctype=so_doc.doctype,
-            name=so_doc.name,
-            print_format=resolved_print_format,
-            doc=so_doc,
-        )
+        attachment = _build_receipt_attachment(so_doc, resolved_print_format)
         frappe.logger().info(
             "POSAwesome receipt email: before sendmail for Sales Order %s recipient=%s bytes=%s",
             sales_order_name,

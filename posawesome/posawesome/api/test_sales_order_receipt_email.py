@@ -23,6 +23,7 @@ def _install_stub_modules():
     frappe_module.sendmail = lambda *args, **kwargs: None
     frappe_module.get_traceback = lambda: "traceback"
     frappe_module.log_error = lambda *args, **kwargs: None
+    frappe_module.logger = lambda *args, **kwargs: SimpleNamespace(info=lambda *a, **k: None)
     frappe_module.db = types.SimpleNamespace(get_value=lambda *args, **kwargs: None)
     frappe_module.conf = {}
     frappe_module.local = SimpleNamespace(conf={}, site="")
@@ -32,6 +33,10 @@ def _install_stub_modules():
     frappe_utils.flt = lambda value=0, *args, **kwargs: float(value or 0)
     frappe_utils.getdate = lambda value: value
     frappe_utils.nowdate = lambda: "2026-06-03"
+    frappe_utils_pdf = types.ModuleType("frappe.utils.pdf")
+    frappe_utils_pdf.get_pdf = lambda html, options=None, output=None: b"pdf"
+    frappe_utils_print_utils = types.ModuleType("frappe.utils.print_utils")
+    frappe_utils_print_utils.get_print = lambda *args, **kwargs: "<div>print</div>"
 
     erpnext_accounts_party = types.ModuleType("erpnext.accounts.party")
     erpnext_accounts_party.get_party_account = lambda *args, **kwargs: None
@@ -56,6 +61,8 @@ def _install_stub_modules():
 
     sys.modules["frappe"] = frappe_module
     sys.modules["frappe.utils"] = frappe_utils
+    sys.modules["frappe.utils.pdf"] = frappe_utils_pdf
+    sys.modules["frappe.utils.print_utils"] = frappe_utils_print_utils
     sys.modules["erpnext.accounts.party"] = erpnext_accounts_party
     sys.modules["erpnext.selling.doctype.sales_order.sales_order"] = erpnext_sales_order
     sys.modules["posawesome.posawesome.api.payment_entry"] = payment_entry_module
@@ -226,8 +233,10 @@ class TestSalesOrderReceiptEmail(TestCase):
         attachment = {"fname": "SO-0005.pdf", "fcontent": b"pdf"}
 
         with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
-            sales_orders.frappe, "attach_print", return_value=attachment
-        ) as attach_print, patch.object(
+            sales_orders, "_build_receipt_attachment", return_value=attachment
+        ) as build_attachment, patch.object(
+            sales_orders, "_get_receipt_sender", return_value="erp@example.com"
+        ), patch.object(
             sales_orders.frappe, "sendmail"
         ) as sendmail:
             sales_orders._send_receipt_email_job(
@@ -237,20 +246,54 @@ class TestSalesOrderReceiptEmail(TestCase):
                 "POS Receipt",
             )
 
+        build_attachment.assert_called_once_with(doc, "POS Receipt")
+        sendmail.assert_called_once_with(
+            recipients=["customer@example.com"],
+            sender="erp@example.com",
+            subject="Your Receipt for Order - SO-0005 - The Furniture Warehouse",
+            message="Please find your receipt attached.",
+            attachments=[attachment],
+            reference_doctype="Sales Order",
+            reference_name="SO-0005",
+        )
+
+    def test_build_receipt_attachment_uses_attach_print_without_override(self):
+        doc = SimpleNamespace(name="SO-0005", doctype="Sales Order")
+        attachment = {"fname": "SO-0005.pdf", "fcontent": b"pdf"}
+
+        with patch.object(
+            sales_orders, "_get_print_format_override", return_value=None
+        ), patch.object(sales_orders.frappe, "attach_print", return_value=attachment) as attach_print:
+            result = sales_orders._build_receipt_attachment(doc, "POS Receipt")
+
+        self.assertEqual(result, attachment)
         attach_print.assert_called_once_with(
             doctype="Sales Order",
             name="SO-0005",
             print_format="POS Receipt",
             doc=doc,
         )
-        sendmail.assert_called_once_with(
-            recipients=["customer@example.com"],
-            subject="Receipt for Sales Order SO-0005",
-            message="Please find your receipt attached.",
-            attachments=[attachment],
-            reference_doctype="Sales Order",
-            reference_name="SO-0005",
+
+    def test_build_receipt_attachment_applies_custom_page_size_override(self):
+        doc = SimpleNamespace(name="SO 0005/1", doctype="Sales Order")
+
+        with patch.object(
+            sales_orders, "_get_print_format_override", return_value={"height": 29.7, "width": 21.0}
+        ), patch("frappe.utils.print_utils.get_print", return_value="<div>Receipt</div>") as get_print, patch(
+            "frappe.utils.pdf.get_pdf", return_value=b"custom-pdf"
+        ) as get_pdf:
+            result = sales_orders._build_receipt_attachment(doc, "POS Receipt")
+
+        self.assertEqual(result, {"fname": "SO0005-1.pdf", "fcontent": b"custom-pdf"})
+        get_print.assert_called_once_with(
+            doctype="Sales Order",
+            name="SO 0005/1",
+            print_format="POS Receipt",
+            doc=doc,
         )
+        get_pdf.assert_called_once()
+        self.assertIn("page-height: 29.7cm; page-width: 21.0cm;", get_pdf.call_args.args[0])
+        self.assertIn("<div>Receipt</div>", get_pdf.call_args.args[0])
 
     def test_send_receipt_email_job_logs_errors(self):
         with patch.object(
