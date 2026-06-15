@@ -20,12 +20,7 @@
 			</v-card-text>
 			<v-card-actions>
 				<v-spacer></v-spacer>
-				<v-btn
-					ref="customerCollectedBtn"
-					color="success"
-					variant="flat"
-					@click="onCustomerCollected"
-				>
+				<v-btn ref="customerCollectedBtn" color="success" variant="flat" @click="onCustomerCollected">
 					{{ __("Customer Collected") }}
 				</v-btn>
 				<v-btn color="primary" variant="text" @click="onEnterAddress">
@@ -47,11 +42,7 @@ const props = defineProps({
 	modelValue: Boolean,
 });
 
-const emit = defineEmits([
-	"update:modelValue",
-	"customer-collected",
-	"enter-address",
-]);
+const emit = defineEmits(["update:modelValue", "customer-collected", "enter-address"]);
 
 const __ = window.__ || ((text) => text);
 const customerCollectedBtn = ref(null);

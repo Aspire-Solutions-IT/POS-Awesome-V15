@@ -715,4 +715,201 @@ describe("usePaymentSubmission", () => {
 			expect.any(Object),
 		);
 	});
+
+	it("allows a partial payment for Sales Order checkout and marks it as a deposit", async () => {
+		const invoiceService =
+			(await import("../src/posapp/services/invoiceService")).default;
+		(invoiceService.submitInvoice as any).mockResolvedValue({
+			name: "SO-0001",
+			doctype: "Sales Order",
+			docstatus: 1,
+		});
+
+		const invoiceDoc = ref<any>({
+			name: "SO-0001",
+			doctype: "Sales Order",
+			is_return: 0,
+			items: [{ item_code: "ITEM-1", qty: 1 }],
+			payments: [{ mode_of_payment: "Cash", amount: 100, type: "Cash" }],
+			rounded_total: 300,
+			grand_total: 300,
+		});
+
+		const { submitInvoice } = usePaymentSubmission({
+			invoiceDoc,
+			posProfile: ref({
+				posa_allow_submissions_in_background_job: 0,
+				posa_create_only_sales_order: 1,
+				posa_allow_partial_payment: 0,
+			}),
+			stockSettings: ref({}),
+			invoiceType: ref("Order"),
+			formatFloat: (value) => Number(value || 0),
+			stores: {
+				toastStore: { show: vi.fn() },
+				uiStore: { setLastInvoice: vi.fn(), setLastStockAdjustment: vi.fn() },
+				customersStore: { setSelectedCustomer: vi.fn() },
+				invoiceStore: { invoiceDoc: invoiceDoc.value },
+			},
+			isCashback: ref(false),
+			paidChange: ref(0),
+			creditChange: ref(0),
+			redeemedCustomerCredit: ref(0),
+			customerCreditDict: ref([]),
+			diff_payment: ref(200),
+		});
+
+		await expect(
+			submitInvoice(false, {
+				onFinishNavigation: vi.fn(),
+			}),
+		).resolves.not.toThrow();
+
+		expect(invoiceService.submitInvoice).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sales_order_settlement_state: "deposit",
+			}),
+			expect.any(Object),
+			"Order",
+			expect.any(Object),
+		);
+	});
+
+	it("marks fully paid Sales Order checkout as full", async () => {
+		const invoiceService =
+			(await import("../src/posapp/services/invoiceService")).default;
+		(invoiceService.submitInvoice as any).mockResolvedValue({
+			name: "SO-0002",
+			doctype: "Sales Order",
+			docstatus: 1,
+		});
+
+		const invoiceDoc = ref<any>({
+			name: "SO-0002",
+			doctype: "Sales Order",
+			is_return: 0,
+			items: [{ item_code: "ITEM-1", qty: 1 }],
+			payments: [{ mode_of_payment: "Cash", amount: 300, type: "Cash" }],
+			rounded_total: 300,
+			grand_total: 300,
+		});
+
+		const { submitInvoice } = usePaymentSubmission({
+			invoiceDoc,
+			posProfile: ref({
+				posa_allow_submissions_in_background_job: 0,
+				posa_create_only_sales_order: 1,
+				posa_allow_partial_payment: 0,
+			}),
+			stockSettings: ref({}),
+			invoiceType: ref("Order"),
+			formatFloat: (value) => Number(value || 0),
+			stores: {
+				toastStore: { show: vi.fn() },
+				uiStore: { setLastInvoice: vi.fn(), setLastStockAdjustment: vi.fn() },
+				customersStore: { setSelectedCustomer: vi.fn() },
+				invoiceStore: { invoiceDoc: invoiceDoc.value },
+			},
+			isCashback: ref(false),
+			paidChange: ref(0),
+			creditChange: ref(0),
+			redeemedCustomerCredit: ref(0),
+			customerCreditDict: ref([]),
+			diff_payment: ref(0),
+		});
+
+		await submitInvoice(false, {
+			onFinishNavigation: vi.fn(),
+		});
+
+		expect(invoiceService.submitInvoice).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sales_order_settlement_state: "full",
+			}),
+			expect.any(Object),
+			"Order",
+			expect.any(Object),
+		);
+	});
+
+	it("still blocks zero-payment Sales Order checkout", async () => {
+		const invoiceDoc = ref<any>({
+			name: "SO-0003",
+			doctype: "Sales Order",
+			is_return: 0,
+			items: [{ item_code: "ITEM-1", qty: 1 }],
+			payments: [{ mode_of_payment: "Cash", amount: 0, type: "Cash" }],
+			rounded_total: 300,
+			grand_total: 300,
+		});
+
+		const { validateSubmission } = usePaymentSubmission({
+			invoiceDoc,
+			posProfile: ref({
+				posa_allow_submissions_in_background_job: 0,
+				posa_create_only_sales_order: 1,
+				posa_allow_partial_payment: 0,
+			}),
+			stockSettings: ref({}),
+			invoiceType: ref("Order"),
+			formatFloat: (value) => Number(value || 0),
+			stores: {
+				toastStore: { show: vi.fn() },
+				uiStore: { setLastInvoice: vi.fn(), setLastStockAdjustment: vi.fn() },
+				customersStore: { setSelectedCustomer: vi.fn() },
+				invoiceStore: { invoiceDoc: invoiceDoc.value },
+			},
+			isCashback: ref(false),
+			paidChange: ref(0),
+			creditChange: ref(0),
+			redeemedCustomerCredit: ref(0),
+			customerCreditDict: ref([]),
+			diff_payment: ref(300),
+		});
+
+		await expect(validateSubmission()).rejects.toThrow(
+			"Please enter payment amount",
+		);
+	});
+
+	it("blocks Sales Order deposits when a collection delivery charge is selected", async () => {
+		const invoiceDoc = ref<any>({
+			name: "SO-0004",
+			doctype: "Sales Order",
+			is_return: 0,
+			items: [{ item_code: "ITEM-1", qty: 1 }],
+			payments: [{ mode_of_payment: "Cash", amount: 100, type: "Cash" }],
+			rounded_total: 300,
+			grand_total: 300,
+		});
+
+		const { validateSubmission } = usePaymentSubmission({
+			invoiceDoc,
+			posProfile: ref({
+				posa_allow_submissions_in_background_job: 0,
+				posa_create_only_sales_order: 1,
+				posa_allow_partial_payment: 0,
+			}),
+			stockSettings: ref({}),
+			invoiceType: ref("Order"),
+			formatFloat: (value) => Number(value || 0),
+			isCollectionDeliveryChargeSelected: ref(true),
+			stores: {
+				toastStore: { show: vi.fn() },
+				uiStore: { setLastInvoice: vi.fn(), setLastStockAdjustment: vi.fn() },
+				customersStore: { setSelectedCustomer: vi.fn() },
+				invoiceStore: { invoiceDoc: invoiceDoc.value },
+			},
+			isCashback: ref(false),
+			paidChange: ref(0),
+			creditChange: ref(0),
+			redeemedCustomerCredit: ref(0),
+			customerCreditDict: ref([]),
+			diff_payment: ref(200),
+		});
+
+		await expect(validateSubmission()).rejects.toThrow(
+			"Deposits are not allowed when a collection delivery charge is selected",
+		);
+	});
 });

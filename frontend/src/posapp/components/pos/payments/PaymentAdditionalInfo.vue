@@ -15,9 +15,36 @@
 					@update:model-value="$emit('update:returnValidUptoDate', $event)"
 				/>
 			</v-col>
-			<!-- Shipping Address action -->
 			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
-				<div class="address-action">
+				<v-autocomplete
+					:model-value="selectedShippingAddress"
+					:items="addresses"
+					:item-title="addressTitle"
+					item-value="name"
+					:custom-filter="addressFilter"
+					:no-data-text="$frappe._('No addresses found')"
+					:label="$frappe._('Shipping Address')"
+					variant="solo"
+					density="compact"
+					clearable
+					hide-details
+					class="sleek-field pos-themed-input"
+					@update:model-value="$emit('update:selectedShippingAddress', $event)"
+				>
+					<template #item="{ props, item }">
+						<v-list-item v-bind="props">
+							<v-list-item-title>
+								{{ addressTitle(item.raw) }}
+							</v-list-item-title>
+							<v-list-item-subtitle v-if="addressSubtitle(item.raw)">
+								{{ addressSubtitle(item.raw) }}
+							</v-list-item-subtitle>
+						</v-list-item>
+					</template>
+				</v-autocomplete>
+			</v-col>
+			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+				<div class="address-action mt-2">
 					<v-btn
 						icon="mdi-plus"
 						color="primary"
@@ -96,11 +123,31 @@ defineProps({
 		type: String,
 		default: "Add Customer Address",
 	},
+	addresses: {
+		type: Array,
+		default: () => [],
+	},
+	selectedShippingAddress: {
+		type: String,
+		default: null,
+	},
+	addressFilter: {
+		type: Function,
+		default: null,
+	},
 });
 
-defineEmits(["update:returnValidUptoDate", "new-address"]);
+defineEmits(["update:returnValidUptoDate", "update:selectedShippingAddress", "new-address"]);
 
 const $frappe = inject("frappe", window.frappe);
+
+const addressTitle = (address) =>
+	address?.display_title || address?.address_title || address?.address_line1 || address?.name || "";
+
+const addressSubtitle = (address) =>
+	[address?.address_line1, address?.city, address?.state, address?.pincode]
+		.filter((value) => String(value || "").trim())
+		.join(", ");
 </script>
 
 <style scoped>

@@ -156,8 +156,7 @@ const props = defineProps({
 const emit = defineEmits(["close", "register"]);
 const __ = window.__ || ((text) => text);
 const get_currency_symbol = window.get_currency_symbol;
-const BUILD_VERSION =
-	typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
+const BUILD_VERSION = typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
 
 const isOpen = ref(props.dialog ? props.dialog : false);
 const is_loading = ref(false);
@@ -276,11 +275,9 @@ function submit_dialog() {
 				try {
 					setOpeningStorage(r.message);
 					setBootstrapSnapshot(
-						createBootstrapSnapshotFromRegisterData(
-							r.message,
-							getBootstrapSnapshot(),
-							{ buildVersion: BUILD_VERSION },
-						),
+						createBootstrapSnapshotFromRegisterData(r.message, getBootstrapSnapshot(), {
+							buildVersion: BUILD_VERSION,
+						}),
 					);
 				} catch (e) {
 					console.error("Failed to cache opening data", e);

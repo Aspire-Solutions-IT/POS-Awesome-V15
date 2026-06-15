@@ -246,10 +246,7 @@ const dynamicHeaderProps = computed(() => ({
 	class: `responsive-header container-${breakpoint.value}`,
 }));
 
-const finalVisibleColumns = computed(() => [
-	...responsiveHeaders.value,
-	DATA_TABLE_EXPAND_COLUMN,
-]);
+const finalVisibleColumns = computed(() => [...responsiveHeaders.value, DATA_TABLE_EXPAND_COLUMN]);
 
 const virtualScrollConfig = computed(() => {
 	const itemCount = items.value?.length || 0;

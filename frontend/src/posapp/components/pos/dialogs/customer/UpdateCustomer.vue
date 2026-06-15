@@ -256,9 +256,9 @@ export default {
 		referral_code: "",
 		birthday: "",
 		birthday_menu: false,
-		group: "",
+		group: "Individual",
 		groups: [],
-		territory: "",
+		territory: "All Territories",
 		territorys: [],
 		genders: [],
 		customer_type: "Individual",
@@ -442,8 +442,8 @@ export default {
 			this.email_id = "";
 			this.referral_code = "";
 			this.birthday = "";
-			this.group = frappe.defaults.get_user_default("Customer Group");
-			this.territory = frappe.defaults.get_user_default("Territory");
+			this.group = "Individual";
+			this.territory = "All Territories";
 			this.customer_id = "";
 			this.customer_type = "Individual";
 			this.gender = "";
@@ -759,8 +759,8 @@ export default {
 		this.getCustomerTerritorys();
 		this.getGenders();
 		// set default values for customer group and territory from user defaults
-		this.group = frappe.defaults.get_user_default("Customer Group");
-		this.territory = frappe.defaults.get_user_default("Territory");
+		this.group = "Individual";
+		this.territory = "All Territories";
 	},
 };
 </script>
