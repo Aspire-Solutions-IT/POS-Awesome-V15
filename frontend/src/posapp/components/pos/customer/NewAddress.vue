@@ -94,11 +94,7 @@
 									></v-text-field>
 								</v-col>
 								<v-col cols="12" v-if="!isCollectedMode">
-									<v-btn
-										variant="text"
-										color="primary"
-										@click="toggleBillingDetails"
-									>
+									<v-btn variant="text" color="primary" @click="toggleBillingDetails">
 										{{
 											showBillingDetails
 												? __("Billing address same as shipping")
@@ -231,9 +227,7 @@ export default {
 			if (this.editingAddressName) {
 				return __("Edit Address");
 			}
-			return this.isCollectedMode
-				? __("Add Collection Contact")
-				: __("Add New Address");
+			return this.isCollectedMode ? __("Add Collection Contact") : __("Add New Address");
 		},
 	},
 
@@ -267,10 +261,7 @@ export default {
 
 		async submit_dialog() {
 			const validation = await this.$refs.addressForm?.validate?.();
-			const isValid =
-				typeof validation === "boolean"
-					? validation
-					: validation?.valid !== false;
+			const isValid = typeof validation === "boolean" ? validation : validation?.valid !== false;
 			if (!isValid) {
 				return;
 			}

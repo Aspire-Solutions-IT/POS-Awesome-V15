@@ -55,6 +55,26 @@ def get_customer_group_condition(pos_profile):
     return cond
 
 
+def _get_rfs_customer_filters(pos_profile, modified_after=None, start_after=None):
+    filters = {"disabled": 0, "rfs_customer": 1}
+
+    customer_groups = get_customer_groups(pos_profile)
+    if customer_groups:
+        filters["customer_group"] = ["in", customer_groups]
+
+    if modified_after:
+        try:
+            parsed_modified_after = get_datetime(modified_after)
+        except Exception:
+            frappe.throw(_("modified_after must be a valid ISO datetime"))
+        filters["modified"] = [">", parsed_modified_after.isoformat()]
+
+    if start_after:
+        filters["name"] = [">", start_after]
+
+    return filters
+
+
 @frappe.whitelist()
 def get_customer_balance(customer):
     if not customer:
@@ -96,21 +116,11 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
 
     def _get_customer_names(pos_profile, limit=None, offset=None, start_after=None, modified_after=None):
         pos_profile = json.loads(pos_profile)
-        filters = {"disabled": 0}
-
-        customer_groups = get_customer_groups(pos_profile)
-        if customer_groups:
-            filters["customer_group"] = ["in", customer_groups]
-
-        if modified_after:
-            try:
-                parsed_modified_after = get_datetime(modified_after)
-            except Exception:
-                frappe.throw(_("modified_after must be a valid ISO datetime"))
-            filters["modified"] = [">", parsed_modified_after.isoformat()]
-
-        if start_after:
-            filters["name"] = [">", start_after]
+        filters = _get_rfs_customer_filters(
+            pos_profile,
+            modified_after=modified_after,
+            start_after=start_after,
+        )
 
         customers = frappe.get_all(
             "Customer",
@@ -138,10 +148,7 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
 @frappe.whitelist()
 def get_customers_count(pos_profile):
     pos_profile = json.loads(pos_profile)
-    filters = {"disabled": 0}
-    customer_groups = get_customer_groups(pos_profile)
-    if customer_groups:
-        filters["customer_group"] = ["in", customer_groups]
+    filters = _get_rfs_customer_filters(pos_profile)
     return frappe.db.count("Customer", filters)
 
 
@@ -286,6 +293,8 @@ def create_customer(
     if method == "create":
         is_exist = frappe.db.exists("Customer", {"customer_name": customer_name})
         if pos_profile.get("posa_allow_duplicate_customer_names") or not is_exist:
+            resolved_customer_group = "Individual"
+            resolved_territory = "All Territories"
             customer = frappe.get_doc(
                 {
                     "doctype": "Customer",
@@ -298,16 +307,11 @@ def create_customer(
                     "posa_birthday": formatted_birthday,
                     "customer_type": customer_type,
                     "gender": gender,
+                    "rfs_customer": 1,
+                    "customer_group": resolved_customer_group,
+                    "territory": resolved_territory,
                 }
             )
-            if customer_group:
-                customer.customer_group = customer_group
-            else:
-                customer.customer_group = "All Customer Groups"
-            if territory:
-                customer.territory = territory
-            else:
-                customer.territory = "All Territories"
 
             customer.save()
 

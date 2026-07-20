@@ -14,10 +14,7 @@
 				location="top"
 				color="info"
 			></v-progress-linear>
-			<div
-				ref="paymentContainer"
-				class="overflow-y-auto payment-scroll"
-			>
+			<div ref="paymentContainer" class="overflow-y-auto payment-scroll">
 				<div v-if="isWizardFlow" class="payment-wizard-header">
 					<div class="payment-wizard-header__title">
 						{{ currentStep === 1 ? __("Step 1 of 2: Fulfillment") : __("Step 2 of 2: Payment") }}
@@ -38,8 +35,7 @@
 						'payment-sections',
 						{ 'payment-sections--dialog': dialogMode },
 						{
-							'payment-sections--wizard-step1':
-								dialogMode && isWizardFlow && currentStep === 1,
+							'payment-sections--wizard-step1': dialogMode && isWizardFlow && currentStep === 1,
 						},
 					]"
 				>
@@ -124,6 +120,9 @@
 							:pos-profile="pos_profile"
 							:invoice-type="invoiceType"
 							:address-action-label="addressActionLabel"
+							:addresses="addresses"
+							:selected-shipping-address="invoice_doc.shipping_address_name || null"
+							:address-filter="addressFilter"
 							:return-validity-enabled="returnValidityEnabled"
 							:return-validity-min-date="returnValidityMinDate"
 							:return-valid-upto-date="return_valid_upto_date"
@@ -133,14 +132,11 @@
 									updateReturnValidUpto();
 								}
 							"
+							@update:selected-shipping-address="handleShippingAddressSelection"
 							@new-address="handlePaymentNewAddress"
 						/>
 						<div class="payment-next-step">
-							<v-btn
-								variant="text"
-								color="error"
-								@click="back_to_invoice"
-							>
+							<v-btn variant="text" color="error" @click="back_to_invoice">
 								{{ __("Cancel") }}
 							</v-btn>
 							<v-btn
@@ -232,38 +228,39 @@
 							@update:redeem-customer-credit="redeem_customer_credit = $event"
 							@get-available-credit="get_available_credit"
 						/>
-					<PaymentCustomerCreditDetails
-						:invoice-doc="invoice_doc"
-						:available-customer-credit="available_customer_credit"
-						:redeem-customer-credit="redeem_customer_credit"
+						<PaymentCustomerCreditDetails
+							:invoice-doc="invoice_doc"
+							:available-customer-credit="available_customer_credit"
+							:redeem-customer-credit="redeem_customer_credit"
 							:customer-credit-dict="customer_credit_dict"
 							:credit-source-label="creditSourceLabel"
 							:format-currency="formatCurrency"
 							:currency-symbol="currencySymbol"
-						@set-formatted-currency="
-							(data) => setFormatedCurrency(data.target, data.field, null, false, data.value)
-						"
-					/>
-				</section>
+							@set-formatted-currency="
+								(data) =>
+									setFormatedCurrency(data.target, data.field, null, false, data.value)
+							"
+						/>
+					</section>
 
-				<section v-if="showPaymentStep" class="payment-section payment-section--meta">
-					<div class="payment-section__header">
-						<h3 class="payment-section__title">{{ __("Sales Person and Print") }}</h3>
-					</div>
-					<PaymentSelectionFields
-						:sales-persons="sales_persons"
-						:sales-person="sales_person"
-						:readonly="readonly"
-						:print-formats="print_formats"
-						:print-format="print_format"
-						:show-print-format="
-							parseBooleanSetting(pos_profile?.posa_allow_select_print_format_in_payments)
-						"
-						@update:sales-person="sales_person = $event"
-						@update:print-format="print_format = $event"
-					/>
-				</section>
-			</div>
+					<section v-if="showPaymentStep" class="payment-section payment-section--meta">
+						<div class="payment-section__header">
+							<h3 class="payment-section__title">{{ __("Sales Person and Print") }}</h3>
+						</div>
+						<PaymentSelectionFields
+							:sales-persons="sales_persons"
+							:sales-person="sales_person"
+							:readonly="readonly"
+							:print-formats="print_formats"
+							:print-format="print_format"
+							:show-print-format="
+								parseBooleanSetting(pos_profile?.posa_allow_select_print_format_in_payments)
+							"
+							@update:sales-person="sales_person = $event"
+							@update:print-format="print_format = $event"
+						/>
+					</section>
+				</div>
 			</div>
 		</v-card>
 
@@ -478,9 +475,7 @@ const netInvoiceSettlementAmount = computed(() => {
 });
 
 const needsFulfillmentStep = computed(
-	() =>
-		invoiceType.value === "Order" &&
-		Boolean(pos_profile.value?.posa_create_only_sales_order),
+	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
 );
 const isWizardFlow = computed(() => needsFulfillmentStep.value);
 
@@ -504,22 +499,10 @@ const hasFulfillmentAddress = computed(() => {
 		return false;
 	}
 
-	if (isCollectionDeliveryChargeSelected()) {
-		return hasAddressValue(selectedAddress, "name");
-	}
-
-	return (
-		hasAddressValue(selectedAddress, "name") &&
-		hasAddressValue(selectedAddress, "address_line1") &&
-		hasAddressValue(selectedAddress, "city") &&
-		hasAddressValue(selectedAddress, "state") &&
-		hasAddressValue(selectedAddress, "pincode")
-	);
+	return hasAddressValue(selectedAddress, "name");
 });
 
-const hasFulfillmentNotes = computed(() =>
-	Boolean(String(invoice_doc.value?.posa_notes || "").trim()),
-);
+const hasFulfillmentNotes = computed(() => Boolean(String(invoice_doc.value?.posa_notes || "").trim()));
 
 const hasOnlyNsItemsForCollection = computed(() => {
 	if (!isCollectionDeliveryChargeSelected()) {
@@ -539,17 +522,11 @@ const canProceedToPayment = computed(() => {
 	if (!needsFulfillmentStep.value) {
 		return true;
 	}
-	return (
-		hasFulfillmentAddress.value &&
-		hasFulfillmentNotes.value &&
-		hasOnlyNsItemsForCollection.value
-	);
+	return hasFulfillmentAddress.value && hasFulfillmentNotes.value && hasOnlyNsItemsForCollection.value;
 });
 
 const showFulfillmentStep = computed(() => !isWizardFlow.value || currentStep.value === 1);
-const showPaymentStep = computed(
-	() => !isWizardFlow.value || currentStep.value === 2,
-);
+const showPaymentStep = computed(() => !isWizardFlow.value || currentStep.value === 2);
 
 const validatePayment = computed(() => {
 	return false;
@@ -746,37 +723,42 @@ const {
 	eventBus: eventBus,
 });
 
-const { ensureReturnPaymentsAreNegative, restoreReturnPayments, validateSubmission, submitInvoice } = usePaymentSubmission({
-	invoiceDoc: computed(() => invoiceStore.invoiceDoc),
-	posProfile: pos_profile,
-	stockSettings: stock_settings,
-	invoiceType: invoiceType,
-	is_write_off_change: is_write_off_change,
-	isCashback: is_cashback,
-	paidChange: paid_change,
-	creditChange: credit_change,
-	redeemedCustomerCredit: redeemed_customer_credit,
-	customerCreditDict: customer_credit_dict,
-	giftCardRedemptions: giftCardRedemptions,
-	diff_payment: diff_payment,
-	is_credit_sale: is_credit_sale,
-	loyaltyAmount: loyalty_amount,
-	formatFloat: (val, prec) => flt(val, prec),
-	stores: {
-		toastStore,
-		syncStore,
-		customersStore,
-		uiStore,
-		invoiceStore,
-	},
-	currencyPrecision: currency_precision,
-});
+const { ensureReturnPaymentsAreNegative, restoreReturnPayments, validateSubmission, submitInvoice } =
+	usePaymentSubmission({
+		invoiceDoc: computed(() => invoiceStore.invoiceDoc),
+		posProfile: pos_profile,
+		stockSettings: stock_settings,
+		invoiceType: invoiceType,
+		is_write_off_change: is_write_off_change,
+		isCashback: is_cashback,
+		paidChange: paid_change,
+		creditChange: credit_change,
+		redeemedCustomerCredit: redeemed_customer_credit,
+		customerCreditDict: customer_credit_dict,
+		giftCardRedemptions: giftCardRedemptions,
+		diff_payment: diff_payment,
+		is_credit_sale: is_credit_sale,
+		loyaltyAmount: loyalty_amount,
+		isCollectionDeliveryChargeSelected: computed(() => isCollectionDeliveryChargeSelected()),
+		formatFloat: (val, prec) => flt(val, prec),
+		stores: {
+			toastStore,
+			syncStore,
+			customersStore,
+			uiStore,
+			invoiceStore,
+		},
+		currencyPrecision: currency_precision,
+	});
 
 const isGiftCardPayment = (payment) => {
 	if (!pos_profile.value?.posa_use_gift_cards) {
 		return false;
 	}
-	return String(payment?.mode_of_payment || "").trim().toLowerCase().includes("gift");
+	return String(payment?.mode_of_payment || "")
+		.trim()
+		.toLowerCase()
+		.includes("gift");
 };
 
 const visiblePaymentMethods = computed(() =>
@@ -820,22 +802,14 @@ const setGiftCardMode = (mode) => {
 const getGiftCardRemainingAmount = () => {
 	const flexiblePayment =
 		activeGiftCardPayment.value || resolvePreferredPaymentLine(invoice_doc.value, isCashLikePayment);
-	const payments = Array.isArray(invoice_doc.value?.payments)
-		? invoice_doc.value.payments
-		: [];
+	const payments = Array.isArray(invoice_doc.value?.payments) ? invoice_doc.value.payments : [];
 	const otherPaymentsTotal = payments.reduce((sum, payment) => {
 		if (!payment || payment === flexiblePayment) {
 			return sum;
 		}
 		return sum + flt(payment.amount || 0, currency_precision.value);
 	}, 0);
-	return Math.max(
-		flt(
-			netInvoiceSettlementAmount.value - otherPaymentsTotal,
-			currency_precision.value,
-		),
-		0,
-	);
+	return Math.max(flt(netInvoiceSettlementAmount.value - otherPaymentsTotal, currency_precision.value), 0);
 };
 
 const clearGiftCardRedemption = () => {
@@ -872,8 +846,7 @@ const toggleGiftCardInline = () => {
 const openGiftCardDialog = (payment = null) => {
 	activeGiftCardPayment.value = payment;
 	giftCardDialogOpen.value = true;
-	giftCardCode.value =
-		giftCardRedemptions.value[0]?.gift_card_code || "";
+	giftCardCode.value = giftCardRedemptions.value[0]?.gift_card_code || "";
 	giftCardAmount.value = flt(
 		giftCardRedemptions.value[0]?.amount || payment?.amount || 0,
 		currency_precision.value,
@@ -916,14 +889,10 @@ const checkGiftCardBalance = async () => {
 		giftCardStatus.value = card.status || "";
 		saveGiftCardSnapshot(giftCardCode.value, card);
 		if (!giftCardAmount.value && giftCardMode.value === "redeem") {
-			giftCardAmount.value = Math.min(
-				giftCardBalance.value,
-				getGiftCardRemainingAmount(),
-			);
+			giftCardAmount.value = Math.min(giftCardBalance.value, getGiftCardRemainingAmount());
 		}
 	} catch (error) {
-		giftCardError.value =
-			error?.message || __("Unable to load gift card balance.");
+		giftCardError.value = error?.message || __("Unable to load gift card balance.");
 	}
 	giftCardLoading.value = false;
 };
@@ -1163,9 +1132,7 @@ const finishSubmissionNavigation = (clearInvoice = false) => {
 };
 
 const buildProfilePaymentLines = () => {
-	const profilePayments = Array.isArray(pos_profile.value?.payments)
-		? pos_profile.value.payments
-		: [];
+	const profilePayments = Array.isArray(pos_profile.value?.payments) ? pos_profile.value.payments : [];
 
 	return profilePayments
 		.filter((payment) => payment?.mode_of_payment)
@@ -1175,10 +1142,7 @@ const buildProfilePaymentLines = () => {
 			base_amount: 0,
 			account: payment.account,
 			type: payment.type,
-			default:
-				payment.default === 1 || payment.default === true || index === 0
-					? 1
-					: 0,
+			default: payment.default === 1 || payment.default === true || index === 0 ? 1 : 0,
 		}));
 };
 
@@ -1223,10 +1187,7 @@ const syncPreferredPaymentToCurrentTotal = (doc = invoice_doc.value) => {
 
 	preferredPayment.amount = normalizedTotal;
 	if (preferredPayment.base_amount !== undefined) {
-		preferredPayment.base_amount = flt(
-			normalizedTotal * conversionRate,
-			currency_precision.value,
-		);
+		preferredPayment.base_amount = flt(normalizedTotal * conversionRate, currency_precision.value);
 	}
 
 	return preferredPayment;
@@ -1261,9 +1222,7 @@ const mergeProfilePaymentsIntoReturn = (doc) => {
 		doc.payments = [];
 	}
 
-	const existingModes = new Set(
-		doc.payments.map((p) => p?.mode_of_payment).filter(Boolean),
-	);
+	const existingModes = new Set(doc.payments.map((p) => p?.mode_of_payment).filter(Boolean));
 
 	profilePayments.forEach((pp) => {
 		if (!existingModes.has(pp.mode_of_payment)) {
@@ -1355,18 +1314,16 @@ const handleWriteOffAmountUpdate = (value) => {
 	let nextAmount = flt(value || 0, currency_precision.value);
 	const profileCap = writeOffProfileLimit.value;
 	const diffCap = Math.max(diff_payment.value || 0, 0);
-	const maxAmount =
-		profileCap && profileCap > 0 ? Math.min(diffCap, profileCap) : diffCap;
+	const maxAmount = profileCap && profileCap > 0 ? Math.min(diffCap, profileCap) : diffCap;
 
 	if (nextAmount < 0) {
 		nextAmount = 0;
 	}
 	if (profileCap && profileCap > 0 && nextAmount > profileCap) {
 		toastStore.show({
-			title: __(
-				"Write off amount cannot exceed the POS profile maximum of {0}",
-				[formatCurrency(profileCap)],
-			),
+			title: __("Write off amount cannot exceed the POS profile maximum of {0}", [
+				formatCurrency(profileCap),
+			]),
 			color: "error",
 		});
 		nextAmount = maxAmount;
@@ -1483,9 +1440,7 @@ const clearBackgroundStatusCheck = () => {
 const resolveSubmittedDoctype = (doctype) => {
 	if (doctype) return doctype;
 	if (invoice_doc.value?.doctype) return invoice_doc.value.doctype;
-	return pos_profile.value?.create_pos_invoice_instead_of_sales_invoice
-		? "POS Invoice"
-		: "Sales Invoice";
+	return pos_profile.value?.create_pos_invoice_instead_of_sales_invoice ? "POS Invoice" : "Sales Invoice";
 };
 
 const fetchSubmittedInvoiceDoc = async (invoiceName, doctype) => {
@@ -1641,8 +1596,9 @@ const shouldConfirmMissingOrderAddress = (options = {}) => {
 };
 
 const isCollectionDeliveryChargeSelected = () => {
-	const selectedName =
-		String(invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "").trim();
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
 	if (!selectedName) {
 		return false;
 	}
@@ -1708,6 +1664,16 @@ const handlePaymentNewAddress = () => {
 	});
 };
 
+const handleShippingAddressSelection = (addressName) => {
+	if (!invoice_doc.value) {
+		return;
+	}
+
+	const normalizedName = String(addressName || "").trim() || null;
+	invoice_doc.value.shipping_address_name = normalizedName;
+	invoice_doc.value.customer_address = normalizedName;
+};
+
 const confirmCustomerCollectedOrder = async () => {
 	missingOrderAddressDialog.value = false;
 	if (!pendingMissingAddressSubmit.value) {
@@ -1761,19 +1727,12 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 		await submitInvoice(print, {
 			onPrint: (doc, printOptions = {}) => {
 				if (print) {
-					if (
-						printOptions.waitForPostSubmitPayments ||
-						printOptions.waitForInvoiceProcessing
-					) {
+					if (printOptions.waitForPostSubmitPayments || printOptions.waitForInvoiceProcessing) {
 						void runDeferredPrintWorkflow({
 							name: printOptions.name || doc?.name,
 							doctype: printOptions.doctype,
-							waitForPostSubmitPayments: Boolean(
-								printOptions.waitForPostSubmitPayments,
-							),
-							waitForInvoiceProcessing: Boolean(
-								printOptions.waitForInvoiceProcessing,
-							),
+							waitForPostSubmitPayments: Boolean(printOptions.waitForPostSubmitPayments),
+							waitForInvoiceProcessing: Boolean(printOptions.waitForInvoiceProcessing),
 						});
 					} else if (isOffline()) {
 						printOfflineInvoice(doc);
@@ -2176,14 +2135,10 @@ onMounted(() => {
 					const pendingSubmit = pendingMissingAddressSubmit.value;
 					pendingCollectedAddressSubmit.value = false;
 					pendingMissingAddressSubmit.value = null;
-					void submitInvoiceWrapper(
-						pendingSubmit.print,
-						pendingSubmit.callbackOverrides,
-						{
-							...pendingSubmit.options,
-							skipMissingAddressConfirmation: true,
-						},
-					);
+					void submitInvoiceWrapper(pendingSubmit.print, pendingSubmit.callbackOverrides, {
+						...pendingSubmit.options,
+						skipMissingAddressConfirmation: true,
+					});
 				}
 			}
 		});
@@ -2379,11 +2334,7 @@ onBeforeUnmount(() => {
 }
 
 .payment-section--summary {
-	background: linear-gradient(
-		180deg,
-		rgba(var(--v-theme-primary), 0.08) 0%,
-		var(--pos-surface-muted) 100%
-	);
+	background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.08) 0%, var(--pos-surface-muted) 100%);
 }
 
 .payment-section__header {
@@ -2566,6 +2517,5 @@ onBeforeUnmount(() => {
 		margin-top: 0;
 		padding-bottom: calc(env(safe-area-inset-bottom) + 4px);
 	}
-
 }
 </style>

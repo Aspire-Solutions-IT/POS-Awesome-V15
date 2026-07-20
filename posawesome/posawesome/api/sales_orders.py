@@ -493,6 +493,16 @@ def _create_payment_entries(so_doc, payments):
         if not pay.get("amount"):
             continue
 
+        reference_no = (
+            pay.get("reference_no")
+            or pay.get("transaction_id")
+            or pay.get("authorization_code")
+            or so_doc.get("posa_authorization_code")
+            or so_doc.get("posa_pos_opening_shift")
+            or so_doc.name
+        )
+        reference_date = pay.get("reference_date") or nowdate()
+
         # Create payment entry using helper to ensure exchange rates are set
         pe = create_payment_entry(
             company=so_doc.company,
@@ -500,8 +510,8 @@ def _create_payment_entries(so_doc, payments):
             amount=pay.get("amount"),
             currency=pay.get("currency") or so_doc.currency,
             mode_of_payment=pay.get("mode_of_payment"),
-            reference_no=so_doc.get("posa_pos_opening_shift"),
-            reference_date=nowdate(),
+            reference_no=reference_no,
+            reference_date=reference_date,
             posting_date=nowdate(),
             submit=0,
         )
@@ -522,10 +532,41 @@ def _create_payment_entries(so_doc, payments):
         pe.submit()
 
 
+def _get_sales_order_settlement_state(order, so_doc):
+    stated = str((order or {}).get("sales_order_settlement_state") or "").strip().lower()
+    if stated in {"none", "deposit", "full"}:
+        return stated
+
+    total_paid = 0
+    for payment in (order or {}).get("payments") or []:
+        total_paid += flt(payment.get("amount"))
+
+    order_total = flt(getattr(so_doc, "rounded_total", 0) or getattr(so_doc, "grand_total", 0))
+    precision = so_doc.precision("rounded_total") or so_doc.precision("grand_total") or 2
+    total_paid = flt(total_paid, precision)
+    order_total = flt(order_total, precision)
+
+    if total_paid <= 0 or order_total <= 0:
+        return "none"
+
+    return "full" if total_paid >= order_total - 0.001 else "deposit"
+
+
+def _should_create_collection_full_payment_synchronously(so_doc, settlement_state, payments):
+    return (
+        settlement_state == "full"
+        and bool(payments)
+        and _is_collection_delivery_charge_selected(so_doc)
+    )
+
+
 @frappe.whitelist()
-def submit_sales_order(order):
+def submit_sales_order(order, data=None):
     """Submit sales order and create payment entries."""
     order = json.loads(order)
+    data = json.loads(data) if data else {}
+    if data.get("sales_order_settlement_state") and not order.get("sales_order_settlement_state"):
+        order["sales_order_settlement_state"] = data.get("sales_order_settlement_state")
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
     if order.get("name") and frappe.db.exists("Sales Order", order.get("name")):
@@ -542,7 +583,20 @@ def submit_sales_order(order):
     _apply_kit_meta_fields(so_doc)
     _apply_delivery_charges_tax_row(so_doc)
     so_doc.save()
+
+    settlement_state = _get_sales_order_settlement_state(order, so_doc)
+    if settlement_state == "none":
+        frappe.throw(_("Please enter payment amount"))
+    if settlement_state == "deposit" and _is_collection_delivery_charge_selected(so_doc):
+        frappe.throw(_("Deposits are not allowed when a collection delivery charge is selected"))
+
     so_doc.submit()
+
+    if _should_create_collection_full_payment_synchronously(so_doc, settlement_state, payments):
+        _create_payment_entries(so_doc, payments)
+        _auto_create_delivery_note_for_non_ns_items(so_doc)
+        return {"name": so_doc.name, "status": so_doc.docstatus}
+
     _auto_create_delivery_note_for_non_ns_items(so_doc)
 
     if payments:

@@ -28,6 +28,7 @@ export interface PaymentSubmissionOptions {
 	diff_payment?: ComputedRef<number>;
 	is_credit_sale?: Ref<boolean>;
 	loyaltyAmount?: Ref<number>;
+	isCollectionDeliveryChargeSelected?: Ref<boolean> | ComputedRef<boolean>;
 	stores?: {
 		toastStore?: any;
 		syncStore?: any;
@@ -241,6 +242,25 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 		return formatFloat(cappedByLimit);
 	};
 
+	const isSalesOrderCheckout = (type: string, profile: any): boolean =>
+		type === "Order" && Boolean(profile?.posa_create_only_sales_order);
+
+	const getSalesOrderSettlementState = (
+		totalPayments: number,
+		orderTotal: number,
+		prec: number,
+	): "none" | "deposit" | "full" => {
+		const normalizedPayments = formatFloat(totalPayments, prec);
+		const normalizedTotal = formatFloat(orderTotal, prec);
+		if (normalizedPayments <= 0 || normalizedTotal <= 0) {
+			return "none";
+		}
+
+		return normalizedPayments >= normalizedTotal - 0.001
+			? "full"
+			: "deposit";
+	};
+
 	const validateDueDate = () => {
 		const doc = unref(invoiceDoc);
 		if (!doc || !doc.due_date) return;
@@ -258,6 +278,8 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 	const validateSubmission = async (payment_received = false) => {
 		const doc = unref(invoiceDoc);
 		const profile = unref(posProfile);
+		const type = unref(invoiceType);
+		const salesOrderCheckout = isSalesOrderCheckout(type, profile);
 		const prec = unref(options.currencyPrecision) || 2;
 		const {
 			isCashback,
@@ -304,6 +326,13 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			current_total_payments + writeOffAmount,
 			prec,
 		);
+		const salesOrderSettlementState = salesOrderCheckout
+			? getSalesOrderSettlementState(
+					effective_total_payments,
+					invoice_total,
+					prec,
+				)
+			: "none";
 		const writeOffLimit = getWriteOffLimit(profile);
 		const writeOffCappedByLimit =
 			Boolean(unref(options.is_write_off_change)) &&
@@ -341,6 +370,18 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			throw new Error(__("Please enter payment amount"));
 		}
 
+		if (
+			salesOrderCheckout &&
+			salesOrderSettlementState === "deposit" &&
+			unref(options.isCollectionDeliveryChargeSelected)
+		) {
+			throw new Error(
+				__(
+					"Deposits are not allowed when a collection delivery charge is selected",
+				),
+			);
+		}
+
 		// 3. Validate partial payments / cash payments
 		if (!unref(options.is_credit_sale) && !doc.is_return) {
 			let has_cash_payment = false;
@@ -358,6 +399,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 
 			if (has_cash_payment && cash_amount > 0) {
 				if (
+					!salesOrderCheckout &&
 					!profile.posa_allow_partial_payment &&
 					formatFloat(cash_amount + writeOffAmount, prec) <
 						invoice_total &&
@@ -372,6 +414,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			}
 
 			if (
+				!salesOrderCheckout &&
 				!profile.posa_allow_partial_payment &&
 				effective_total_payments < invoice_total &&
 				invoice_total > 0
@@ -545,6 +588,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 		const doc = unref(invoiceDoc);
 		const profile = unref(posProfile);
 		const type = unref(invoiceType);
+		const salesOrderCheckout = isSalesOrderCheckout(type, profile);
 		const prec = unref(options.currencyPrecision) || 2;
 		const {
 			isCashback,
@@ -660,6 +704,13 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			customer_credit_dict: unref(customerCreditDict),
 			gift_card_redemptions: unref(options.giftCardRedemptions) || [],
 			is_cashback: unref(isCashback),
+			sales_order_settlement_state: salesOrderCheckout
+				? getSalesOrderSettlementState(
+						totalPayedAmount + writeOffAmount,
+						formatFloat(doc.rounded_total || doc.grand_total, prec),
+						prec,
+					)
+				: undefined,
 		};
 		const hasGiftCardRedemption = Array.isArray(data.gift_card_redemptions)
 			&& data.gift_card_redemptions.some(
