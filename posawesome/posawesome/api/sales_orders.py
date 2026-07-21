@@ -595,7 +595,7 @@ def submit_sales_order(order, data=None):
     if _should_create_collection_full_payment_synchronously(so_doc, settlement_state, payments):
         _create_payment_entries(so_doc, payments)
         _auto_create_delivery_note_for_non_ns_items(so_doc)
-        return {"name": so_doc.name, "status": so_doc.docstatus}
+        return {"name": so_doc.name, "status": so_doc.docstatus, "doctype": so_doc.doctype}
 
     _auto_create_delivery_note_for_non_ns_items(so_doc)
 
@@ -609,4 +609,4 @@ def submit_sales_order(order, data=None):
 
     # Payment entries run in the background to speed up checkout
 
-    return {"name": so_doc.name, "status": so_doc.docstatus}
+    return {"name": so_doc.name, "status": so_doc.docstatus, "doctype": so_doc.doctype}

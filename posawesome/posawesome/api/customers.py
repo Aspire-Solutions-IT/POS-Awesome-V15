@@ -325,6 +325,8 @@ def create_customer(
                     "city": city or "",
                     "state": "",
                     "pincode": "",
+                    "email_id": email_id or "",
+                    "phone": mobile_no or "",
                     "country": country or "",
                 }
                 make_address(json.dumps(args))
@@ -365,6 +367,8 @@ def create_customer(
             address_doc = frappe.get_doc("Address", existing_address_name)
             address_doc.address_line1 = address_line1 or ""
             address_doc.city = city or ""
+            address_doc.email_id = email_id or ""
+            address_doc.phone = mobile_no or ""
             address_doc.country = country or ""
             address_doc.save()
         else:
@@ -378,6 +382,8 @@ def create_customer(
                     "city": city or "",
                     "state": "",
                     "pincode": "",
+                    "email_id": email_id or "",
+                    "phone": mobile_no or "",
                     "country": country or "",
                 }
                 make_address(json.dumps(args))

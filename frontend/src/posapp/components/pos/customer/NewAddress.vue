@@ -215,6 +215,7 @@ export default {
 		address: {},
 		billing_address: {},
 		customer: "",
+		customer_name: "",
 		mode: "full",
 		showBillingDetails: false,
 		editingAddressName: "",
@@ -232,6 +233,9 @@ export default {
 	},
 
 	methods: {
+		getDefaultAddressTitle() {
+			return String(this.customer_name || this.customer || "").trim();
+		},
 		close_dialog() {
 			this.addressDialog = false;
 		},
@@ -268,6 +272,8 @@ export default {
 
 			var vm = this;
 			this.address.customer = this.customer;
+			this.address.name =
+				String(this.address.name || "").trim() || this.getDefaultAddressTitle();
 			this.address.doctype = "Customer";
 			this.address.address_type = "Shipping";
 			if (this.isCollectedMode) {
@@ -343,15 +349,20 @@ export default {
 			this.addressDialog = true;
 			if (typeof data === "string") {
 				this.customer = data;
+				this.customer_name = data;
 				this.mode = "full";
 				this.editingAddressName = "";
 			} else {
 				this.customer = data?.customer || "";
+				this.customer_name = data?.customer_name || data?.customer || "";
 				this.mode = data?.mode === "collected" ? "collected" : "full";
 				this.editingAddressName = data?.address?.name || "";
 				const sourceAddress = data?.address || {};
 				this.address = {
-					name: sourceAddress.address_title || sourceAddress.name || "",
+					name:
+						sourceAddress.address_title ||
+						sourceAddress.name ||
+						this.getDefaultAddressTitle(),
 					address_line1: sourceAddress.address_line1 || "",
 					address_line2: sourceAddress.address_line2 || "",
 					city: sourceAddress.city || "",
@@ -363,7 +374,9 @@ export default {
 				};
 			}
 			if (!this.editingAddressName) {
-				this.address = {};
+				this.address = {
+					name: this.getDefaultAddressTitle(),
+				};
 			}
 			this.billing_address = {};
 			this.showBillingDetails = false;

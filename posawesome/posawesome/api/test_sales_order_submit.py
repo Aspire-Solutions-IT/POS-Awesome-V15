@@ -200,7 +200,7 @@ class TestSalesOrderSubmit(TestCase):
                 json.dumps({"sales_order_settlement_state": "deposit"}),
             )
 
-        self.assertEqual(result, {"name": "SO-TEST-0001", "status": 1})
+        self.assertEqual(result, {"name": "SO-TEST-0001", "status": 1, "doctype": "Sales Order"})
         self.assertEqual(so_doc.docstatus, 1)
         auto_dn.assert_called_once_with(so_doc)
         enqueue.assert_called_once_with(
@@ -269,7 +269,7 @@ class TestSalesOrderSubmit(TestCase):
                 json.dumps({"sales_order_settlement_state": "full"}),
             )
 
-        self.assertEqual(result, {"name": "SO-TEST-0001", "status": 1})
+        self.assertEqual(result, {"name": "SO-TEST-0001", "status": 1, "doctype": "Sales Order"})
         self.assertEqual(so_doc.docstatus, 1)
         self.assertFalse(make_sales_invoice.called)
         enqueue.assert_called_once_with(
@@ -315,7 +315,7 @@ class TestSalesOrderSubmit(TestCase):
                 json.dumps({"sales_order_settlement_state": "full"}),
             )
 
-        self.assertEqual(result, {"name": "SO-TEST-0001", "status": 1})
+        self.assertEqual(result, {"name": "SO-TEST-0001", "status": 1, "doctype": "Sales Order"})
         self.assertEqual(call_order, ["payments", "delivery_note"])
         create_payment_entries.assert_called_once_with(so_doc, order["payments"])
         auto_dn.assert_called_once_with(so_doc)

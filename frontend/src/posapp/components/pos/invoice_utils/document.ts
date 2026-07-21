@@ -422,6 +422,12 @@ export function get_invoice_doc(context: any) {
 	doc.posa_notes = sourceDoc.posa_notes ?? null;
 	doc.posa_authorization_code = sourceDoc.posa_authorization_code ?? null;
 	doc.posa_return_valid_upto = sourceDoc.posa_return_valid_upto ?? null;
+	doc.posa_split_delivery =
+		sourceDoc.posa_split_delivery === 1 ||
+		sourceDoc.posa_split_delivery === "1" ||
+		sourceDoc.posa_split_delivery === true
+			? 1
+			: 0;
 	doc.posting_date = normalizeBackendDate(
 		context,
 		context.posting_date_display ?? context.posting_date,
@@ -437,6 +443,9 @@ export function get_invoice_doc(context: any) {
 		if (orderDeliveryDate) {
 			doc.delivery_date = orderDeliveryDate;
 		}
+	}
+	if (doc.doctype === "Sales Order") {
+		doc.must_be_fully_allocated = doc.posa_split_delivery ? 0 : 1;
 	}
 
 	// Add flags to ensure proper rate handling

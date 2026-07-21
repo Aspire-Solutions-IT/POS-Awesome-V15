@@ -228,8 +228,12 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 			return;
 		}
 		if (eventBus) {
+			const customerName =
+				String(doc.customer_name || dialogOptions.customer_name || "").trim() ||
+				String(doc.customer || "").trim();
 			eventBus.emit("open_new_address", {
 				customer: doc.customer,
+				customer_name: customerName,
 				...dialogOptions,
 			});
 		}

@@ -58,6 +58,43 @@
 					</span>
 				</div>
 			</v-col>
+			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+				<v-checkbox
+					:model-value="splitDelivery"
+					:label="$frappe._('Split Delivery')"
+					color="primary"
+					density="compact"
+					hide-details
+					@update:model-value="$emit('update:splitDelivery', $event)"
+				></v-checkbox>
+			</v-col>
+			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+				<v-checkbox
+					:model-value="holdOrder"
+					:label="$frappe._('Hold Order')"
+					color="primary"
+					density="compact"
+					hide-details
+					@update:model-value="$emit('update:holdOrder', $event)"
+				></v-checkbox>
+			</v-col>
+			<v-col
+				cols="12"
+				md="6"
+				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && holdOrder"
+			>
+				<VueDatePicker
+					:model-value="holdReleaseDate"
+					model-type="format"
+					format="dd-MM-yyyy"
+					:min-date="holdReleaseMinDate"
+					:enable-time-picker="false"
+					auto-apply
+					class="sleek-field pos-themed-input"
+					:placeholder="$frappe._('Auto Release Date')"
+					@update:model-value="$emit('update:holdReleaseDate', $event)"
+				/>
+			</v-col>
 
 			<!-- Additional Notes (if enabled in POS profile) -->
 			<v-col cols="12" v-if="posProfile.posa_display_additional_notes">
@@ -131,13 +168,36 @@ defineProps({
 		type: String,
 		default: null,
 	},
+	splitDelivery: {
+		type: [Boolean, Number],
+		default: false,
+	},
+	holdOrder: {
+		type: Boolean,
+		default: false,
+	},
+	holdReleaseDate: {
+		type: String,
+		default: null,
+	},
+	holdReleaseMinDate: {
+		type: Date,
+		default: () => new Date(),
+	},
 	addressFilter: {
 		type: Function,
 		default: null,
 	},
 });
 
-defineEmits(["update:returnValidUptoDate", "update:selectedShippingAddress", "new-address"]);
+defineEmits([
+	"update:returnValidUptoDate",
+	"update:selectedShippingAddress",
+	"update:splitDelivery",
+	"update:holdOrder",
+	"update:holdReleaseDate",
+	"new-address",
+]);
 
 const $frappe = inject("frappe", window.frappe);
 

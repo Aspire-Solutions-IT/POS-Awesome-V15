@@ -122,6 +122,10 @@
 							:address-action-label="addressActionLabel"
 							:addresses="addresses"
 							:selected-shipping-address="invoice_doc.shipping_address_name || null"
+							:split-delivery="Boolean(invoice_doc.posa_split_delivery)"
+							:hold-order="hold_order"
+							:hold-release-date="hold_release_date"
+							:hold-release-min-date="holdReleaseMinDate"
 							:address-filter="addressFilter"
 							:return-validity-enabled="returnValidityEnabled"
 							:return-validity-min-date="returnValidityMinDate"
@@ -133,6 +137,20 @@
 								}
 							"
 							@update:selected-shipping-address="handleShippingAddressSelection"
+							@update:split-delivery="
+								(val) => {
+									invoice_doc.posa_split_delivery = val ? 1 : 0;
+								}
+							"
+							@update:hold-order="
+								(val) => {
+									hold_order = Boolean(val);
+									if (!hold_order) {
+										hold_release_date = null;
+									}
+								}
+							"
+							@update:hold-release-date="(val) => (hold_release_date = val)"
 							@new-address="handlePaymentNewAddress"
 						/>
 						<div class="payment-next-step">
@@ -340,7 +358,7 @@ import { useRedemptionLogic } from "../../composables/pos/payments/useRedemption
 import { usePaymentPrinting } from "../../composables/pos/payments/usePaymentPrinting";
 import { usePaymentMethods } from "../../composables/pos/payments/usePaymentMethods";
 import { useInvoiceDetails } from "../../composables/pos/invoice/useInvoiceDetails";
-import { useFormat } from "../../format";
+import { normalizeDateForBackend, useFormat } from "../../format";
 import { isOffline, getCachedGiftCardSnapshot, saveGiftCardSnapshot } from "../../../offline/index";
 import GiftCardDialog from "./wallet/GiftCardDialog.vue";
 import {
@@ -437,6 +455,8 @@ const missingOrderAddressDialog = ref(false);
 const pendingMissingAddressSubmit = ref(null);
 const pendingCollectedAddressSubmit = ref(false);
 const currentStep = ref(1);
+const hold_order = ref(false);
+const hold_release_date = ref(null);
 const giftCardDialogOpen = ref(false);
 const giftCardInlineExpanded = ref(false);
 const activeGiftCardPayment = ref(null);
@@ -584,6 +604,13 @@ const returnValidityMinDate = computed(() => {
 		return new Date();
 	}
 	return parsed;
+});
+
+const holdReleaseMinDate = computed(() => {
+	const tomorrow = new Date();
+	tomorrow.setHours(0, 0, 0, 0);
+	tomorrow.setDate(tomorrow.getDate() + 1);
+	return tomorrow;
 });
 
 // Logic Composables
@@ -1722,6 +1749,11 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 
 	submissionInFlight.value = true;
 	loading.value = true;
+	const shouldHoldOrder = Boolean(hold_order.value);
+	const holdReason = String(invoice_doc.value?.posa_notes || "").trim();
+	const holdReleaseDate = shouldHoldOrder
+		? normalizeDateForBackend(hold_release_date.value)
+		: null;
 	try {
 		await validateSubmission(options.paymentReceived || false);
 		await submitInvoice(print, {
@@ -1744,7 +1776,36 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 					}
 				}
 			},
-			onSuccess: () => {
+			onSuccess: async (submittedDoc) => {
+				const submittedDoctype =
+					submittedDoc?.doctype ||
+					(invoiceType.value === "Order" && pos_profile.value?.posa_create_only_sales_order
+						? "Sales Order"
+						: "");
+				if (
+					shouldHoldOrder &&
+					submittedDoctype === "Sales Order" &&
+					submittedDoc?.name
+				) {
+					try {
+						await frappe.call({
+							method: "customer_due_dates.kit_items.overrides.sales_order.hold_sales_order_from_pos",
+							args: {
+								sales_order_name: submittedDoc.name,
+								reason: holdReason,
+								auto_release_date: holdReleaseDate,
+							},
+						});
+					} catch (error) {
+						console.error("Failed to place submitted sales order on hold", error);
+						toastStore.show({
+							title: __("Sales Order {0} was submitted but could not be placed on hold", [
+								submittedDoc.name,
+							]),
+							color: "warning",
+						});
+					}
+				}
 				customer_credit_dict.value = [];
 				redeem_customer_credit.value = false;
 				is_cashback.value = true;
@@ -1846,10 +1907,15 @@ watch(
 			invoice_doc.value.posa_delivery_date = null;
 			invoice_doc.value.posa_notes = null;
 			invoice_doc.value.posa_authorization_code = null;
+			invoice_doc.value.posa_split_delivery = 0;
 			invoice_doc.value.shipping_address_name = null;
+			hold_order.value = false;
+			hold_release_date.value = null;
 		} else if (invoice_doc.value && data === "Order") {
 			new_delivery_date.value = null;
 			invoice_doc.value.posa_delivery_date = null;
+			invoice_doc.value.posa_split_delivery =
+				invoice_doc.value.posa_split_delivery ? 1 : 0;
 		}
 		if (invoice_doc.value && data === "Return") {
 			invoice_doc.value.is_return = 1;
@@ -2160,6 +2226,8 @@ onMounted(() => {
 			missingOrderAddressDialog.value = false;
 			pendingMissingAddressSubmit.value = null;
 			pendingCollectedAddressSubmit.value = false;
+			hold_order.value = false;
+			hold_release_date.value = null;
 			is_return.value = false;
 			is_credit_return.value = false;
 			return_valid_upto_date.value = null;

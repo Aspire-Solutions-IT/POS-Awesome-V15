@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -10,6 +11,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 class _FakeCustomerDoc:
 	def __init__(self, payload):
 		self.payload = dict(payload)
+		self.customer_name = payload.get("customer_name")
 		self.customer_group = None
 		self.territory = None
 		self.name = payload.get("customer_name")
@@ -157,6 +159,33 @@ class TestPosCustomersRfs(unittest.TestCase):
 
 		self.assertEqual(customer.payload["rfs_customer"], 1)
 		self.assertEqual(self.frappe.last_customer_doc.payload["rfs_customer"], 1)
+
+	def test_create_customer_passes_phone_and_email_to_created_address(self):
+		captured = {}
+		original_make_address = self.module.make_address
+
+		def fake_make_address(args):
+			captured["args"] = json.loads(args) if isinstance(args, str) else args
+			return captured["args"]
+
+		self.module.make_address = fake_make_address
+		try:
+			self.module.create_customer(
+				customer_name="RFS POS Customer",
+				company="Agile",
+				pos_profile_doc='{"posa_allow_duplicate_customer_names": 1}',
+				method="create",
+				address_line1="1 Test Street",
+				city="London",
+				country="United Kingdom",
+				mobile_no="07123456789",
+				email_id="customer@example.com",
+			)
+		finally:
+			self.module.make_address = original_make_address
+
+		self.assertEqual(captured["args"]["phone"], "07123456789")
+		self.assertEqual(captured["args"]["email_id"], "customer@example.com")
 
 
 if __name__ == "__main__":
