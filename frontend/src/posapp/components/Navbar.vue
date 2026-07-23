@@ -536,6 +536,13 @@ export default {
 		},
 		updateNavigationItems() {
 			const items = [...this.baseItems];
+			if (this.posProfile?.custom_allow_select_sales_order == 1) {
+				items.splice(1, 0, {
+					text: "Sales Orders",
+					icon: "mdi-clipboard-text-search-outline",
+					to: "/sales-orders",
+				});
+			}
 			if (this.posProfile?.posa_use_gift_cards) {
 				items.splice(2, 0, {
 					text: "Gift Cards",

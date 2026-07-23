@@ -123,7 +123,8 @@ export async function syncOfflineCustomers() {
 }
 
 export function getCustomerStorage() {
-	return memory.customer_storage || [];
+	const rows = Array.isArray(memory.customer_storage) ? memory.customer_storage : [];
+	return rows.filter((row) => String(row?.name || "").trim() !== "13682");
 }
 
 function mergeCustomerStorageRows(rows: AnyRecord[]) {
@@ -133,14 +134,14 @@ function mergeCustomerStorageRows(rows: AnyRecord[]) {
 		: [];
 
 	existingRows.forEach((row) => {
-		if (!row?.name) {
+		if (!row?.name || String(row.name).trim() === "13682") {
 			return;
 		}
 		merged.set(row.name, row);
 	});
 
 	rows.forEach((row) => {
-		if (!row?.name) {
+		if (!row?.name || String(row.name).trim() === "13682") {
 			return;
 		}
 		merged.set(row.name, row);
@@ -185,7 +186,8 @@ export async function setCustomerStorage(customers: AnyRecord[]) {
 			tax_id: customer.tax_id,
 			stored_value_balance: customer.stored_value_balance || 0,
 			stored_value_sources: customer.stored_value_sources || 0,
-		}));
+		}))
+			.filter((customer) => String(customer?.name || "").trim() !== "13682");
 
 		await db.table("customers").bulkPut(clean);
 		memory.customer_storage = mergeCustomerStorageRows(clean);

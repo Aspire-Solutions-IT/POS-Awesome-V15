@@ -17,16 +17,14 @@
 			<div ref="paymentContainer" class="overflow-y-auto payment-scroll">
 				<div v-if="isWizardFlow" class="payment-wizard-header">
 					<div class="payment-wizard-header__title">
-						{{ currentStep === 1 ? __("Step 1 of 2: Fulfillment") : __("Step 2 of 2: Payment") }}
+						{{ wizardStepTitle }}
 					</div>
 					<div class="payment-wizard-header__track">
 						<span
+							v-for="step in wizardStepCount"
+							:key="step"
 							class="payment-wizard-header__dot"
-							:class="{ 'payment-wizard-header__dot--active': currentStep >= 1 }"
-						></span>
-						<span
-							class="payment-wizard-header__dot"
-							:class="{ 'payment-wizard-header__dot--active': currentStep >= 2 }"
+							:class="{ 'payment-wizard-header__dot--active': currentStep >= step }"
 						></span>
 					</div>
 				</div>
@@ -57,6 +55,7 @@
 							:formatCurrency="formatCurrency"
 							:gift-card-applied-amount="giftCardAppliedAmount"
 							:gift-card-code="giftCardRedemptions[0]?.gift_card_code || ''"
+							:order-ref="orderRef"
 							@show-paid-amount="showPaidAmount"
 							@show-diff-payment="showDiffPayment"
 							@show-paid-change="showPaidChange"
@@ -120,12 +119,19 @@
 							:pos-profile="pos_profile"
 							:invoice-type="invoiceType"
 							:address-action-label="addressActionLabel"
-							:addresses="addresses"
+							:shipping-address-label="shippingAddressLabel"
+							:addresses="availableFulfillmentAddresses"
+							:show-address-action="showAddressAction"
+							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
+							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
+							:collect-from-store-tag-label="__('Collect from Store')"
+							:preferred-delivery-date="preferred_delivery_date"
+							:preferred-delivery-min-date="preferredDeliveryMinDate"
 							:selected-shipping-address="invoice_doc.shipping_address_name || null"
 							:split-delivery="Boolean(invoice_doc.posa_split_delivery)"
-							:hold-order="hold_order"
-							:hold-release-date="hold_release_date"
-							:hold-release-min-date="holdReleaseMinDate"
+							:split-delivery-warning-text="splitDeliveryWarningText"
+							:customer-unsure-delivery-date="customer_unsure_delivery_date"
+							:hold-help-text="holdHelpText"
 							:address-filter="addressFilter"
 							:return-validity-enabled="returnValidityEnabled"
 							:return-validity-min-date="returnValidityMinDate"
@@ -136,21 +142,22 @@
 									updateReturnValidUpto();
 								}
 							"
+							@update:preferred-delivery-date="
+								(val) => {
+									update_preferred_delivery_date(val);
+								}
+							"
+							@update:customer-unsure-delivery-date="
+								(val) => {
+									customer_unsure_delivery_date = Boolean(val);
+								}
+							"
 							@update:selected-shipping-address="handleShippingAddressSelection"
 							@update:split-delivery="
 								(val) => {
 									invoice_doc.posa_split_delivery = val ? 1 : 0;
 								}
 							"
-							@update:hold-order="
-								(val) => {
-									hold_order = Boolean(val);
-									if (!hold_order) {
-										hold_release_date = null;
-									}
-								}
-							"
-							@update:hold-release-date="(val) => (hold_release_date = val)"
 							@new-address="handlePaymentNewAddress"
 						/>
 						<div class="payment-next-step">
@@ -161,6 +168,36 @@
 								v-if="!isWizardFlow || canProceedToPayment"
 								color="primary"
 								:disabled="!canProceedToPayment"
+								@click="proceedFromFulfillmentStep"
+							>
+								{{ __("Next") }}
+							</v-btn>
+						</div>
+					</section>
+
+					<section
+						v-if="showGroupingStep"
+						class="payment-section payment-section--adjustments payment-section--grouping"
+					>
+						<div class="payment-section__header">
+							<h3 class="payment-section__title">{{ __("Split Order Groups") }}</h3>
+						</div>
+						<PaymentSplitGroups
+							:groups="splitOrderGroups"
+							:items="invoice_doc.items || []"
+							:default-group-id="defaultSplitGroupId"
+							:format-currency="(value) => formatCurrency(value, invoice_doc.currency)"
+							@create-group="createSplitGroup"
+							@remove-group="removeSplitGroup"
+							@move-item="moveSplitGroupItem"
+						/>
+						<div class="payment-next-step">
+							<v-btn variant="text" color="primary" @click="goToFulfillmentStep">
+								{{ __("Back") }}
+							</v-btn>
+							<v-btn
+								color="primary"
+								:disabled="!canProceedFromGrouping"
 								@click="proceedToPaymentStep"
 							>
 								{{ __("Next") }}
@@ -284,7 +321,7 @@
 
 		<div v-if="showPaymentStep" :class="['payment-footer', { 'payment-footer--dialog': dialogMode }]">
 			<div v-if="isWizardFlow" class="payment-wizard-actions">
-				<v-btn variant="text" color="primary" @click="goToFulfillmentStep">
+				<v-btn variant="text" color="primary" @click="goToPreviousWizardStep">
 					{{ __("Back") }}
 				</v-btn>
 			</div>
@@ -294,8 +331,10 @@
 				:validatePayment="validatePayment"
 				:highlightSubmit="highlightSubmit"
 				:compact="dialogMode"
+				:show-submit-without-payment="showSubmitWithoutPayment"
 				@submit="submit"
 				@submit-and-print="submit(undefined, false, true)"
+				@submit-without-payment="submitWithoutPaymentOrder"
 				@cancel="back_to_invoice"
 			/>
 		</div>
@@ -378,6 +417,7 @@ import PaymentMethods from "./payments/PaymentMethods.vue";
 import PaymentGiftCardSection from "./payments/PaymentGiftCardSection.vue";
 import PaymentRedemption from "./payments/PaymentRedemption.vue";
 import PaymentAdditionalInfo from "./payments/PaymentAdditionalInfo.vue";
+import PaymentSplitGroups from "./payments/PaymentSplitGroups.vue";
 import PaymentPurchaseOrder from "./payments/PaymentPurchaseOrder.vue";
 import PaymentCustomerCreditDetails from "./payments/PaymentCustomerCreditDetails.vue";
 import PaymentOptions from "./payments/PaymentOptions.vue";
@@ -454,8 +494,10 @@ const queuedShortcutSubmit = ref(null);
 const missingOrderAddressDialog = ref(false);
 const pendingMissingAddressSubmit = ref(null);
 const pendingCollectedAddressSubmit = ref(false);
+const storeCollectionAddresses = ref([]);
+const defaultSplitGroupId = "default";
 const currentStep = ref(1);
-const hold_order = ref(false);
+const customer_unsure_delivery_date = ref(false);
 const hold_release_date = ref(null);
 const giftCardDialogOpen = ref(false);
 const giftCardInlineExpanded = ref(false);
@@ -498,6 +540,41 @@ const needsFulfillmentStep = computed(
 	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
 );
 const isWizardFlow = computed(() => needsFulfillmentStep.value);
+const isSplitDeliveryEnabled = computed(
+	() => Boolean(invoice_doc.value?.posa_split_delivery) && invoiceType.value === "Order",
+);
+const wizardStepCount = computed(() => (isSplitDeliveryEnabled.value ? 3 : 2));
+const wizardStepTitle = computed(() => {
+	if (currentStep.value === 1) {
+		return __("Step 1 of {0}: Fulfillment", [wizardStepCount.value]);
+	}
+	if (isSplitDeliveryEnabled.value && currentStep.value === 2) {
+		return __("Step 2 of 3: Grouping");
+	}
+	return __("Step {0} of {1}: Payment", [wizardStepCount.value, wizardStepCount.value]);
+});
+
+const isCollectFromStoreSelected = () => {
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	if (!selectedName) {
+		return false;
+	}
+	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+		(row) => String(row?.name || "").trim() === selectedName,
+	);
+	const collectFromStoreFlag = selectedRow?.collect_from_store;
+	return collectFromStoreFlag === 1 || collectFromStoreFlag === "1" || collectFromStoreFlag === true;
+};
+
+const shouldUseStoreCollectionFlow = computed(
+	() => !isCollectionDeliveryChargeSelected() && isCollectFromStoreSelected(),
+);
+
+const availableFulfillmentAddresses = computed(() =>
+	shouldUseStoreCollectionFlow.value ? storeCollectionAddresses.value : addresses.value,
+);
 
 const selectedFulfillmentAddress = computed(() => {
 	const selectedAddressName = String(invoice_doc.value?.shipping_address_name || "").trim();
@@ -505,7 +582,7 @@ const selectedFulfillmentAddress = computed(() => {
 		return null;
 	}
 	return (
-		(Array.isArray(addresses.value) ? addresses.value : []).find(
+		(Array.isArray(availableFulfillmentAddresses.value) ? availableFulfillmentAddresses.value : []).find(
 			(addr) => String(addr?.name || "").trim() === selectedAddressName,
 		) || null
 	);
@@ -523,6 +600,163 @@ const hasFulfillmentAddress = computed(() => {
 });
 
 const hasFulfillmentNotes = computed(() => Boolean(String(invoice_doc.value?.posa_notes || "").trim()));
+
+const splitDeliveryWarningText = computed(() => {
+	const notes = String(invoice_doc.value?.posa_notes || "").trim();
+	if (!notes) {
+		return "";
+	}
+
+	const hasSplitInNotes = /\bsplit\b/i.test(notes);
+	const splitDeliverySelected =
+		invoice_doc.value?.posa_split_delivery === 1 ||
+		invoice_doc.value?.posa_split_delivery === "1" ||
+		invoice_doc.value?.posa_split_delivery === true;
+
+	if (!hasSplitInNotes || splitDeliverySelected) {
+		return "";
+	}
+
+	return __("Split is in the notes but the Split Delivery box is not ticked.");
+});
+
+const createDefaultSplitGroup = (rowIds = []) => ({
+	group_id: defaultSplitGroupId,
+	label: __("Group 1"),
+	row_ids: [...rowIds],
+});
+
+const normalizeSplitGroupLabel = (label, index) => {
+	const normalized = String(label || "").trim();
+	return normalized || __("Group {0}", [index + 1]);
+};
+
+const normalizeSplitGroupsState = (rawGroups, items = []) => {
+	const itemRowIds = (Array.isArray(items) ? items : [])
+		.map((item) => String(item?.posa_row_id || "").trim())
+		.filter(Boolean);
+	const itemRowIdSet = new Set(itemRowIds);
+	const groups = [];
+	const assigned = new Set();
+
+	(Array.isArray(rawGroups) ? rawGroups : []).forEach((entry, index) => {
+		if (!entry || typeof entry !== "object") {
+			return;
+		}
+		const groupId = String(entry.group_id || "").trim();
+		if (!groupId) {
+			return;
+		}
+		const rowIds = [];
+		(entry.row_ids || []).forEach((rowId) => {
+			const normalizedRowId = String(rowId || "").trim();
+			if (!normalizedRowId || !itemRowIdSet.has(normalizedRowId) || assigned.has(normalizedRowId)) {
+				return;
+			}
+			assigned.add(normalizedRowId);
+			rowIds.push(normalizedRowId);
+		});
+		groups.push({
+			group_id: groupId,
+			label: normalizeSplitGroupLabel(entry.label, index),
+			row_ids: rowIds,
+		});
+	});
+
+	let defaultGroup = groups.find((group) => group.group_id === defaultSplitGroupId);
+	if (!defaultGroup) {
+		defaultGroup = createDefaultSplitGroup();
+		groups.unshift(defaultGroup);
+	}
+
+	itemRowIds.forEach((rowId) => {
+		if (!assigned.has(rowId)) {
+			defaultGroup.row_ids.push(rowId);
+		}
+	});
+
+	return groups;
+};
+
+const syncSplitGroupsState = () => {
+	if (!invoice_doc.value) {
+		return;
+	}
+	if (!isSplitDeliveryEnabled.value) {
+		invoice_doc.value.posa_split_groups = [];
+		return;
+	}
+
+	const normalized = normalizeSplitGroupsState(
+		invoice_doc.value.posa_split_groups,
+		invoice_doc.value.items || [],
+	);
+	invoice_doc.value.posa_split_groups = normalized;
+};
+
+const splitOrderGroups = computed(() =>
+	normalizeSplitGroupsState(invoice_doc.value?.posa_split_groups, invoice_doc.value?.items || []),
+);
+
+const canProceedFromGrouping = computed(() => {
+	const itemRowIds = (invoice_doc.value?.items || [])
+		.map((item) => String(item?.posa_row_id || "").trim())
+		.filter(Boolean);
+	const assignedRowIds = splitOrderGroups.value.flatMap((group) => group.row_ids || []);
+	return itemRowIds.length > 0 && assignedRowIds.length === itemRowIds.length;
+});
+
+const orderRefRequestInFlight = ref(false);
+
+const ensureOrderRef = () => {
+	if (!invoice_doc.value || invoiceType.value !== "Order") {
+		return;
+	}
+
+	const existingOrderRef = String(invoice_doc.value.customer_order_ref || "").trim();
+	if (existingOrderRef || orderRefRequestInFlight.value) {
+		return;
+	}
+
+	orderRefRequestInFlight.value = true;
+	frappe.call({
+		method: "posawesome.posawesome.api.sales_orders.get_unique_order_ref",
+		args: {
+			sales_order_name: invoice_doc.value?.name || null,
+		},
+		async: true,
+		callback: (response) => {
+			orderRefRequestInFlight.value = false;
+			const generatedOrderRef = String(response?.message || "").trim();
+			if (generatedOrderRef && invoice_doc.value && invoiceType.value === "Order") {
+				invoice_doc.value.customer_order_ref = generatedOrderRef;
+			}
+		},
+		error: () => {
+			orderRefRequestInFlight.value = false;
+			toastStore.show({
+				title: __("Unable to generate order ref"),
+				color: "warning",
+			});
+		},
+	});
+};
+
+const orderRef = computed(() => String(invoice_doc.value?.customer_order_ref || "").trim());
+
+const hasPreferredDeliverySelection = computed(() => {
+	if (customer_unsure_delivery_date.value) {
+		return true;
+	}
+	return Boolean(
+		String(
+			preferred_delivery_date.value ||
+				invoice_doc.value?.prefered_earliest_delivery_date ||
+				invoice_doc.value?.preferred_earliest_delivery_date ||
+				"",
+		).trim(),
+	);
+});
 
 const hasOnlyNsItemsForCollection = computed(() => {
 	if (!isCollectionDeliveryChargeSelected()) {
@@ -542,15 +776,29 @@ const canProceedToPayment = computed(() => {
 	if (!needsFulfillmentStep.value) {
 		return true;
 	}
-	return hasFulfillmentAddress.value && hasFulfillmentNotes.value && hasOnlyNsItemsForCollection.value;
+	return (
+		hasFulfillmentAddress.value &&
+		hasFulfillmentNotes.value &&
+		hasOnlyNsItemsForCollection.value &&
+		hasPreferredDeliverySelection.value
+	);
 });
 
 const showFulfillmentStep = computed(() => !isWizardFlow.value || currentStep.value === 1);
-const showPaymentStep = computed(() => !isWizardFlow.value || currentStep.value === 2);
+const showGroupingStep = computed(
+	() => isWizardFlow.value && isSplitDeliveryEnabled.value && currentStep.value === 2,
+);
+const showPaymentStep = computed(
+	() => !isWizardFlow.value || currentStep.value === (isSplitDeliveryEnabled.value ? 3 : 2),
+);
 
 const validatePayment = computed(() => {
 	return false;
 });
+
+const showSubmitWithoutPayment = computed(
+	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
+);
 
 const getWriteOffLimit = (profile) => {
 	if (!profile) return null;
@@ -606,11 +854,117 @@ const returnValidityMinDate = computed(() => {
 	return parsed;
 });
 
-const holdReleaseMinDate = computed(() => {
-	const tomorrow = new Date();
-	tomorrow.setHours(0, 0, 0, 0);
-	tomorrow.setDate(tomorrow.getDate() + 1);
-	return tomorrow;
+const preferredDeliveryMinDate = computed(() => {
+	const postingDate = invoice_doc.value?.posting_date || frappe.datetime?.nowdate?.();
+	if (!postingDate) {
+		return new Date();
+	}
+	const parsed = new Date(postingDate);
+	if (Number.isNaN(parsed.getTime())) {
+		return new Date();
+	}
+	return parsed;
+});
+
+const parseDateOnly = (value) => {
+	if (!value) {
+		return null;
+	}
+	const normalized = String(value).trim();
+	const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	if (!match) {
+		return null;
+	}
+	const [, year, month, day] = match;
+	const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+	if (Number.isNaN(parsed.getTime())) {
+		return null;
+	}
+	parsed.setHours(0, 0, 0, 0);
+	return parsed;
+};
+
+const formatDateOnly = (value) => {
+	if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+		return null;
+	}
+	const year = value.getFullYear();
+	const month = String(value.getMonth() + 1).padStart(2, "0");
+	const day = String(value.getDate()).padStart(2, "0");
+	return `${year}-${month}-${day}`;
+};
+
+const formatDateForUkDisplay = (value) => {
+	const parsed = parseDateOnly(value);
+	if (!parsed) {
+		return String(value || "").trim();
+	}
+	const day = String(parsed.getDate()).padStart(2, "0");
+	const month = String(parsed.getMonth() + 1).padStart(2, "0");
+	const year = parsed.getFullYear();
+	return `${day}-${month}-${year}`;
+};
+
+const addDays = (value, days) => {
+	if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+		return null;
+	}
+	const next = new Date(value);
+	next.setDate(next.getDate() + days);
+	next.setHours(0, 0, 0, 0);
+	return next;
+};
+
+const preferredDeliveryDateDate = computed(() =>
+	parseDateOnly(
+		preferred_delivery_date.value ||
+			invoice_doc.value?.prefered_earliest_delivery_date ||
+			invoice_doc.value?.preferred_earliest_delivery_date,
+	),
+);
+
+const preferredDeliveryLeadDays = computed(() => {
+	const preferredDate = preferredDeliveryDateDate.value;
+	const baseDate = parseDateOnly(invoice_doc.value?.posting_date || frappe.datetime?.nowdate?.());
+	if (!preferredDate || !baseDate) {
+		return null;
+	}
+	const millisecondsPerDay = 24 * 60 * 60 * 1000;
+	return Math.round((preferredDate.getTime() - baseDate.getTime()) / millisecondsPerDay);
+});
+
+const autoHoldFromPreferredDelivery = computed(() => {
+	if (invoiceType.value !== "Order") {
+		return false;
+	}
+	if (customer_unsure_delivery_date.value) {
+		return false;
+	}
+	const leadDays = preferredDeliveryLeadDays.value;
+	return Number.isFinite(leadDays) && leadDays > 14;
+});
+
+const autoHoldReleaseDate = computed(() => {
+	if (!autoHoldFromPreferredDelivery.value) {
+		return null;
+	}
+	return formatDateOnly(addDays(preferredDeliveryDateDate.value, -5));
+});
+
+const effectiveHoldOrder = computed(() =>
+	Boolean(autoHoldFromPreferredDelivery.value),
+);
+
+const holdHelpText = computed(() => {
+	if (autoHoldFromPreferredDelivery.value && autoHoldReleaseDate.value) {
+		return __("Automatically on hold. Auto release will be set to {0}.", [
+			formatDateForUkDisplay(autoHoldReleaseDate.value),
+		]);
+	}
+	if (autoHoldFromPreferredDelivery.value) {
+		return __("Automatically on hold because the preferred delivery date is more than 2 weeks away.");
+	}
+	return "";
 });
 
 // Logic Composables
@@ -718,6 +1072,7 @@ const {
 	addresses,
 	sales_persons,
 	new_delivery_date,
+	preferred_delivery_date,
 	new_po_date,
 	new_credit_due_date,
 	credit_due_days,
@@ -731,6 +1086,7 @@ const {
 	normalizeAddress,
 	get_sales_person_names,
 	update_delivery_date,
+	update_preferred_delivery_date,
 	update_po_date,
 	update_credit_due_date,
 	applyDuePreset,
@@ -750,6 +1106,11 @@ const {
 	eventBus: eventBus,
 });
 
+const preferredDeliveryDateEnabled = computed(() => {
+	const setting = pos_profile.value?.posa_enable_preferred_delivery_date;
+	return !(setting === 0 || setting === "0" || setting === false);
+});
+
 const { ensureReturnPaymentsAreNegative, restoreReturnPayments, validateSubmission, submitInvoice } =
 	usePaymentSubmission({
 		invoiceDoc: computed(() => invoiceStore.invoiceDoc),
@@ -767,6 +1128,9 @@ const { ensureReturnPaymentsAreNegative, restoreReturnPayments, validateSubmissi
 		is_credit_sale: is_credit_sale,
 		loyaltyAmount: loyalty_amount,
 		isCollectionDeliveryChargeSelected: computed(() => isCollectionDeliveryChargeSelected()),
+		isSplitGroupedOrder: computed(
+			() => isSplitDeliveryEnabled.value && splitOrderGroups.value.length > 0,
+		),
 		formatFloat: (val, prec) => flt(val, prec),
 		stores: {
 			toastStore,
@@ -1608,6 +1972,20 @@ const submit = async (_event, payment_received = false, print = false) => {
 	});
 };
 
+const submitWithoutPaymentOrder = async () => {
+	if (isWizardFlow.value && currentStep.value === 1) {
+		if (canProceedToPayment.value) {
+			currentStep.value = 2;
+		}
+		return;
+	}
+
+	await submitInvoiceWrapper(false, undefined, {
+		allowNoPaymentOrderSubmit: true,
+		forceHoldOrder: true,
+	});
+};
+
 const shouldConfirmMissingOrderAddress = (options = {}) => {
 	if (options.skipMissingAddressConfirmation) {
 		return false;
@@ -1641,10 +2019,20 @@ const shouldUseCollectedAddressEntry = (options = {}) => {
 };
 
 const addressActionLabel = computed(() =>
-	isCollectionDeliveryChargeSelected()
+	shouldUseStoreCollectionFlow.value
+		? __("Select a store collection point below")
+		: isCollectionDeliveryChargeSelected()
 		? __("Add Customer Collection Information")
 		: __("Add Customer Address"),
 );
+
+const shippingAddressLabel = computed(() =>
+	shouldUseStoreCollectionFlow.value
+		? __("Store Collection Point *")
+		: __("Shipping Address *"),
+);
+
+const showAddressAction = computed(() => !shouldUseStoreCollectionFlow.value);
 
 const showCollectionItemsValidationError = () => {
 	frappe.msgprint({
@@ -1654,7 +2042,7 @@ const showCollectionItemsValidationError = () => {
 	});
 };
 
-const proceedToPaymentStep = () => {
+const proceedFromFulfillmentStep = () => {
 	if (!hasOnlyNsItemsForCollection.value) {
 		showCollectionItemsValidationError();
 		return;
@@ -1662,7 +2050,14 @@ const proceedToPaymentStep = () => {
 	if (!canProceedToPayment.value) {
 		return;
 	}
-	currentStep.value = 2;
+	currentStep.value = isSplitDeliveryEnabled.value ? 2 : 2;
+};
+
+const proceedToPaymentStep = () => {
+	if (isSplitDeliveryEnabled.value && !canProceedFromGrouping.value) {
+		return;
+	}
+	currentStep.value = 3;
 };
 
 const goToFulfillmentStep = () => {
@@ -1672,7 +2067,72 @@ const goToFulfillmentStep = () => {
 	currentStep.value = 1;
 };
 
+const goToPreviousWizardStep = () => {
+	if (!isWizardFlow.value) {
+		return;
+	}
+	if (isSplitDeliveryEnabled.value && currentStep.value === 3) {
+		currentStep.value = 2;
+		return;
+	}
+	currentStep.value = 1;
+};
+
+const createSplitGroup = (label) => {
+	if (!invoice_doc.value) {
+		return;
+	}
+	const nextIndex = splitOrderGroups.value.length + 1;
+	invoice_doc.value.posa_split_groups = [
+		...splitOrderGroups.value,
+		{
+			group_id: `group-${Date.now().toString(36)}-${nextIndex}`,
+			label: __("Group {0}", [nextIndex]),
+			row_ids: [],
+		},
+	];
+};
+
+const removeSplitGroup = (groupId) => {
+	if (!invoice_doc.value || groupId === defaultSplitGroupId) {
+		return;
+	}
+	const groups = splitOrderGroups.value.map((group) => ({ ...group, row_ids: [...(group.row_ids || [])] }));
+	const target = groups.find((group) => group.group_id === groupId);
+	const fallback = groups.find((group) => group.group_id === defaultSplitGroupId);
+	if (!target || !fallback) {
+		return;
+	}
+	fallback.row_ids.push(...(target.row_ids || []));
+	invoice_doc.value.posa_split_groups = groups.filter((group) => group.group_id !== groupId);
+};
+
+const moveSplitGroupItem = ({ rowId, groupId }) => {
+	if (!invoice_doc.value) {
+		return;
+	}
+	const normalizedRowId = String(rowId || "").trim();
+	const normalizedGroupId = String(groupId || "").trim();
+	if (!normalizedRowId || !normalizedGroupId) {
+		return;
+	}
+	const groups = splitOrderGroups.value.map((group) => ({
+		...group,
+		row_ids: (group.row_ids || []).filter((id) => id !== normalizedRowId),
+	}));
+	const target = groups.find((group) => group.group_id === normalizedGroupId);
+	if (!target) {
+		return;
+	}
+	target.row_ids.push(normalizedRowId);
+	invoice_doc.value.posa_split_groups = groups;
+};
+
 const handlePaymentNewAddress = () => {
+	if (shouldUseStoreCollectionFlow.value) {
+		return;
+	}
+
 	const selectedAddressName = String(invoice_doc.value?.shipping_address_name || "").trim();
 	const selectedAddress = (Array.isArray(addresses.value) ? addresses.value : []).find(
 		(addr) => String(addr?.name || "").trim() === selectedAddressName,
@@ -1691,12 +2151,60 @@ const handlePaymentNewAddress = () => {
 	});
 };
 
-const handleShippingAddressSelection = (addressName) => {
+const fetchStoreCollectionAddresses = async () => {
+	try {
+		const response = await frappe.call({
+			method: "posawesome.posawesome.api.customers.get_store_collection_addresses",
+		});
+		storeCollectionAddresses.value = Array.isArray(response?.message)
+			? response.message
+					.map((row) => normalizeAddress(row))
+					.filter((row) => row !== null)
+			: [];
+	} catch (error) {
+		console.error("Failed to fetch store collection addresses", error);
+		storeCollectionAddresses.value = [];
+		toastStore.show({
+			title: __("Unable to load store collection points"),
+			color: "error",
+		});
+	}
+};
+
+const ensureStoreCollectionAddressLinked = async (addressName) => {
+	const customer = String(invoice_doc.value?.customer || "").trim();
+	const normalizedName = String(addressName || "").trim();
+	if (!customer || !normalizedName) {
+		return;
+	}
+
+	await frappe.call({
+		method: "posawesome.posawesome.api.customers.link_store_collection_address_to_customer",
+		args: {
+			customer,
+			address_name: normalizedName,
+		},
+	});
+};
+
+const handleShippingAddressSelection = async (addressName) => {
 	if (!invoice_doc.value) {
 		return;
 	}
 
 	const normalizedName = String(addressName || "").trim() || null;
+	if (shouldUseStoreCollectionFlow.value && normalizedName) {
+		try {
+			await ensureStoreCollectionAddressLinked(normalizedName);
+		} catch (error) {
+			console.error("Failed to link store collection address to customer", error);
+			toastStore.show({
+				title: __("Unable to link store collection point to customer"),
+				color: "error",
+			});
+			return;
+		}
+	}
 	invoice_doc.value.shipping_address_name = normalizedName;
 	invoice_doc.value.customer_address = normalizedName;
 };
@@ -1749,13 +2257,23 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 
 	submissionInFlight.value = true;
 	loading.value = true;
-	const shouldHoldOrder = Boolean(hold_order.value);
-	const holdReason = String(invoice_doc.value?.posa_notes || "").trim();
+	const shouldHoldOrder = Boolean(options.forceHoldOrder || effectiveHoldOrder.value);
+	const holdReason = options.forceHoldOrder
+		? "submitted without payment"
+		: autoHoldFromPreferredDelivery.value
+			? "preferred delivery date is more than 2 weeks away"
+			: String(invoice_doc.value?.posa_notes || "").trim();
 	const holdReleaseDate = shouldHoldOrder
-		? normalizeDateForBackend(hold_release_date.value)
+		? (
+			options.forceHoldOrder
+				? null
+				: normalizeDateForBackend(autoHoldReleaseDate.value || hold_release_date.value)
+		)
 		: null;
 	try {
-		await validateSubmission(options.paymentReceived || false);
+		await validateSubmission(options.paymentReceived || false, {
+			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),
+		});
 		await submitInvoice(print, {
 			onPrint: (doc, printOptions = {}) => {
 				if (print) {
@@ -1782,28 +2300,35 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 					(invoiceType.value === "Order" && pos_profile.value?.posa_create_only_sales_order
 						? "Sales Order"
 						: "");
+				const submittedOrderNames = Array.isArray(submittedDoc?.names)
+					? submittedDoc.names.filter(Boolean)
+					: submittedDoc?.name
+						? [submittedDoc.name]
+						: [];
 				if (
 					shouldHoldOrder &&
 					submittedDoctype === "Sales Order" &&
-					submittedDoc?.name
+					submittedOrderNames.length
 				) {
-					try {
-						await frappe.call({
-							method: "customer_due_dates.kit_items.overrides.sales_order.hold_sales_order_from_pos",
-							args: {
-								sales_order_name: submittedDoc.name,
-								reason: holdReason,
-								auto_release_date: holdReleaseDate,
-							},
-						});
-					} catch (error) {
-						console.error("Failed to place submitted sales order on hold", error);
-						toastStore.show({
-							title: __("Sales Order {0} was submitted but could not be placed on hold", [
-								submittedDoc.name,
-							]),
-							color: "warning",
-						});
+					for (const salesOrderName of submittedOrderNames) {
+						try {
+							await frappe.call({
+								method: "customer_due_dates.kit_items.overrides.sales_order.hold_sales_order_from_pos",
+								args: {
+									sales_order_name: salesOrderName,
+									reason: holdReason,
+									auto_release_date: holdReleaseDate,
+								},
+							});
+						} catch (error) {
+							console.error("Failed to place submitted sales order on hold", error);
+							toastStore.show({
+								title: __("Sales Order {0} was submitted but could not be placed on hold", [
+									salesOrderName,
+								]),
+								color: "warning",
+							});
+						}
 					}
 				}
 				customer_credit_dict.value = [];
@@ -1820,6 +2345,8 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 				scheduleBackgroundStatusCheck(payload);
 			},
 			...callbackOverrides,
+		}, {
+			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),
 		});
 	} catch (error) {
 		console.error("Submission failed propagate:", error);
@@ -1903,16 +2430,26 @@ watch(
 	invoiceType,
 	(data) => {
 		get_print_formats();
-		if (invoice_doc.value && data !== "Order") {
+	if (invoice_doc.value && data !== "Order") {
 			invoice_doc.value.posa_delivery_date = null;
+			invoice_doc.value.prefered_earliest_delivery_date = null;
+			invoice_doc.value.preferred_earliest_delivery_date = null;
+			invoice_doc.value.customer_order_ref = null;
+			invoice_doc.value.posa_split_groups = [];
 			invoice_doc.value.posa_notes = null;
 			invoice_doc.value.posa_authorization_code = null;
 			invoice_doc.value.posa_split_delivery = 0;
 			invoice_doc.value.shipping_address_name = null;
-			hold_order.value = false;
+			customer_unsure_delivery_date.value = false;
 			hold_release_date.value = null;
 		} else if (invoice_doc.value && data === "Order") {
 			new_delivery_date.value = null;
+			ensureOrderRef();
+			syncSplitGroupsState();
+			preferred_delivery_date.value =
+				invoice_doc.value.prefered_earliest_delivery_date ||
+				invoice_doc.value.preferred_earliest_delivery_date ||
+				null;
 			invoice_doc.value.posa_delivery_date = null;
 			invoice_doc.value.posa_split_delivery =
 				invoice_doc.value.posa_split_delivery ? 1 : 0;
@@ -1935,7 +2472,7 @@ watch(
 );
 
 watch(canProceedToPayment, (ready) => {
-	if (!ready && isWizardFlow.value && currentStep.value === 2) {
+	if (!ready && isWizardFlow.value && currentStep.value === 2 && !isSplitDeliveryEnabled.value) {
 		currentStep.value = 1;
 	}
 });
@@ -1944,6 +2481,25 @@ watch(
 	isWizardFlow,
 	(enabled) => {
 		currentStep.value = enabled ? 1 : 2;
+	},
+	{ immediate: true },
+);
+
+watch(
+	() => invoice_doc.value?.posa_split_delivery,
+	() => {
+		syncSplitGroupsState();
+		if (!isSplitDeliveryEnabled.value && currentStep.value > 2) {
+			currentStep.value = 2;
+		}
+	},
+	{ immediate: true },
+);
+
+watch(
+	() => (invoice_doc.value?.items || []).map((item) => item?.posa_row_id || "").join("|"),
+	() => {
+		syncSplitGroupsState();
 	},
 	{ immediate: true },
 );
@@ -2087,11 +2643,19 @@ watch(is_credit_return, (newVal) => {
 watch(
 	() => invoice_doc.value.customer,
 	(customer, previous) => {
+		if (customer && invoiceType.value === "Order") {
+			ensureOrderRef();
+		}
 		if (customer && customer !== previous) {
-			get_addresses();
+			if (shouldUseStoreCollectionFlow.value) {
+				void fetchStoreCollectionAddresses();
+			} else {
+				get_addresses();
+			}
 			set_print_format();
 		} else if (!customer) {
 			addresses.value = [];
+			storeCollectionAddresses.value = [];
 			set_print_format();
 		}
 	},
@@ -2099,6 +2663,7 @@ watch(
 
 watch(isPaymentOpen, (isOpen) => {
 	if (isOpen) {
+		ensureOrderRef();
 		ensurePaymentLinesInitialized();
 		handleShowPayment();
 	} else {
@@ -2118,11 +2683,68 @@ watch(
 				invoice_doc.value.shipping_address_name = null;
 			}
 			addresses.value = [];
+			storeCollectionAddresses.value = [];
 			return;
 		}
 		if (invoice_doc.value && invoice_doc.value.customer) {
-			get_addresses();
+			if (shouldUseStoreCollectionFlow.value) {
+				void fetchStoreCollectionAddresses();
+			} else {
+				get_addresses();
+			}
 		}
+	},
+);
+
+watch(
+	() =>
+		invoice_doc.value.prefered_earliest_delivery_date ||
+		invoice_doc.value.preferred_earliest_delivery_date,
+	(date) => {
+		preferred_delivery_date.value = date || null;
+		if (date) {
+			customer_unsure_delivery_date.value = false;
+		}
+	},
+	{ immediate: true },
+);
+
+watch(
+	preferredDeliveryDateEnabled,
+	(enabled) => {
+		if (enabled || !invoice_doc.value) {
+			return;
+		}
+		preferred_delivery_date.value = null;
+		invoice_doc.value.prefered_earliest_delivery_date = null;
+		invoice_doc.value.preferred_earliest_delivery_date = null;
+	},
+	{ immediate: true },
+);
+
+watch(
+	() => selectedDeliveryCharge.value,
+	() => {
+		if (!invoice_doc.value) {
+			return;
+		}
+
+		invoice_doc.value.shipping_address_name = null;
+		invoice_doc.value.customer_address = null;
+
+		if (!invoice_doc.value.customer) {
+			addresses.value = [];
+			storeCollectionAddresses.value = [];
+			return;
+		}
+
+		if (shouldUseStoreCollectionFlow.value) {
+			void fetchStoreCollectionAddresses();
+			return;
+		}
+
+		storeCollectionAddresses.value = [];
+		get_addresses();
 	},
 );
 
@@ -2179,7 +2801,11 @@ onMounted(() => {
 			redeemed_customer_credit.value = 0;
 			resetGiftCardState({ clearPayment: true });
 			if (doc.customer) {
-				get_addresses();
+				if (shouldUseStoreCollectionFlow.value) {
+					void fetchStoreCollectionAddresses();
+				} else {
+					get_addresses();
+				}
 			}
 			get_sales_person_names();
 		});
@@ -2226,7 +2852,8 @@ onMounted(() => {
 			missingOrderAddressDialog.value = false;
 			pendingMissingAddressSubmit.value = null;
 			pendingCollectedAddressSubmit.value = false;
-			hold_order.value = false;
+			storeCollectionAddresses.value = [];
+			customer_unsure_delivery_date.value = false;
 			hold_release_date.value = null;
 			is_return.value = false;
 			is_credit_return.value = false;
@@ -2362,8 +2989,14 @@ onBeforeUnmount(() => {
 
 .payment-sections--wizard-step1 {
 	display: flex;
+	width: 100%;
 	grid-template-columns: none;
 	grid-template-areas: none;
+}
+
+.payment-sections--wizard-step1 .payment-section {
+	width: 100%;
+	max-width: none;
 }
 
 .payment-section {
@@ -2395,6 +3028,10 @@ onBeforeUnmount(() => {
 
 .payment-sections--dialog .payment-section--adjustments {
 	grid-area: adjustments;
+}
+
+.payment-sections--dialog .payment-section--grouping {
+	grid-column: 1 / -1;
 }
 
 .payment-sections--dialog .payment-section--meta {

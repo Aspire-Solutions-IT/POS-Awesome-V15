@@ -28,6 +28,18 @@
 				persistent-placeholder
 			></v-text-field>
 		</v-col>
+		<v-col cols="12" sm="6" v-if="orderRef">
+			<v-text-field
+				variant="solo"
+				color="primary"
+				:label="frappe._('Order Ref')"
+				class="sleek-field pos-themed-input"
+				hide-details
+				:model-value="orderRef"
+				readonly
+				density="compact"
+			></v-text-field>
+		</v-col>
 
 		<v-col v-if="invoice_doc && giftCardAppliedAmount > 0" cols="12">
 			<div class="payment-summary-pill payment-summary-pill--gift-card">
@@ -101,6 +113,10 @@ const props = defineProps({
 		default: 0,
 	},
 	giftCardCode: {
+		type: String,
+		default: "",
+	},
+	orderRef: {
 		type: String,
 		default: "",
 	},

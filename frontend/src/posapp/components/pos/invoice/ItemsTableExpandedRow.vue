@@ -1,10 +1,360 @@
 <template>
-	<td :colspan="colspan" class="ma-0 pa-0 posa-expanded-row-cell">
+	<td
+		v-if="renderMode === 'table'"
+		:colspan="colspan"
+		class="ma-0 pa-0 posa-expanded-row-cell"
+	>
 		<div
 			v-if="isExpanded"
 			class="posa-expanded-content responsive-expanded-content"
 			:class="expandedContentClasses"
 		>
+			<!-- Item Details Form -->
+			<div class="posa-item-details-form">
+				<!-- Basic Information Section -->
+				<div class="posa-form-section">
+					<div class="posa-section-header">
+						<v-icon size="small" class="section-icon">mdi-information-outline</v-icon>
+						<span class="posa-section-title">{{ __("Basic Information") }}</span>
+					</div>
+					<div class="posa-form-row">
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Item Code')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.item_code"
+								disabled
+								prepend-inner-icon="mdi-barcode"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('QTY')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatFloat(item.qty, hide_qty_decimals ? 0 : undefined)"
+								@change="onQtyChange(item, $event)"
+								:rules="[isNumber]"
+								:disabled="!!item.posa_is_replace"
+								prepend-inner-icon="mdi-numeric"
+							></v-text-field>
+							<div v-if="item.max_qty !== undefined" class="text-caption mt-1">
+								{{
+									__("In stock: {0}", [
+										formatFloat(item._base_actual_qty, hide_qty_decimals ? 0 : undefined),
+									])
+								}}
+							</div>
+						</div>
+						<div class="posa-form-field">
+							<v-select
+								density="compact"
+								class="pos-themed-input"
+								:label="frappe._('UOM')"
+								v-model="item.uom"
+								:items="item.item_uoms"
+								variant="outlined"
+								item-title="uom"
+								item-value="uom"
+								hide-details
+								@update:model-value="calcUom(item, $event)"
+								:disabled="
+									!!item.posa_is_replace || (isReturnInvoice && invoice_doc.return_against)
+								"
+								prepend-inner-icon="mdi-weight"
+							></v-select>
+						</div>
+					</div>
+				</div>
+
+				<!-- Pricing Section -->
+				<div class="posa-form-section">
+					<div class="posa-section-header">
+						<v-icon size="small" class="section-icon">mdi-currency-usd</v-icon>
+						<span class="posa-section-title">{{ __("Pricing & Discounts") }}</span>
+					</div>
+					<div class="posa-form-row">
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								id="rate"
+								:label="frappe._('Rate')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatCurrency(item.rate)"
+								@change="[
+									setFormatedCurrency(item, 'rate', null, false, $event),
+									calcPrices(item, $event.target.value, $event),
+								]"
+								:disabled="
+									!pos_profile.posa_allow_user_to_edit_rate || !!item.posa_is_replace
+								"
+								prepend-inner-icon="mdi-currency-usd"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								id="discount_percentage"
+								:label="frappe._('Discount %')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatFloat(Math.abs(item.discount_percentage || 0))"
+								@change="[
+									setFormatedCurrency(item, 'discount_percentage', null, false, $event),
+									calcPrices(item, $event.target.value, $event),
+								]"
+								:disabled="
+									!pos_profile.posa_allow_user_to_edit_item_discount ||
+									!!item.posa_is_replace ||
+									!!item.posa_offer_applied
+								"
+								prepend-inner-icon="mdi-percent"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								id="discount_amount"
+								:label="frappe._('Discount Amount')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatCurrency(Math.abs(item.discount_amount || 0))"
+								@change="[
+									setFormatedCurrency(item, 'discount_amount', null, false, $event),
+									calcPrices(item, $event.target.value, $event),
+								]"
+								:disabled="
+									!pos_profile.posa_allow_user_to_edit_item_discount ||
+									!!item.posa_is_replace ||
+									!!item.posa_offer_applied
+								"
+								prepend-inner-icon="mdi-tag-minus"
+							></v-text-field>
+						</div>
+					</div>
+					<div class="posa-form-row">
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Price List Rate')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatCurrency(item.price_list_rate ?? 0)"
+								:disabled="!pos_profile.posa_allow_price_list_rate_change"
+								readonly
+								prepend-inner-icon="mdi-format-list-numbered"
+								:prefix="currencySymbol(pos_profile.currency)"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Total Amount')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatCurrency(item.qty * item.rate)"
+								disabled
+								prepend-inner-icon="mdi-calculator"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field" v-if="pos_profile.posa_allow_price_list_rate_change">
+							<v-btn
+								size="small"
+								color="primary"
+								variant="outlined"
+								class="change-price-btn"
+								@click.stop="changePriceListRate(item)"
+							>
+								<v-icon size="small" class="mr-1">mdi-pencil</v-icon>
+								{{ __("Change Price") }}
+							</v-btn>
+						</div>
+					</div>
+				</div>
+
+				<!-- Stock Information Section -->
+				<div class="posa-form-section">
+					<div class="posa-section-header">
+						<v-icon size="small" class="section-icon">mdi-warehouse</v-icon>
+						<span class="posa-section-title">{{ __("Stock Information") }}</span>
+					</div>
+					<div class="posa-form-row">
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Available QTY')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatFloat(item._base_actual_qty)"
+								disabled
+								prepend-inner-icon="mdi-package-variant"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Stock QTY')"
+								class="pos-themed-input"
+								hide-details
+								:model-value="formatFloat(item.stock_qty)"
+								disabled
+								prepend-inner-icon="mdi-scale-balance"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Stock UOM')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.stock_uom"
+								disabled
+								prepend-inner-icon="mdi-weight-pound"
+							></v-text-field>
+						</div>
+					</div>
+					<div class="posa-form-row">
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Warehouse')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.warehouse"
+								disabled
+								prepend-inner-icon="mdi-warehouse"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Group')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.item_group"
+								disabled
+								prepend-inner-icon="mdi-folder-outline"
+							></v-text-field>
+						</div>
+						<div class="posa-form-field">
+							<v-text-field
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Brand')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.brand"
+								disabled
+								prepend-inner-icon="mdi-tag-outline"
+							></v-text-field>
+						</div>
+					</div>
+				</div>
+
+				<!-- Batch & Serial Section -->
+				<div
+					v-if="item.has_batch_no || item.has_serial_no || invoiceType === 'Order'"
+					class="posa-form-section"
+				>
+					<div class="posa-section-header">
+						<v-icon size="small" class="section-icon">mdi-barcode-scan</v-icon>
+						<span class="posa-section-title">{{ __("Batch, Serial & Delivery") }}</span>
+					</div>
+					<div class="posa-form-row" v-if="item.has_batch_no">
+						<div class="posa-form-field">
+							<v-select
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Batch No')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.batch_no"
+								:items="getBatchOptions(item)"
+								item-title="label"
+								item-value="batch_no"
+								@update:model-value="setBatchQty(item, $event)"
+								prepend-inner-icon="mdi-package"
+							></v-select>
+						</div>
+					</div>
+					<div class="posa-form-row" v-if="item.has_serial_no">
+						<div class="posa-form-field">
+							<v-select
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Serial No')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.serial_no"
+								:items="getSerialOptions(item)"
+								item-title="label"
+								item-value="serial_no"
+								@update:model-value="setSerialNo(item)"
+								prepend-inner-icon="mdi-barcode"
+								multiple
+							></v-select>
+						</div>
+					</div>
+					<div class="posa-form-row" v-if="invoiceType === 'Order'">
+						<div class="posa-form-field">
+							<VueDatePicker
+								v-model="item.posa_delivery_date"
+								model-type="format"
+								format="dd-MM-yyyy"
+								:min-date="new Date()"
+								auto-apply
+								@update:model-value="validateDueDate(item)"
+							/>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<!-- Lazy placeholder -->
+		<div v-else class="expanded-placeholder">
+			<div class="text-center pa-4">
+				<v-progress-circular indeterminate size="small"></v-progress-circular>
+				<div class="text-caption mt-2">{{ __("Loading details...") }}</div>
+			</div>
+		</div>
+	</td>
+
+	<div
+		v-else-if="isExpanded"
+		class="posa-expanded-content responsive-expanded-content posa-expanded-content--dialog"
+		:class="expandedContentClasses"
+	>
 			<!-- Item Details Form -->
 			<div class="posa-item-details-form">
 				<!-- Basic Information Section -->
@@ -431,15 +781,7 @@
 					</div>
 				</div>
 			</div>
-		</div>
-		<!-- Lazy placeholder -->
-		<div v-else class="expanded-placeholder">
-			<div class="text-center pa-4">
-				<v-progress-circular indeterminate size="small"></v-progress-circular>
-				<div class="text-caption mt-2">{{ __("Loading details...") }}</div>
-			</div>
-		</div>
-	</td>
+	</div>
 </template>
 
 <script setup lang="ts">
@@ -450,6 +792,7 @@ interface Props {
 	item: CartItem | any;
 	isExpanded: boolean;
 	colspan: number;
+	renderMode?: "table" | "dialog";
 	pos_profile: POSProfile | any;
 	invoiceType?: string;
 	isReturnInvoice?: boolean;
@@ -474,7 +817,9 @@ interface Props {
 	validateDueDate: (_item: any) => void;
 }
 
-defineProps<Props>();
+withDefaults(defineProps<Props>(), {
+	renderMode: "table",
+});
 
 const emit = defineEmits<{
 	"qty-change": [item: CartItem, event: any];

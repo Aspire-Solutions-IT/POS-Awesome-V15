@@ -9,24 +9,16 @@
 		@dragenter="onDragEnterFromSelector"
 		@dragleave="onDragLeaveFromSelector"
 	>
-		<v-data-table-virtual
+		<v-data-table
 			:headers="responsiveHeaders"
 			:items="items"
-			:expanded="expanded"
-			show-expand
 			item-value="posa_row_id"
 			class="posa-cart-table elevation-2 pos-themed-card"
 			:class="tableClasses"
-			:items-per-page="virtualScrollConfig.itemsPerPage"
-			:item-height="virtualScrollConfig.itemHeight"
-			:buffer-size="virtualScrollConfig.bufferSize"
-			expand-on-click
 			fixed-header
 			:density="tableDensity"
 			hide-default-footer
-			:single-expand="true"
 			:header-props="dynamicHeaderProps"
-			@update:expanded="handleExpandedUpdate"
 			:search="itemSearch"
 			:custom-filter="customItemFilter"
 		>
@@ -40,7 +32,7 @@
 				</div>
 			</template>
 
-			<template v-slot:item="{ item, toggleExpand, internalItem }">
+			<template v-slot:item="{ item }">
 				<CartItemRow
 					:item="item"
 					:visible-columns="finalVisibleColumns"
@@ -66,40 +58,64 @@
 					@open-name-dialog="openNameDialog"
 					@reset-item-name="resetItemName"
 					@toggle-offer="toggleOffer"
-					@toggle-expand="handleToggleExpand(internalItem, toggleExpand)"
+					@toggle-expand="handleToggleExpand(item)"
 					@remove-item="removeItem"
-					@click="handleRowClick($event, item, toggleExpand, internalItem)"
+					@click="handleRowClick($event, item)"
 				/>
 			</template>
+		</v-data-table>
 
-			<!-- Expanded row -->
-			<template v-slot:expanded-row="{ item }">
-				<ItemsTableExpandedRow
-					:item="item"
-					:is-expanded="isItemExpanded(item.posa_row_id)"
-					:colspan="finalVisibleColumns.length"
-					:pos_profile="pos_profile"
-					:invoice-type="invoiceType"
-					:is-return-invoice="isReturnInvoice"
-					:invoice_doc="invoice_doc"
-					:hide_qty_decimals="hide_qty_decimals"
-					:expanded-content-classes="expandedContentClasses"
-					:format-float="memoizedFormatFloat"
-					:format-currency="memoizedFormatCurrency"
-					:currency-symbol="currencySymbol"
-					:is-number="isNumber"
-					:set-formated-currency="setFormatedCurrency"
-					:calc-prices="calcPrices"
-					:calc-uom="calcUom"
-					:change-price-list-rate="changePriceListRate"
-					:get-serial-options="getSerialOptions"
-					:set-serial-no="setSerialNo"
-					:set-batch-qty="setBatchQty"
-					:validate-due-date="validateDueDate"
-					@qty-change="handleQtyChange"
-				/>
-			</template>
-		</v-data-table-virtual>
+		<v-dialog
+			:model-value="Boolean(activeExpandedItem)"
+			max-width="1100"
+			scrollable
+			@update:model-value="handleExpandedDialogToggle"
+		>
+			<v-card class="posa-item-details-dialog">
+				<v-card-title class="d-flex align-center justify-space-between">
+					<div>
+						<div class="text-subtitle-1 font-weight-bold">
+							{{ activeExpandedItem?.item_name || __("Item Details") }}
+						</div>
+						<div class="text-caption text-medium-emphasis">
+							{{ activeExpandedItem?.item_code || "" }}
+						</div>
+					</div>
+					<v-btn icon variant="text" @click="closeExpandedDialog" :aria-label="__('Close item details')">
+						<v-icon>mdi-close</v-icon>
+					</v-btn>
+				</v-card-title>
+				<v-divider></v-divider>
+				<v-card-text class="posa-item-details-dialog__body">
+					<ItemsTableExpandedRow
+						v-if="activeExpandedItem"
+						:item="activeExpandedItem"
+						:is-expanded="true"
+						:render-mode="'dialog'"
+						:colspan="finalVisibleColumns.length"
+						:pos_profile="pos_profile"
+						:invoice-type="invoiceType"
+						:is-return-invoice="isReturnInvoice"
+						:invoice_doc="invoice_doc"
+						:hide_qty_decimals="hide_qty_decimals"
+						:expanded-content-classes="expandedContentClasses"
+						:format-float="memoizedFormatFloat"
+						:format-currency="memoizedFormatCurrency"
+						:currency-symbol="currencySymbol"
+						:is-number="isNumber"
+						:set-formated-currency="setFormatedCurrency"
+						:calc-prices="calcPrices"
+						:calc-uom="calcUom"
+						:change-price-list-rate="changePriceListRate"
+						:get-serial-options="getSerialOptions"
+						:set-serial-no="setSerialNo"
+						:set-batch-qty="setBatchQty"
+						:validate-due-date="validateDueDate"
+						@qty-change="handleQtyChange"
+					/>
+				</v-card-text>
+			</v-card>
+		</v-dialog>
 
 		<!-- Edit name dialog -->
 		<v-dialog v-model="editNameDialog" max-width="400">
@@ -276,10 +292,13 @@ const getSerialOptions = (item: any) => {
 	return Array.isArray(item?.serial_no_data) ? item.serial_no_data : [];
 };
 
-const handleExpandedUpdate = (val: any[]) => {
-	const mappedValues = val.map((v) => (typeof v === "object" ? v.posa_row_id : v));
-	emit("update:expanded", mappedValues);
-};
+const activeExpandedItem = computed(() => {
+	const expandedId = Array.isArray(props.expanded) ? props.expanded[0] : null;
+	if (!expandedId) {
+		return null;
+	}
+	return items.value.find((item: any) => item?.posa_row_id === expandedId) || null;
+});
 
 const handleQtyChange = (item: any, event: any) => {
 	const newQty = parseFloat(event.target.value) || 0;
@@ -334,15 +353,52 @@ const handleDiscountAmountUpdate = (item: any, newDiscount: any) => {
 	props.calcPrices(item, newDiscount, { target: { id: "discount_amount" } });
 };
 
-const handleRowClick = (event: any, item: any, toggleExpand: any, internalItem: any) => {
-	if (toggleExpand) {
-		toggleExpand(internalItem);
+const handleRowClick = (event: any, item: any) => {
+	const target = event?.target as HTMLElement | null;
+	if (target?.closest?.(
+		[
+			"button",
+			".v-btn",
+			"input",
+			"textarea",
+			"select",
+			".v-field",
+			".v-input",
+			".qty-control-btn",
+			".posa-cart-table__qty-counter",
+			".posa-cart-table__qty-input",
+			".posa-cart-table__qty-display",
+			".posa-cart-table__editor-box",
+			".posa-cart-table__editor-display",
+			".posa-cart-table__editor-input",
+			".delete-action-btn",
+			".posa-cart-table__expand-btn",
+		].join(","),
+	)) {
+		return;
 	}
+	handleToggleExpand(item);
 };
 
-const handleToggleExpand = (internalItem: any, toggleExpand: any) => {
-	if (toggleExpand) {
-		toggleExpand(internalItem);
+const handleToggleExpand = (item: any) => {
+	const itemId = item?.posa_row_id;
+	if (!itemId) {
+		return;
+	}
+	if (isItemExpanded(itemId)) {
+		emit("update:expanded", []);
+		return;
+	}
+	emit("update:expanded", [itemId]);
+};
+
+const closeExpandedDialog = () => {
+	emit("update:expanded", []);
+};
+
+const handleExpandedDialogToggle = (isOpen: boolean) => {
+	if (!isOpen) {
+		closeExpandedDialog();
 	}
 };
 
@@ -389,5 +445,13 @@ defineExpose({
 .posa-items-table-container {
 	position: relative;
 	transition: all 0.3s ease;
+}
+
+.posa-item-details-dialog {
+	border-radius: 18px;
+}
+
+.posa-item-details-dialog__body {
+	padding: 0 !important;
 }
 </style>

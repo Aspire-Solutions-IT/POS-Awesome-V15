@@ -29,6 +29,7 @@ export interface PaymentSubmissionOptions {
 	is_credit_sale?: Ref<boolean>;
 	loyaltyAmount?: Ref<number>;
 	isCollectionDeliveryChargeSelected?: Ref<boolean> | ComputedRef<boolean>;
+	isSplitGroupedOrder?: Ref<boolean> | ComputedRef<boolean>;
 	stores?: {
 		toastStore?: any;
 		syncStore?: any;
@@ -57,6 +58,10 @@ export interface SubmissionCallbacks {
 		waitForPostSubmitPayments?: boolean;
 		waitForInvoiceProcessing?: boolean;
 	}) => void;
+}
+
+export interface SubmissionControlOptions {
+	allowNoPaymentOrderSubmit?: boolean;
 }
 
 export function usePaymentSubmission(options: PaymentSubmissionOptions) {
@@ -275,7 +280,10 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 		}
 	};
 
-	const validateSubmission = async (payment_received = false) => {
+	const validateSubmission = async (
+		payment_received = false,
+		controlOptions: SubmissionControlOptions = {},
+	) => {
 		const doc = unref(invoiceDoc);
 		const profile = unref(posProfile);
 		const type = unref(invoiceType);
@@ -365,7 +373,8 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			!unref(options.is_credit_sale) &&
 			!doc.is_return &&
 			!hasAnySettlement &&
-			invoice_total > 0
+			invoice_total > 0 &&
+			!(salesOrderCheckout && controlOptions.allowNoPaymentOrderSubmit)
 		) {
 			throw new Error(__("Please enter payment amount"));
 		}
@@ -584,6 +593,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 	const submitInvoice = async (
 		print: boolean,
 		callbacks: SubmissionCallbacks = {},
+		controlOptions: SubmissionControlOptions = {},
 	): Promise<any> => {
 		const doc = unref(invoiceDoc);
 		const profile = unref(posProfile);
@@ -704,12 +714,20 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			customer_credit_dict: unref(customerCreditDict),
 			gift_card_redemptions: unref(options.giftCardRedemptions) || [],
 			is_cashback: unref(isCashback),
+			allow_no_payment_order_submit: Boolean(
+				salesOrderCheckout && controlOptions.allowNoPaymentOrderSubmit,
+			),
 			sales_order_settlement_state: salesOrderCheckout
-				? getSalesOrderSettlementState(
+				? (
+					controlOptions.allowNoPaymentOrderSubmit &&
+					formatFloat(totalPayedAmount + writeOffAmount, prec) <= 0
+						? "none"
+						: getSalesOrderSettlementState(
 						totalPayedAmount + writeOffAmount,
 						formatFloat(doc.rounded_total || doc.grand_total, prec),
 						prec,
 					)
+				)
 				: undefined,
 		};
 		const hasGiftCardRedemption = Array.isArray(data.gift_card_redemptions)
@@ -726,6 +744,9 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			);
 
 		if (isOffline()) {
+			if (unref(options.isSplitGroupedOrder)) {
+				throw new Error(__("Split grouped Sales Orders require an online connection"));
+			}
 			if (hasGiftCardRedemption) {
 				throw new Error(__("Gift card redemption requires an online connection"));
 			}
@@ -793,6 +814,9 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			const docstatus = r.message?.docstatus;
 			const status = r.message?.status;
 			const responseInvoiceName = r.message?.name || doc?.name;
+			const createdSalesOrders = Array.isArray(r.message?.created_sales_orders)
+				? r.message.created_sales_orders
+				: [];
 			const backgroundReason =
 				r.message?.error ||
 				r.message?.exc ||
@@ -874,13 +898,15 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			}
 
 			if (stores?.uiStore) {
-				stores.uiStore.setLastInvoice(doc.name);
+				stores.uiStore.setLastInvoice(responseInvoiceName);
 			}
 
 			if (!waitForInvoiceProcessing) {
 				const submittedTitle =
 					type === "Order" && profile?.posa_create_only_sales_order
-						? __("Sales Order {0} is Submitted", [r.message.name])
+						? createdSalesOrders.length > 1
+							? __("{0} Sales Orders were submitted", [createdSalesOrders.length])
+							: __("Sales Order {0} is Submitted", [r.message.name])
 						: type === "Quotation"
 							? __("Quotation {0} is Submitted", [r.message.name])
 							: __("Invoice {0} is Submitted", [r.message.name]);
@@ -1018,7 +1044,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 				console.log("Retrying submission with fixed payment amounts");
 				return new Promise((resolve) =>
 					setTimeout(
-						() => resolve(submitInvoice(print, callbacks)),
+						() => resolve(submitInvoice(print, callbacks, controlOptions)),
 						500,
 					),
 				);

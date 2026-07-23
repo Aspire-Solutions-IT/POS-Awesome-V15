@@ -16,6 +16,11 @@
 				/>
 			</v-col>
 			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+				<div v-if="showCollectFromStoreTag" class="mb-2">
+					<v-chip color="primary" variant="tonal" size="small">
+						{{ collectFromStoreTagLabel }}
+					</v-chip>
+				</div>
 				<v-autocomplete
 					:model-value="selectedShippingAddress"
 					:items="addresses"
@@ -23,7 +28,7 @@
 					item-value="name"
 					:custom-filter="addressFilter"
 					:no-data-text="$frappe._('No addresses found')"
-					:label="$frappe._('Shipping Address')"
+					:label="shippingAddressLabel"
 					variant="solo"
 					density="compact"
 					clearable
@@ -43,7 +48,10 @@
 					</template>
 				</v-autocomplete>
 			</v-col>
-			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+			<v-col
+				cols="12"
+				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && showAddressAction"
+			>
 				<div class="address-action mt-2">
 					<v-btn
 						icon="mdi-plus"
@@ -67,35 +75,41 @@
 					hide-details
 					@update:model-value="$emit('update:splitDelivery', $event)"
 				></v-checkbox>
+				<div v-if="splitDeliveryWarningText" class="text-caption text-warning mt-1">
+					{{ splitDeliveryWarningText }}
+				</div>
 			</v-col>
 			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
 				<v-checkbox
-					:model-value="holdOrder"
-					:label="$frappe._('Hold Order')"
+					:model-value="customerUnsureDeliveryDate"
+					:label="$frappe._('Customer is unsure on delivery date')"
 					color="primary"
 					density="compact"
 					hide-details
-					@update:model-value="$emit('update:holdOrder', $event)"
+					@update:model-value="$emit('update:customerUnsureDeliveryDate', $event)"
 				></v-checkbox>
+				<div v-if="holdHelpText" class="text-caption text-medium-emphasis mt-1">
+					{{ holdHelpText }}
+				</div>
 			</v-col>
 			<v-col
 				cols="12"
 				md="6"
-				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && holdOrder"
+				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && showPreferredDeliveryDate"
 			>
 				<VueDatePicker
-					:model-value="holdReleaseDate"
-					model-type="format"
+					:model-value="preferredDeliveryDate"
+					model-type="yyyy-MM-dd"
 					format="dd-MM-yyyy"
-					:min-date="holdReleaseMinDate"
+					:min-date="preferredDeliveryMinDate"
 					:enable-time-picker="false"
 					auto-apply
 					class="sleek-field pos-themed-input"
-					:placeholder="$frappe._('Auto Release Date')"
-					@update:model-value="$emit('update:holdReleaseDate', $event)"
+					:placeholder="preferredDeliveryPlaceholder"
+					:disabled="customerUnsureDeliveryDate"
+					@update:model-value="$emit('update:preferredDeliveryDate', $event)"
 				/>
 			</v-col>
-
 			<!-- Additional Notes (if enabled in POS profile) -->
 			<v-col cols="12" v-if="posProfile.posa_display_additional_notes">
 				<v-textarea
@@ -106,7 +120,7 @@
 					color="primary"
 					auto-grow
 					rows="2"
-					:label="$frappe._('Additional Notes')"
+					:label="additionalNotesLabel"
 					v-model="invoiceDoc.posa_notes"
 				></v-textarea>
 			</v-col>
@@ -160,9 +174,37 @@ defineProps({
 		type: String,
 		default: "Add Customer Address",
 	},
+	shippingAddressLabel: {
+		type: String,
+		default: "Shipping Address",
+	},
 	addresses: {
 		type: Array,
 		default: () => [],
+	},
+	showAddressAction: {
+		type: Boolean,
+		default: true,
+	},
+	showCollectFromStoreTag: {
+		type: Boolean,
+		default: false,
+	},
+	showPreferredDeliveryDate: {
+		type: Boolean,
+		default: false,
+	},
+	collectFromStoreTagLabel: {
+		type: String,
+		default: "Collect from Store",
+	},
+	preferredDeliveryDate: {
+		type: String,
+		default: null,
+	},
+	preferredDeliveryMinDate: {
+		type: Date,
+		default: () => new Date(),
 	},
 	selectedShippingAddress: {
 		type: String,
@@ -172,9 +214,17 @@ defineProps({
 		type: [Boolean, Number],
 		default: false,
 	},
-	holdOrder: {
+	splitDeliveryWarningText: {
+		type: String,
+		default: "",
+	},
+	customerUnsureDeliveryDate: {
 		type: Boolean,
 		default: false,
+	},
+	holdHelpText: {
+		type: String,
+		default: "",
 	},
 	holdReleaseDate: {
 		type: String,
@@ -192,10 +242,10 @@ defineProps({
 
 defineEmits([
 	"update:returnValidUptoDate",
+	"update:preferredDeliveryDate",
 	"update:selectedShippingAddress",
 	"update:splitDelivery",
-	"update:holdOrder",
-	"update:holdReleaseDate",
+	"update:customerUnsureDeliveryDate",
 	"new-address",
 ]);
 
@@ -208,6 +258,9 @@ const addressSubtitle = (address) =>
 	[address?.address_line1, address?.city, address?.state, address?.pincode]
 		.filter((value) => String(value || "").trim())
 		.join(", ");
+
+const preferredDeliveryPlaceholder = `${$frappe._("Preferred Delivery Date")} *`;
+const additionalNotesLabel = `${$frappe._("Additional Notes")} *`;
 </script>
 
 <style scoped>

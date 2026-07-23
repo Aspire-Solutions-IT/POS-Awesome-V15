@@ -378,7 +378,7 @@
 					variant="text"
 					class="posa-cart-table__expand-btn"
 					@click.stop="$emit('toggle-expand')"
-					:aria-label="isExpanded ? __('Collapse item details') : __('Expand item details')"
+					:aria-label="isExpanded ? __('Close item details') : __('Open item details')"
 				>
 					<v-icon size="small">
 						{{ isExpanded ? "mdi-chevron-up" : "mdi-chevron-down" }}

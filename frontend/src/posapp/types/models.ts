@@ -80,6 +80,11 @@ export interface InvoiceDoc {
   return_against?: string;
   /** Order-only flag used to allow partial allocation / split delivery. */
   posa_split_delivery?: number | boolean;
+  posa_split_groups?: Array<{
+    group_id: string;
+    label: string;
+    row_ids: string[];
+  }>;
   pos_profile?: string;
   [key: string]: any;
 }

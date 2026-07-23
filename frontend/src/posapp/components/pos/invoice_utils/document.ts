@@ -33,6 +33,15 @@ function resolveOrderDeliveryDate(context: any, sourceDoc: any): string | null {
 	);
 }
 
+function resolvePreferredDeliveryDate(context: any, sourceDoc: any): string | null {
+	return normalizeBackendDate(
+		context,
+		sourceDoc?.prefered_earliest_delivery_date ||
+			sourceDoc?.preferred_earliest_delivery_date ||
+			context.preferred_delivery_date,
+	);
+}
+
 function resolveTodayDate(context: any): string | null {
 	const fallbackToday = new Date().toISOString().slice(0, 10);
 	const rawToday =
@@ -421,6 +430,7 @@ export function get_invoice_doc(context: any) {
 	doc.posa_delivery_charges_rate = context.delivery_charges_rate || 0;
 	doc.posa_notes = sourceDoc.posa_notes ?? null;
 	doc.posa_authorization_code = sourceDoc.posa_authorization_code ?? null;
+	doc.customer_order_ref = sourceDoc.customer_order_ref ?? null;
 	doc.posa_return_valid_upto = sourceDoc.posa_return_valid_upto ?? null;
 	doc.posa_split_delivery =
 		sourceDoc.posa_split_delivery === 1 ||
@@ -428,6 +438,13 @@ export function get_invoice_doc(context: any) {
 		sourceDoc.posa_split_delivery === true
 			? 1
 			: 0;
+	doc.posa_split_groups = doc.posa_split_delivery
+		? (sourceDoc.posa_split_groups || []).map((group: any) => ({
+				group_id: group.group_id,
+				label: group.label,
+				row_ids: Array.isArray(group.row_ids) ? [...group.row_ids] : [],
+		  }))
+		: [];
 	doc.posting_date = normalizeBackendDate(
 		context,
 		context.posting_date_display ?? context.posting_date,
@@ -445,6 +462,9 @@ export function get_invoice_doc(context: any) {
 		}
 	}
 	if (doc.doctype === "Sales Order") {
+		const preferredDeliveryDate = resolvePreferredDeliveryDate(context, sourceDoc);
+		doc.prefered_earliest_delivery_date = preferredDeliveryDate;
+		doc.preferred_earliest_delivery_date = preferredDeliveryDate;
 		doc.must_be_fully_allocated = doc.posa_split_delivery ? 0 : 1;
 	}
 

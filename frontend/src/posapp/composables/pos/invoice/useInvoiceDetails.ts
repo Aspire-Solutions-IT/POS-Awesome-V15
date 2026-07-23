@@ -104,6 +104,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 
 	// Date states
 	const new_delivery_date = ref<string | null>(null);
+	const preferred_delivery_date = ref<string | null>(null);
 	const new_po_date = ref<string | null>(null);
 	const new_credit_due_date = ref<string | null>(null);
 	const credit_due_days = ref<number | null>(null);
@@ -323,6 +324,21 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		}
 	};
 
+	const update_preferred_delivery_date = (value: any = preferred_delivery_date.value) => {
+		const formatted = formatDate(value);
+		preferred_delivery_date.value = formatted || null;
+		const doc = unref(invoiceDoc);
+		if (doc) {
+			doc.prefered_earliest_delivery_date = formatted;
+			doc.preferred_earliest_delivery_date = formatted;
+		} else if (stores?.invoiceStore) {
+			stores.invoiceStore.mergeInvoiceDoc({
+				prefered_earliest_delivery_date: formatted,
+				preferred_earliest_delivery_date: formatted,
+			});
+		}
+	};
+
 	const update_po_date = () => {
 		const doc = unref(invoiceDoc);
 		if (doc) {
@@ -450,6 +466,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		addresses,
 		sales_persons,
 		new_delivery_date,
+		preferred_delivery_date,
 		new_po_date,
 		new_credit_due_date,
 		credit_due_days,
@@ -464,6 +481,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		normalizeAddress,
 		get_sales_person_names,
 		update_delivery_date,
+		update_preferred_delivery_date,
 		update_po_date,
 		update_credit_due_date,
 		applyDuePreset,

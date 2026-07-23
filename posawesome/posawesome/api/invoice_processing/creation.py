@@ -267,6 +267,18 @@ def _sanitize_delivery_dates(payload):
 
     if "posa_delivery_date" in payload:
         payload["posa_delivery_date"] = _safe_date_string(payload.get("posa_delivery_date"))
+    preferred_delivery_date = None
+    if "prefered_earliest_delivery_date" in payload:
+        preferred_delivery_date = _safe_date_string(
+            payload.get("prefered_earliest_delivery_date")
+        )
+    if "preferred_earliest_delivery_date" in payload:
+        preferred_delivery_date = _safe_date_string(
+            payload.get("preferred_earliest_delivery_date")
+        )
+    if "prefered_earliest_delivery_date" in payload or "preferred_earliest_delivery_date" in payload:
+        payload["prefered_earliest_delivery_date"] = preferred_delivery_date
+        payload["preferred_earliest_delivery_date"] = preferred_delivery_date
 
     items = payload.get("items")
     if not isinstance(items, list):

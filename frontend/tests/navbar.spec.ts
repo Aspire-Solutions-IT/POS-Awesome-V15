@@ -146,6 +146,56 @@ describe("Navbar supervisor access", () => {
 		expect((wrapper.vm as any).items.some((item: any) => item.to === "/gift-cards")).toBe(true);
 	});
 
+	it("shows the sales orders drawer item only when select sales order is enabled", async () => {
+		const employeeStore = useEmployeeStore();
+		employeeStore.setCurrentCashier({
+			user: "cashier@example.com",
+			full_name: "Main Cashier",
+			is_supervisor: false,
+		});
+
+		const wrapper = shallowMount(Navbar, {
+			props: {
+				posProfile: { name: "Main POS", custom_allow_select_sales_order: 0 },
+			},
+			global: {
+				mocks: {
+					__: (value: string) => value,
+				},
+				stubs: {
+					NavbarAppBar: true,
+					NavbarDrawer: true,
+					NavbarMenu: true,
+					NotificationBell: true,
+					StatusIndicator: true,
+					CacheUsageMeter: true,
+					AboutDialog: true,
+					EmployeeSwitchDialog: true,
+					OfflineInvoicesDialog: true,
+					ServerUsageGadget: true,
+					DatabaseUsageGadget: true,
+					VDialog: true,
+					VCard: true,
+					VCardTitle: true,
+					VCardText: true,
+					VSnackbar: true,
+					VBtn: true,
+					VProgressCircular: true,
+				},
+			},
+		});
+
+		await Promise.resolve();
+		expect((wrapper.vm as any).items.some((item: any) => item.to === "/sales-orders")).toBe(false);
+
+		await wrapper.setProps({
+			posProfile: { name: "Main POS", custom_allow_select_sales_order: 1 },
+		});
+		await nextTick();
+
+		expect((wrapper.vm as any).items.some((item: any) => item.to === "/sales-orders")).toBe(true);
+	});
+
 	it("passes a footer settings launcher to the drawer and opens the settings panel from it", async () => {
 		const employeeStore = useEmployeeStore();
 		employeeStore.setCurrentCashier({
