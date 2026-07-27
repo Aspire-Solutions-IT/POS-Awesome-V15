@@ -531,6 +531,7 @@ def update_invoice(data):
                     "customer_group": "All Customer Groups",
                     "territory": "All Territories",
                     "customer_type": "Individual",
+                    "auto_allocate_sales_orders": 1,
                 }
             )
             cust.flags.ignore_permissions = True

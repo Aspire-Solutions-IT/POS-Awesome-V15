@@ -243,6 +243,8 @@ class TestPosCustomersRfs(unittest.TestCase):
 
 		self.assertEqual(customer.payload["rfs_customer"], 1)
 		self.assertEqual(self.frappe.last_customer_doc.payload["rfs_customer"], 1)
+		self.assertEqual(customer.payload["auto_allocate_sales_orders"], 1)
+		self.assertEqual(self.frappe.last_customer_doc.payload["auto_allocate_sales_orders"], 1)
 
 	def test_create_customer_passes_phone_and_email_to_created_address(self):
 		captured = {}

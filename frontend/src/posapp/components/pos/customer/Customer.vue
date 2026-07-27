@@ -62,18 +62,6 @@
 					<span v-if="showCustomerLoadProgress" class="customer-load-percent">
 						{{ customerLoadPercent }}%
 					</span>
-					<v-tooltip :text="__('Add new customer')" content-class="posa-theme-tooltip">
-						<template #activator="{ props }">
-							<v-icon
-								v-bind="props"
-								class="icon-button"
-								@mousedown.prevent.stop
-								@click.stop="new_customer"
-							>
-								mdi-plus
-							</v-icon>
-						</template>
-					</v-tooltip>
 				</template>
 
 				<!-- Dropdown display -->
@@ -94,6 +82,25 @@
 						<v-list-item-subtitle v-if="item.raw.primary_address">
 							<div v-html="`Primary Address: ${item.raw.primary_address}`"></div>
 						</v-list-item-subtitle>
+					</v-list-item>
+				</template>
+
+				<template #no-data>
+					<v-list-item
+						v-if="showCreateCustomerAction"
+						class="create-customer-list-item"
+						@click="createCustomerFromSearch"
+					>
+						<template #prepend>
+							<v-icon color="primary">mdi-plus-circle-outline</v-icon>
+						</template>
+						<v-list-item-title>{{ __("Create new customer") }}</v-list-item-title>
+						<v-list-item-subtitle>
+							{{ createCustomerHint }}
+						</v-list-item-subtitle>
+					</v-list-item>
+					<v-list-item v-else>
+						<v-list-item-title>{{ customerNoDataText }}</v-list-item-title>
 					</v-list-item>
 				</template>
 			</v-autocomplete>
@@ -238,6 +245,7 @@ export default {
 		const internalCustomer = ref(null);
 		const tempSelectedCustomer = ref(null);
 		const isMenuOpen = ref(false);
+		const customerSearch = ref("");
 		const customerDropdown = ref(null);
 		const readonlyState = ref(false);
 
@@ -267,6 +275,18 @@ export default {
 			showCustomerLoadProgress.value
 				? `${__("Loading customers...")} ${customerLoadPercent.value}%`
 				: __("Customers not found"),
+		);
+		const trimmedCustomerSearch = computed(() => customerSearch.value.trim());
+		const showCreateCustomerAction = computed(
+			() =>
+				!isCustomerSearchLocked.value &&
+				Boolean(trimmedCustomerSearch.value) &&
+				filteredCustomers.value.length === 0,
+		);
+		const createCustomerHint = computed(() =>
+			trimmedCustomerSearch.value
+				? `Use "${trimmedCustomerSearch.value}" as the customer name`
+				: "",
 		);
 
 		const formatCustomerMetric = (value) => {
@@ -337,6 +357,7 @@ export default {
 			}
 
 			detachScrollListener();
+			customerSearch.value = "";
 			if (tempSelectedCustomer.value) {
 				internalCustomer.value = tempSelectedCustomer.value;
 				customersStore.setSelectedCustomer(tempSelectedCustomer.value);
@@ -360,6 +381,7 @@ export default {
 				}
 			}
 			isMenuOpen.value = false;
+			customerSearch.value = "";
 			detachScrollListener();
 		};
 
@@ -387,6 +409,7 @@ export default {
 				return;
 			}
 			const term = value || "";
+			customerSearch.value = term;
 			searchDebounce(term);
 		};
 
@@ -412,8 +435,15 @@ export default {
 			}
 		};
 
-		const new_customer = () => {
-			customersStore.openUpdateCustomerDialog(null);
+		const new_customer = (customerName = "") => {
+			const name = customerName.trim();
+			customersStore.openUpdateCustomerDialog(name ? { customer_name: name } : null);
+		};
+
+		const createCustomerFromSearch = () => {
+			const name = trimmedCustomerSearch.value;
+			closeCustomerMenu();
+			new_customer(name);
 		};
 
 		const edit_customer = () => {
@@ -536,6 +566,8 @@ export default {
 			customerFieldLabel,
 			customerFieldPlaceholder,
 			customerNoDataText,
+			showCreateCustomerAction,
+			createCustomerHint,
 			internalCustomer,
 			effectiveReadonly,
 			onCustomerMenuToggle,
@@ -543,6 +575,7 @@ export default {
 			onCustomerSearch,
 			handleEnter,
 			new_customer,
+			createCustomerFromSearch,
 			edit_customer,
 			selectFirstCustomer,
 			openNewCustomer,

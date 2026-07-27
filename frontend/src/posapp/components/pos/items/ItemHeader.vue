@@ -178,9 +178,8 @@ defineExpose({
 
 <style scoped>
 .sticky-header {
-	position: sticky;
-	top: 0;
-	z-index: 5;
+	position: relative;
+	z-index: 1;
 	background: var(--pos-surface);
 	padding: 12px 12px 0 12px;
 	border-bottom: 1px solid var(--pos-border);
@@ -236,8 +235,7 @@ defineExpose({
 
 @media (max-width: 768px) {
 	.sticky-header {
-		top: 0;
-		z-index: 13;
+		z-index: 1;
 		padding: 12px 12px 2px;
 	}
 

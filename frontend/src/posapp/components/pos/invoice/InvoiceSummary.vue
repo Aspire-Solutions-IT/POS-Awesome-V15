@@ -92,7 +92,6 @@
 					:pos_profile="pos_profile"
 					:saveLoading="saveLoading"
 					:loadDraftsLoading="loadDraftsLoading"
-					:selectOrderLoading="selectOrderLoading"
 					:selectPurchaseOrderLoading="selectPurchaseOrderLoading"
 					:cancelLoading="cancelLoading"
 					:invoiceManagementLoading="invoiceManagementLoading"
@@ -102,7 +101,6 @@
 					:customerDisplayLoading="customerDisplayLoading"
 					@save-and-clear="handleSaveAndClear"
 					@load-drafts="handleLoadDrafts"
-					@select-order="handleSelectOrder"
 					@cancel-sale="handleCancelSale"
 					@open-invoice-management="handleOpenInvoiceManagement"
 					@open-returns="handleOpenReturns"
@@ -197,7 +195,6 @@ const emit = defineEmits([
 	"update_discount_umount",
 	"save-and-clear",
 	"load-drafts",
-	"select-order",
 	"cancel-sale",
 	"open-invoice-management",
 	"open-returns",
@@ -209,7 +206,6 @@ const emit = defineEmits([
 
 const saveLoading = ref(false);
 const loadDraftsLoading = ref(false);
-const selectOrderLoading = ref(false);
 const cancelLoading = ref(false);
 const invoiceManagementLoading = ref(false);
 const returnsLoading = ref(false);
@@ -344,15 +340,6 @@ function openDraftsSurface() {
 	}
 
 	mobileDraftsDialog.value = true;
-}
-
-async function handleSelectOrder() {
-	selectOrderLoading.value = true;
-	try {
-		await emit("select-order");
-	} finally {
-		selectOrderLoading.value = false;
-	}
 }
 
 async function handleCancelSale() {

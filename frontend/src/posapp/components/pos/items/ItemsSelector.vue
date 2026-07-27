@@ -1108,7 +1108,9 @@ const selectorCardStyle = computed<CSSProperties>(() => ({
 		? "calc(var(--viewport-height) * 0.46)"
 		: responsiveStyles.value["--container-height"],
 	resize: canResizeSelectorPanel.value ? "vertical" : "none",
-	overflow: "auto",
+	overflow: "hidden",
+	display: "flex",
+	flexDirection: "column",
 	position: "relative",
 }));
 const itemSearchFocusClearGuard = createItemSearchFocusClearGuard();
@@ -1404,6 +1406,8 @@ defineExpose({
 	padding: var(--dynamic-sm);
 	display: flex;
 	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
 	gap: var(--dynamic-sm);
 }
 
@@ -1437,15 +1441,25 @@ defineExpose({
 .selector-header-card {
 	padding: 0;
 	overflow: hidden;
-	position: sticky;
-	top: 0;
-	z-index: 8;
+	flex: 0 0 auto;
+	position: relative;
+	z-index: 2;
 }
 
 .selector-results-card {
 	padding: var(--dynamic-xs);
 	overflow: hidden;
+	flex: 1 1 auto;
+	min-height: 0;
 	min-width: 0;
+}
+
+.items {
+	height: 100%;
+}
+
+.items :deep(.v-col) {
+	height: 100%;
 }
 
 .dynamic-scroll {
@@ -1562,8 +1576,6 @@ defineExpose({
 	}
 
 	.selector-header-card {
-		top: max(4px, env(safe-area-inset-top));
-		z-index: 12;
 		box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
 	}
 

@@ -183,6 +183,7 @@
 								:setSerialNo="set_serial_no"
 								:setBatchQty="set_batch_qty"
 								:validateDueDate="validate_due_date"
+								:updateItemDetail="update_item_detail"
 								:removeItem="remove_item"
 								:subtractOne="subtract_one"
 								:addOne="add_one"
@@ -250,7 +251,6 @@
 			@update_discount_umount="update_discount_umount"
 			@save-and-clear="save_and_clear_invoice"
 			@load-drafts="get_draft_invoices"
-			@select-order="get_draft_orders"
 			@cancel-sale="cancel_dialog = true"
 			@open-invoice-management="open_invoice_management"
 			@open-returns="open_returns"
@@ -281,6 +281,7 @@ import invoiceWatchers from "./invoice/invoiceWatchers";
 import shortcutMethods from "./invoice/invoiceShortcuts";
 import { useInvoiceStore } from "../../stores/invoiceStore.js";
 import { useCustomersStore } from "../../stores/customersStore.js";
+import { useEmployeeStore } from "../../stores/employeeStore.js";
 import { useToastStore } from "../../stores/toastStore.js";
 import { useUIStore } from "../../stores/uiStore.js";
 import { storeToRefs } from "pinia";
@@ -312,11 +313,13 @@ export default {
 		const uiStore = useUIStore();
 		const invoiceStore = useInvoiceStore();
 		const customersStore = useCustomersStore();
+		const employeeStore = useEmployeeStore();
 		const toastStore = useToastStore();
 		const { isOnline } = useOnlineStatus();
 
 		const { activeView, posProfile: livePosProfile } = storeToRefs(uiStore);
 		const { selectedCustomer, refreshToken: customerRefreshToken } = storeToRefs(customersStore);
+		const { currentCashier } = storeToRefs(employeeStore);
 		const {
 			items,
 			packedItems: packed_items,
@@ -356,6 +359,8 @@ export default {
 			toastStore,
 			invoiceStore,
 			customersStore,
+			employeeStore,
+			currentCashier,
 			selectedCustomer,
 			customerRefreshToken,
 			invoiceType,

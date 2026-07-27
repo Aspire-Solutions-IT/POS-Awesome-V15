@@ -330,6 +330,7 @@ def create_customer(
                     "customer_type": customer_type,
                     "gender": gender,
                     "rfs_customer": 1,
+                    "auto_allocate_sales_orders": 1,
                     "customer_group": resolved_customer_group,
                     "territory": resolved_territory,
                 }
