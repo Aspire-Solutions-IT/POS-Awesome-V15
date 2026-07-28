@@ -2999,6 +2999,10 @@ onMounted(() => {
 		eventBus.on("send_invoice_doc_payment", (doc) => {
 			currentStep.value = isWizardFlow.value ? 1 : 2;
 			invoiceStore.setInvoiceDoc(doc);
+			const incomingDeliveryDate = String(
+				doc?.prefered_earliest_delivery_date || doc?.preferred_earliest_delivery_date || "",
+			).trim();
+			applyDefaultPreferredDeliveryDate({ force: !incomingDeliveryDate });
 			paid_change.value = flt(doc.paid_change || 0, currency_precision.value);
 			credit_change.value = flt(doc.credit_change || 0, currency_precision.value);
 			last_payment_change_was_cash.value = null;
