@@ -113,11 +113,7 @@ export default {
 
 		const summaryFormatters = {
 			formatCurrencyWithSymbol: (amount, currency) => {
-				const resolvedCurrency = currency || "";
-				const symbol = currencySymbol(resolvedCurrency);
-				const formatted = formatCurrency(amount || 0);
-				if (symbol) return `${symbol} ${formatted}`;
-				return `${resolvedCurrency} ${formatted}`.trim();
+				return window.format_currency(amount || 0, currency || undefined);
 			},
 			formatCount: (value) => formatFloat(value || 0, 0),
 			formatCurrency,

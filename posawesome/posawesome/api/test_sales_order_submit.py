@@ -57,6 +57,9 @@ def _install_stub_modules():
     payment_entry_module = types.ModuleType("posawesome.posawesome.api.payment_entry")
     payment_entry_module.create_payment_entry = lambda *args, **kwargs: None
 
+    update_child_qty_rate_module = types.ModuleType("customer_due_dates.api.update_child_qty_rate")
+    update_child_qty_rate_module.update_child_qty_rate = lambda *args, **kwargs: None
+
     package_roots = {
         "posawesome": Path(__file__).resolve().parents[3],
         "posawesome.posawesome": Path(__file__).resolve().parents[2],
@@ -73,6 +76,9 @@ def _install_stub_modules():
     sys.modules["erpnext.accounts.party"] = erpnext_accounts_party
     sys.modules["erpnext.selling.doctype.sales_order.sales_order"] = erpnext_sales_order
     sys.modules["posawesome.posawesome.api.payment_entry"] = payment_entry_module
+    sys.modules["customer_due_dates"] = types.ModuleType("customer_due_dates")
+    sys.modules["customer_due_dates.api"] = types.ModuleType("customer_due_dates.api")
+    sys.modules["customer_due_dates.api.update_child_qty_rate"] = update_child_qty_rate_module
 
 
 def _load_sales_orders_module():
@@ -181,6 +187,7 @@ class TestSalesOrderSubmit(TestCase):
                     warehouse="Main - TC",
                     uom="Nos",
                     qty=1,
+                    picked_qty=0,
                     delivered_qty=0,
                     rate=100,
                     amount=100,
@@ -197,6 +204,7 @@ class TestSalesOrderSubmit(TestCase):
                     warehouse="Main - TC",
                     uom="Nos",
                     qty=2,
+                    picked_qty=0,
                     delivered_qty=0,
                     rate=50,
                     amount=100,
@@ -215,6 +223,170 @@ class TestSalesOrderSubmit(TestCase):
         self.assertEqual(result["latest_component_due_date"], "2026-08-11")
         self.assertEqual(len(result["items"]), 2)
         self.assertEqual(result["items"][0]["component_due_date"], "2026-08-01")
+        self.assertFalse(result["items"][0]["is_locked"])
+
+    def test_get_managed_sales_order_marks_picked_items_locked(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-LOCK-1",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            customer_name="RFS Customer",
+            status="To Deliver",
+            transaction_date="2026-07-23",
+            delivery_date="2026-07-30",
+            prefered_earliest_delivery_date="2026-08-15",
+            customer_ref=None,
+            customer_order_ref=None,
+            posa_notes=None,
+            shopify_notes=None,
+            auto_release_date=None,
+            shipping_address_name=None,
+            customer_address=None,
+            currency="GBP",
+            grand_total=100,
+            rounded_total=100,
+            modified="2026-07-23 10:00:00",
+            owner="test@example.com",
+            items=[
+                SimpleNamespace(
+                    name="SOI-PICKED",
+                    item_code="ITEM-1",
+                    item_name="Item 1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=1,
+                    delivered_qty=0,
+                    rate=100,
+                    amount=100,
+                    delivery_date="2026-07-30",
+                    component_due_date=None,
+                    quoted_date=None,
+                    posa_notes=None,
+                ),
+            ],
+        )
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc):
+            result = sales_orders.get_managed_sales_order("SO-MANAGED-LOCK-1")
+
+        self.assertTrue(result["items"][0]["is_locked"])
+        self.assertEqual(result["items"][0]["lock_reason"], "Picked qty is greater than 0.")
+
+    def test_get_managed_sales_order_marks_delivered_items_locked(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-LOCK-2",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            customer_name="RFS Customer",
+            status="To Deliver",
+            transaction_date="2026-07-23",
+            delivery_date="2026-07-30",
+            prefered_earliest_delivery_date="2026-08-15",
+            customer_ref=None,
+            customer_order_ref=None,
+            posa_notes=None,
+            shopify_notes=None,
+            auto_release_date=None,
+            shipping_address_name=None,
+            customer_address=None,
+            currency="GBP",
+            grand_total=100,
+            rounded_total=100,
+            modified="2026-07-23 10:00:00",
+            owner="test@example.com",
+            items=[
+                SimpleNamespace(
+                    name="SOI-DELIVERED",
+                    item_code="ITEM-1",
+                    item_name="Item 1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=0,
+                    delivered_qty=1,
+                    rate=100,
+                    amount=100,
+                    delivery_date="2026-07-30",
+                    component_due_date=None,
+                    quoted_date=None,
+                    posa_notes=None,
+                ),
+            ],
+        )
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc):
+            result = sales_orders.get_managed_sales_order("SO-MANAGED-LOCK-2")
+
+        self.assertTrue(result["items"][0]["is_locked"])
+        self.assertEqual(result["items"][0]["lock_reason"], "Delivered qty is greater than 0.")
+
+    def test_get_managed_sales_order_marks_draft_pick_lists_locked(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-LOCK-3",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            customer_name="RFS Customer",
+            status="To Deliver",
+            transaction_date="2026-07-23",
+            delivery_date="2026-07-30",
+            prefered_earliest_delivery_date="2026-08-15",
+            customer_ref=None,
+            customer_order_ref=None,
+            posa_notes=None,
+            shopify_notes=None,
+            auto_release_date=None,
+            shipping_address_name=None,
+            customer_address=None,
+            currency="GBP",
+            grand_total=100,
+            rounded_total=100,
+            modified="2026-07-23 10:00:00",
+            owner="test@example.com",
+            items=[
+                SimpleNamespace(
+                    name="SOI-DRAFT-PL",
+                    item_code="ITEM-1",
+                    item_name="Item 1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=0,
+                    delivered_qty=0,
+                    rate=100,
+                    amount=100,
+                    delivery_date="2026-07-30",
+                    component_due_date=None,
+                    quoted_date=None,
+                    posa_notes=None,
+                ),
+            ],
+        )
+
+        def fake_get_all(doctype, **kwargs):
+            if doctype == "Pick List Item":
+                return [{"parent": "PL-DRAFT-1", "sales_order_item": "SOI-DRAFT-PL"}]
+            if doctype == "Pick List":
+                return [{"name": "PL-DRAFT-1", "status": "Draft", "docstatus": 0, "per_delivered": 0}]
+            return []
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders.frappe, "get_all", side_effect=fake_get_all
+        ):
+            result = sales_orders.get_managed_sales_order("SO-MANAGED-LOCK-3")
+
+        self.assertTrue(result["items"][0]["is_locked"])
+        self.assertEqual(result["items"][0]["linked_pick_lists"][0]["status"], "Draft")
+        self.assertIn("PL-DRAFT-1 (Draft)", result["items"][0]["lock_reason"])
 
     def test_update_managed_sales_order_updates_allowed_fields_only(self):
         so_doc = SimpleNamespace(
@@ -252,6 +424,227 @@ class TestSalesOrderSubmit(TestCase):
         self.assertTrue(so_doc.flags.ignore_permissions)
         self.assertTrue(so_doc.flags.ignore_validate_update_after_submit)
         so_doc.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_update_managed_sales_order_items_reuses_sales_order_update_path(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-ITEMS-1",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            customer_name="RFS Customer",
+            status="To Deliver",
+            transaction_date="2026-07-23",
+            delivery_date="2026-07-30",
+            prefered_earliest_delivery_date="2026-08-15",
+            customer_ref=None,
+            customer_order_ref=None,
+            posa_notes=None,
+            shopify_notes=None,
+            auto_release_date=None,
+            shipping_address_name=None,
+            customer_address=None,
+            currency="GBP",
+            grand_total=100,
+            rounded_total=100,
+            modified="2026-07-23 10:00:00",
+            owner="test@example.com",
+            reload=MagicMock(),
+            items=[
+                SimpleNamespace(
+                    name="SOI-EDITABLE",
+                    item_code="ITEM-1",
+                    item_name="Item 1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=0,
+                    delivered_qty=0,
+                    rate=100,
+                    amount=100,
+                    delivery_date="2026-07-30",
+                    component_due_date=None,
+                    quoted_date=None,
+                    posa_notes=None,
+                    bom_no=None,
+                    conversion_factor=1,
+                ),
+            ],
+        )
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-1",
+            "items": [
+                {
+                    "docname": "SOI-EDITABLE",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 2,
+                    "conversion_factor": 1,
+                }
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-MANAGED-ITEMS-1"}
+        ), patch(
+            "customer_due_dates.api.update_child_qty_rate.update_child_qty_rate"
+        ) as update_items:
+            result = sales_orders.update_managed_sales_order_items(payload)
+
+        self.assertEqual(result["name"], "SO-MANAGED-ITEMS-1")
+        update_items.assert_called_once()
+        call_kwargs = update_items.call_args.kwargs
+        self.assertEqual(call_kwargs["parent_doctype"], "Sales Order")
+        self.assertEqual(call_kwargs["parent_doctype_name"], "SO-MANAGED-ITEMS-1")
+        self.assertIn("\"qty\": 2.0", call_kwargs["trans_items"])
+        self.assertIn("\"rate\": 100.0", call_kwargs["trans_items"])
+        self.assertIn("\"warehouse\": \"Main - TC\"", call_kwargs["trans_items"])
+        self.assertIn("\"delivery_date\": \"2026-07-30\"", call_kwargs["trans_items"])
+
+    def test_update_managed_sales_order_items_blocks_picked_rows(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-ITEMS-2",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            items=[
+                SimpleNamespace(
+                    name="SOI-PICKED",
+                    item_code="ITEM-1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=1,
+                    delivered_qty=0,
+                    rate=100,
+                    delivery_date="2026-07-30",
+                    bom_no=None,
+                    conversion_factor=1,
+                ),
+            ],
+        )
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-2",
+            "items": [
+                {
+                    "docname": "SOI-PICKED",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 2,
+                    "conversion_factor": 1,
+                }
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc):
+            with self.assertRaisesRegex(RuntimeError, "Picked qty is greater than 0"):
+                sales_orders.update_managed_sales_order_items(payload)
+
+    def test_update_managed_sales_order_items_blocks_delivered_rows(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-ITEMS-3",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            items=[
+                SimpleNamespace(
+                    name="SOI-DELIVERED",
+                    item_code="ITEM-1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=0,
+                    delivered_qty=1,
+                    rate=100,
+                    delivery_date="2026-07-30",
+                    bom_no=None,
+                    conversion_factor=1,
+                ),
+            ],
+        )
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-3",
+            "items": [
+                {
+                    "docname": "SOI-DELIVERED",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 2,
+                    "conversion_factor": 1,
+                }
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc):
+            with self.assertRaisesRegex(RuntimeError, "Delivered qty is greater than 0"):
+                sales_orders.update_managed_sales_order_items(payload)
+
+    def test_update_managed_sales_order_items_blocks_active_pick_lists(self):
+        so_doc = SimpleNamespace(
+            doctype="Sales Order",
+            name="SO-MANAGED-ITEMS-4",
+            docstatus=1,
+            rfs_order=1,
+            customer="RFS-001",
+            items=[
+                SimpleNamespace(
+                    name="SOI-PL",
+                    item_code="ITEM-1",
+                    description="Desc 1",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    picked_qty=0,
+                    delivered_qty=0,
+                    rate=100,
+                    delivery_date="2026-07-30",
+                    bom_no=None,
+                    conversion_factor=1,
+                ),
+            ],
+        )
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-4",
+            "items": [
+                {
+                    "docname": "SOI-PL",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 2,
+                    "conversion_factor": 1,
+                }
+            ],
+        }
+
+        def fake_get_all(doctype, **kwargs):
+            if doctype == "Pick List Item":
+                return [{"parent": "PL-OPEN-1", "sales_order_item": "SOI-PL"}]
+            if doctype == "Pick List":
+                return [{"name": "PL-OPEN-1", "status": "Open", "docstatus": 1, "per_delivered": 0}]
+            return []
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders.frappe, "get_all", side_effect=fake_get_all
+        ):
+            with self.assertRaisesRegex(RuntimeError, "PL-OPEN-1 \\(Open\\)"):
+                sales_orders.update_managed_sales_order_items(payload)
 
     def test_search_orders_only_requests_rfs_sales_orders(self):
         captured = {}
@@ -483,6 +876,79 @@ class TestSalesOrderSubmit(TestCase):
             order_name="SO-GROUP-2",
             payments=[{"mode_of_payment": "Cash", "amount": 200.0}],
         )
+
+    def test_submit_sales_order_forces_full_allocation_for_pos_split_delivery(self):
+        order = {
+            "customer": "CUST-0001",
+            "doctype": "Sales Order",
+            "company": "Test Company",
+            "pos_profile": "Main POS",
+            "posa_split_delivery": 1,
+            "must_be_fully_allocated": 0,
+            "payments": [{"mode_of_payment": "Cash", "amount": 100}],
+            "rounded_total": 100,
+            "grand_total": 100,
+            "items": [{"item_code": "ITEM-1", "qty": 1, "rate": 100}],
+        }
+
+        captured_payloads = []
+
+        class FakeSalesOrder:
+            def __init__(self, payload):
+                self.payload = payload
+                self.name = "SO-POS-SPLIT-0001"
+                self.docstatus = 0
+                self.doctype = "Sales Order"
+                self.flags = SimpleNamespace(ignore_permissions=False)
+                self.posa_delivery_charges = payload.get("posa_delivery_charges")
+                self.must_be_fully_allocated = payload.get("must_be_fully_allocated", 0)
+                self.rounded_total = payload.get("rounded_total", 0)
+                self.grand_total = payload.get("grand_total", 0)
+
+            def update(self, values):
+                self.payload.update(values)
+                self.must_be_fully_allocated = self.payload.get("must_be_fully_allocated", 0)
+
+            def save(self):
+                return self
+
+            def submit(self):
+                self.docstatus = 1
+
+            def precision(self, _fieldname):
+                return 2
+
+        def fake_get_doc(payload_or_doctype, name=None):
+            if isinstance(payload_or_doctype, dict):
+                captured_payloads.append(dict(payload_or_doctype))
+                return FakeSalesOrder(payload_or_doctype)
+            raise AssertionError(f"Unexpected get_doc call: {payload_or_doctype}, {name}")
+
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(
+            sales_orders, "_apply_kit_meta_fields"
+        ), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(
+            sales_orders, "_apply_collection_flow_tag"
+        ), patch.object(
+            sales_orders, "_apply_collect_from_store_tag"
+        ), patch.object(
+            sales_orders, "_auto_create_delivery_note_for_non_ns_items"
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ), patch.object(
+            sales_orders.frappe.db, "exists", return_value=False
+        ), patch.object(
+            sales_orders.frappe, "get_doc", side_effect=fake_get_doc
+        ):
+            result = sales_orders.submit_sales_order(json.dumps(order), json.dumps({}))
+
+        self.assertEqual(result["name"], "SO-POS-SPLIT-0001")
+        self.assertEqual(captured_payloads[0]["must_be_fully_allocated"], 1)
 
     def test_submit_sales_order_allows_zero_payment_when_explicitly_enabled(self):
         so_doc = FakeSalesOrder()

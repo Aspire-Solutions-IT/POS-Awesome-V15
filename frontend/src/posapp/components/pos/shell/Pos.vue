@@ -295,7 +295,10 @@ export default {
 		});
 		const formattedDiscountTotal = computed(() => {
 			const symbol = getCurrencySymbol(activeCurrency.value);
-			return `${symbol}${formatCompactNumber(discountTotal.value || 0)} ${__("discount")}`.trim();
+			const combinedDiscountTotal =
+				Math.abs(Number(discountTotal.value || 0)) +
+				Math.abs(Number(additionalDiscount.value || 0));
+			return `${symbol}${formatCompactNumber(combinedDiscountTotal)} ${__("discount")}`.trim();
 		});
 		const cartMetaLabel = computed(() => {
 			const qty = formatCompactNumber(totalQty.value || 0);

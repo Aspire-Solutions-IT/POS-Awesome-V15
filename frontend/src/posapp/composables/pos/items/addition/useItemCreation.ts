@@ -5,6 +5,8 @@ export function useItemCreation() {
 	// Create a new item object with default and calculated fields
 	const getNewItem = (item: any, context: any) => {
 		const new_item = { ...item };
+		const itemCode = String(new_item.item_code || "").trim().toLowerCase();
+		const isNsItem = itemCode.startsWith("ns");
 		new_item.original_item_name = new_item.item_name;
 		new_item.name_overridden = 0;
 		// Mark server detail state so invoice can avoid redundant refreshes
@@ -13,7 +15,9 @@ export function useItemCreation() {
 		new_item._needs_update = false; // Will be set to true if added fresh
 
 		if (!new_item.warehouse) {
-			new_item.warehouse = context.pos_profile.warehouse;
+			new_item.warehouse =
+				(isNsItem && context.pos_profile?.default_ns_warehouse) ||
+				context.pos_profile.warehouse;
 		}
 		if (!item.qty) {
 			item.qty = 1;
@@ -139,7 +143,8 @@ export function useItemCreation() {
 		if (
 			(!context?.pos_profile?.posa_auto_set_batch &&
 				new_item.has_batch_no) ||
-			new_item.has_serial_no
+			new_item.has_serial_no ||
+			isNsItem
 		) {
 			// Only store the row ID to keep expanded array consistent
 			if (Array.isArray(context.expanded)) {

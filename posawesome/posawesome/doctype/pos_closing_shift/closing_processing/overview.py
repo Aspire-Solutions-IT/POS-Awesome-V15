@@ -6,6 +6,7 @@ from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.utils im
 from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.data import (
     get_pos_invoices,
     get_payments_entries,
+    resolve_shift_sales_doctype,
 )
 
 @frappe.whitelist()
@@ -47,12 +48,7 @@ def get_closing_shift_overview(pos_opening_shift):
     company = opening_shift_doc.company
     company_currency = frappe.get_cached_value("Company", company, "default_currency")
 
-    use_pos_invoice = frappe.db.get_value(
-        "POS Profile",
-        pos_profile,
-        "create_pos_invoice_instead_of_sales_invoice",
-    )
-    doctype = "POS Invoice" if use_pos_invoice else "Sales Invoice"
+    doctype = resolve_shift_sales_doctype(opening_shift_doc.name, pos_profile)
     invoices = get_pos_invoices(opening_shift_doc.name, doctype, submit_printed=0)
 
     total_invoices = len(invoices)
@@ -299,21 +295,28 @@ def get_closing_shift_overview(pos_opening_shift):
                     change_entry["exchange_rates"].add(rate)
                     total_change_entry["exchange_rates"].add(rate)
 
-        outstanding_company_currency = invoice.get("base_outstanding_amount")
-        if outstanding_company_currency in (None, ""):
-            outstanding_company_currency = invoice.get("outstanding_amount")
-        if outstanding_company_currency in (None, ""):
-            outstanding_company_currency = get_base_value(
+        if doctype == "Sales Order":
+            advance_paid = flt(invoice.get("advance_paid") or 0)
+            base_advance_paid = get_base_value(
                 invoice,
-                "outstanding_amount",
-                "base_outstanding_amount",
+                "advance_paid",
+                "base_advance_paid",
                 conversion_rate,
             )
-        outstanding_company_currency = flt(outstanding_company_currency or 0)
-
-        if outstanding_company_currency > 0:
-            credit_invoices_count += 1
-            credit_company_currency_total += outstanding_company_currency
+            outstanding_company_currency = max(flt(base_grand_total) - flt(base_advance_paid), 0)
+            outstanding_invoice_currency = max(flt(invoice_total) - advance_paid, 0)
+        else:
+            outstanding_company_currency = invoice.get("base_outstanding_amount")
+            if outstanding_company_currency in (None, ""):
+                outstanding_company_currency = invoice.get("outstanding_amount")
+            if outstanding_company_currency in (None, ""):
+                outstanding_company_currency = get_base_value(
+                    invoice,
+                    "outstanding_amount",
+                    "base_outstanding_amount",
+                    conversion_rate,
+                )
+            outstanding_company_currency = flt(outstanding_company_currency or 0)
             outstanding_invoice_currency = invoice.get("outstanding_amount")
             if outstanding_invoice_currency in (None, ""):
                 base_divisor = flt(conversion_rate) or 0
@@ -322,6 +325,10 @@ def get_closing_shift_overview(pos_opening_shift):
                 else:
                     outstanding_invoice_currency = outstanding_company_currency
             outstanding_invoice_currency = flt(outstanding_invoice_currency or 0)
+
+        if outstanding_company_currency > 0:
+            credit_invoices_count += 1
+            credit_company_currency_total += outstanding_company_currency
             credit_entry = credit_totals_by_currency.setdefault(
                 invoice_currency,
                 {

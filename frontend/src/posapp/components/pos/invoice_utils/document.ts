@@ -179,6 +179,13 @@ export function get_invoice_doc(context: any) {
 	doc.ignore_pricing_rule = 0;
 	doc.company = doc.company || context.pos_profile?.company || null;
 	doc.pos_profile = doc.pos_profile || context.pos_profile?.name || null;
+	if (doc.doctype === "Sales Order") {
+		doc.pos_sales_person =
+			doc.pos_sales_person ||
+			context.currentCashier?.user ||
+			window.frappe?.session?.user ||
+			null;
+	}
 	doc.posa_show_custom_name_marker_on_print =
 		context.pos_profile?.posa_show_custom_name_marker_on_print ?? null;
 
@@ -569,6 +576,7 @@ export function get_invoice_items(context: any) {
 			qty: flt(item.qty),
 			uom: item.uom,
 			conversion_factor: item.conversion_factor,
+			warehouse: item.warehouse,
 			serial_no: item.serial_no,
 			// Link to original invoice item when doing returns
 			// Needed for backend validation that the item exists in
@@ -668,6 +676,7 @@ export function get_order_items(context: any) {
 			rate: flt(item.rate),
 			uom: item.uom,
 			amount: flt(item.qty) * flt(item.rate),
+			warehouse: item.warehouse,
 			conversion_factor: item.conversion_factor,
 			serial_no: item.serial_no,
 			discount_percentage: flt(item.discount_percentage),

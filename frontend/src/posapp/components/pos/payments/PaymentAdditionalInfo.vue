@@ -32,7 +32,9 @@
 					variant="solo"
 					density="compact"
 					clearable
-					hide-details
+					:hide-details="shippingAddressError ? false : 'auto'"
+					:error="Boolean(shippingAddressError)"
+					:error-messages="shippingAddressError ? [shippingAddressError] : []"
 					class="sleek-field pos-themed-input"
 					@update:model-value="$emit('update:selectedShippingAddress', $event)"
 				>
@@ -66,7 +68,14 @@
 					</span>
 				</div>
 			</v-col>
-			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
+			<v-col
+				cols="12"
+				v-if="
+					posProfile.posa_allow_sales_order &&
+					invoiceType === 'Order' &&
+					showSplitDelivery
+				"
+			>
 				<v-checkbox
 					:model-value="splitDelivery"
 					:label="$frappe._('Split Delivery')"
@@ -77,19 +86,6 @@
 				></v-checkbox>
 				<div v-if="splitDeliveryWarningText" class="text-caption text-warning mt-1">
 					{{ splitDeliveryWarningText }}
-				</div>
-			</v-col>
-			<v-col cols="12" v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order'">
-				<v-checkbox
-					:model-value="customerUnsureDeliveryDate"
-					:label="$frappe._('Customer is unsure on delivery date')"
-					color="primary"
-					density="compact"
-					hide-details
-					@update:model-value="$emit('update:customerUnsureDeliveryDate', $event)"
-				></v-checkbox>
-				<div v-if="holdHelpText" class="text-caption text-medium-emphasis mt-1">
-					{{ holdHelpText }}
 				</div>
 			</v-col>
 			<v-col
@@ -106,9 +102,14 @@
 					auto-apply
 					class="sleek-field pos-themed-input"
 					:placeholder="preferredDeliveryPlaceholder"
-					:disabled="customerUnsureDeliveryDate"
 					@update:model-value="$emit('update:preferredDeliveryDate', $event)"
 				/>
+				<div v-if="preferredDeliveryDateError" class="text-error text-caption mt-1">
+					{{ preferredDeliveryDateError }}
+				</div>
+				<div v-if="holdHelpText" class="text-caption text-medium-emphasis mt-1">
+					{{ holdHelpText }}
+				</div>
 			</v-col>
 			<!-- Additional Notes (if enabled in POS profile) -->
 			<v-col cols="12" v-if="posProfile.posa_display_additional_notes">
@@ -121,6 +122,9 @@
 					auto-grow
 					rows="2"
 					:label="additionalNotesLabel"
+					:hide-details="additionalNotesError ? false : 'auto'"
+					:error="Boolean(additionalNotesError)"
+					:error-messages="additionalNotesError ? [additionalNotesError] : []"
 					v-model="invoiceDoc.posa_notes"
 				></v-textarea>
 			</v-col>
@@ -190,6 +194,10 @@ defineProps({
 		type: Boolean,
 		default: false,
 	},
+	showSplitDelivery: {
+		type: Boolean,
+		default: true,
+	},
 	showPreferredDeliveryDate: {
 		type: Boolean,
 		default: false,
@@ -210,6 +218,10 @@ defineProps({
 		type: String,
 		default: null,
 	},
+	shippingAddressError: {
+		type: String,
+		default: "",
+	},
 	splitDelivery: {
 		type: [Boolean, Number],
 		default: false,
@@ -217,10 +229,6 @@ defineProps({
 	splitDeliveryWarningText: {
 		type: String,
 		default: "",
-	},
-	customerUnsureDeliveryDate: {
-		type: Boolean,
-		default: false,
 	},
 	holdHelpText: {
 		type: String,
@@ -234,6 +242,14 @@ defineProps({
 		type: Date,
 		default: () => new Date(),
 	},
+	preferredDeliveryDateError: {
+		type: String,
+		default: "",
+	},
+	additionalNotesError: {
+		type: String,
+		default: "",
+	},
 	addressFilter: {
 		type: Function,
 		default: null,
@@ -245,7 +261,6 @@ defineEmits([
 	"update:preferredDeliveryDate",
 	"update:selectedShippingAddress",
 	"update:splitDelivery",
-	"update:customerUnsureDeliveryDate",
 	"new-address",
 ]);
 
@@ -259,7 +274,7 @@ const addressSubtitle = (address) =>
 		.filter((value) => String(value || "").trim())
 		.join(", ");
 
-const preferredDeliveryPlaceholder = `${$frappe._("Preferred Delivery Date")} *`;
+const preferredDeliveryPlaceholder = `${$frappe._("Earliest Delivery Date")} *`;
 const additionalNotesLabel = `${$frappe._("Additional Notes")} *`;
 </script>
 

@@ -47,8 +47,8 @@
 					/>
 					<v-text-field
 						v-model="selectedReportMonth"
-						type="month"
-						:max="currentMonthToken"
+						type="date"
+						:max="currentDateToken"
 						density="compact"
 						variant="outlined"
 						hide-details
@@ -292,7 +292,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(point.invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -360,7 +360,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(point.invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -396,7 +396,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(point.invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -448,7 +448,7 @@
 
 							<div class="summary-grid">
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Discounted Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Discounted Sales") }}</div>
 									<div class="summary-metric__value">
 										{{
 											formatQuantity(
@@ -564,7 +564,7 @@
 											<div class="insight-row__meta">
 												{{ row.item_code || "-" }} . {{ __("Qty") }}:
 												{{ formatQuantity(Number(row.return_qty || 0)) }}
-												{{ row.stock_uom || "" }} . {{ __("Invoices") }}:
+												{{ row.stock_uom || "" }} . {{ __("Sales") }}:
 												{{ formatQuantity(Number(row.return_invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -659,7 +659,7 @@
 										{{ formatMoney(Number(paymentReportTotals.pending_amount || 0)) }}
 									</v-chip>
 									<v-chip size="small" color="primary" variant="tonal">
-										{{ __("Split Invoices") }}:
+										{{ __("Split Sales") }}:
 										{{
 											formatQuantity(
 												Number(paymentReportTotals.split_invoice_count || 0),
@@ -671,13 +671,13 @@
 
 							<div class="summary-grid">
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Sales") }}</div>
 									<div class="summary-metric__value">
 										{{ formatQuantity(Number(paymentReportTotals.invoice_count || 0)) }}
 									</div>
 								</div>
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Pending Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Pending Sales") }}</div>
 									<div class="summary-metric__value summary-metric__value--danger">
 										{{
 											formatQuantity(
@@ -741,7 +741,7 @@
 											</div>
 											<div class="insight-row__meta">
 												{{ __("Category") }}: {{ row.category || "-" }} .
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Share") }}: {{ formatPercent(row.share_pct, 1) }}
 											</div>
@@ -773,7 +773,7 @@
 											<div class="insight-row__meta">
 												{{ __("Pending") }}:
 												{{ formatMoney(Number(row.pending_amount || 0)) }} .
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -833,7 +833,7 @@
 									</div>
 								</div>
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Sales") }}</div>
 									<div class="summary-metric__value">
 										{{ formatQuantity(Number(staffSummary.invoice_count || 0)) }}
 									</div>
@@ -882,7 +882,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Items") }}:
 												{{ formatQuantity(Number(row.items_sold || 0)) }} .
@@ -926,13 +926,13 @@
 											<div class="insight-row__meta">
 												{{ __("Sales") }}:
 												{{ formatMoney(Number(row.sales_amount || 0)) }} .
-												{{ __("Items/Invoice") }}:
+												{{ __("Items/Sale") }}:
 												{{ Number(row.items_per_invoice || 0).toFixed(2) }}
 											</div>
 										</div>
 									</div>
 									<div v-else class="empty-state">
-										{{ __("No invoice activity found.") }}
+										{{ __("No sales activity found.") }}
 									</div>
 								</div>
 
@@ -1014,7 +1014,7 @@
 									</div>
 								</div>
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Sales") }}</div>
 									<div class="summary-metric__value">
 										{{ formatQuantity(Number(customerSummary.invoice_count || 0)) }}
 									</div>
@@ -1053,7 +1053,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ row.customer || "-" }} . {{ __("Invoices") }}:
+												{{ row.customer || "-" }} . {{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Avg Bill") }}:
 												{{ formatMoney(Number(row.average_basket_size || 0)) }}
@@ -1126,7 +1126,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Sales") }}:
 												{{ formatMoney(Number(row.sales_amount || 0)) }} .
@@ -1197,13 +1197,13 @@
 									</div>
 								</div>
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Sales") }}</div>
 									<div class="summary-metric__value">
 										{{ formatQuantity(Number(profitabilitySummary.invoice_count || 0)) }}
 									</div>
 								</div>
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Avg Invoice Profit") }}</div>
+									<div class="summary-metric__label">{{ __("Avg Sale Profit") }}</div>
 									<div class="summary-metric__value">
 										{{
 											formatMoney(
@@ -1314,7 +1314,7 @@
 												{{ __("Revenue") }}:
 												{{ formatMoney(Number(row.revenue || 0)) }} .
 												{{ __("COGS") }}: {{ formatMoney(Number(row.cogs || 0)) }} .
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -1361,7 +1361,7 @@
 
 							<div class="summary-grid">
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Sales") }}</div>
 									<div class="summary-metric__value">
 										{{ formatQuantity(Number(taxChargesTotals.invoice_count || 0)) }}
 									</div>
@@ -1405,7 +1405,7 @@
 									</div>
 								</div>
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Invoice Adjustments") }}</div>
+									<div class="summary-metric__label">{{ __("Sale Adjustments") }}</div>
 									<div class="summary-metric__value">
 										{{
 											formatMoney(
@@ -1438,7 +1438,7 @@
 												</div>
 											</div>
 											<div class="insight-row__meta">
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Share") }}: {{ formatPercent(row.share_pct, 1) }}
 											</div>
@@ -1465,7 +1465,7 @@
 											</div>
 											<div class="insight-row__meta">
 												{{ __("Category") }}: {{ row.category || "-" }} .
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Share") }}: {{ formatPercent(row.share_pct, 1) }}
 											</div>
@@ -1505,7 +1505,7 @@
 															Number(row.other_charge_amount || 0),
 													)
 												}}
-												. {{ __("Invoices") }}:
+												. {{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }}
 											</div>
 											<v-progress-linear
@@ -1558,7 +1558,7 @@
 
 							<div class="summary-grid">
 								<div class="summary-metric">
-									<div class="summary-metric__label">{{ __("Total Invoices") }}</div>
+									<div class="summary-metric__label">{{ __("Total Sales") }}</div>
 									<div class="summary-metric__value">
 										{{ formatQuantity(Number(branchSummary.total_invoices || 0)) }}
 									</div>
@@ -1600,7 +1600,7 @@
 											</div>
 											<div class="insight-row__meta">
 												{{ __("Warehouse") }}: {{ row.warehouse || "-" }} .
-												{{ __("Invoices") }}:
+												{{ __("Sales") }}:
 												{{ formatQuantity(Number(row.invoice_count || 0)) }} .
 												{{ __("Avg Bill") }}:
 												{{ formatMoney(Number(row.average_bill || 0)) }}
@@ -2876,8 +2876,9 @@ const activeDashboardTab = ref<DashboardTab>("sales");
 const dashboardScope = ref<"all" | "current" | "specific">("all");
 const selectedProfileFilter = ref("");
 const initialNow = new Date();
-const currentMonthToken = `${initialNow.getFullYear()}-${String(initialNow.getMonth() + 1).padStart(2, "0")}`;
-const selectedReportMonth = ref(currentMonthToken);
+const currentDateToken = `${initialNow.getFullYear()}-${String(initialNow.getMonth() + 1).padStart(2, "0")}-${String(initialNow.getDate()).padStart(2, "0")}`;
+const currentMonthStartToken = `${initialNow.getFullYear()}-${String(initialNow.getMonth() + 1).padStart(2, "0")}-01`;
+const selectedReportMonth = ref(currentMonthStartToken);
 const scopeInitialized = ref(false);
 const fastMovingPage = ref(1);
 const fastMovingPageSize = ref(10);
@@ -3279,7 +3280,7 @@ const scopeDisplayLabel = computed(() => {
 const profitMethodLabel = computed(() =>
 	dashboardData.value.sales_overview.profit_method === "stock_ledger"
 		? __("Profit: Stock Ledger (COGS)")
-		: __("Profit: Invoice Item Estimate"),
+		: __("Profit: Sale Item Estimate"),
 );
 const profitMethodColor = computed(() =>
 	dashboardData.value.sales_overview.profit_method === "stock_ledger" ? "success" : "warning",
@@ -3331,6 +3332,18 @@ function summaryRangeLabel(summary: SalesSummaryPayload, fallbackLabel: string) 
 	return `${formatDate(from)} - ${formatDate(to)}`;
 }
 
+function normalizeReportMonthDate(value?: string | null) {
+	const raw = String(value || "").trim();
+	if (!raw) {
+		return currentMonthStartToken;
+	}
+	const match = raw.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?$/);
+	if (!match) {
+		return currentMonthStartToken;
+	}
+	return `${match[1]}-${match[2]}-01`;
+}
+
 function summaryPaymentMethods(summary: SalesSummaryPayload) {
 	return (summary.payment_methods || [])
 		.filter((row) => Math.abs(Number(row.amount || 0)) > 0.00001)
@@ -3342,7 +3355,7 @@ function summaryMetrics(summary: SalesSummaryPayload) {
 	return [
 		{
 			key: "invoice_count",
-			label: __("Invoices"),
+			label: __("Sales"),
 			value: formatQuantity(Number(summary.invoice_count || 0)),
 			valueClass: "",
 		},
@@ -4537,7 +4550,7 @@ function logDashboardRequest() {
 	console.groupCollapsed(`${DASHBOARD_LOG_PREFIX} fetch:start`);
 	console.info("scope", dashboardScope.value);
 	console.info("profile_filter", selectedProfileFilter.value || null);
-	console.info("report_month", selectedReportMonth.value || null);
+	console.info("report_month", normalizeReportMonthDate(selectedReportMonth.value) || null);
 	console.info("pos_profile", profileName.value || null);
 	console.info("threshold_override", configuredLowStockThreshold.value ?? null);
 	console.info("fast_moving_page", fastMovingPage.value);
@@ -4604,7 +4617,7 @@ async function loadDashboard() {
 			scope: dashboardScope.value,
 			profile_filter:
 				dashboardScope.value === "specific" ? selectedProfileFilter.value || undefined : undefined,
-			report_month: selectedReportMonth.value || undefined,
+			report_month: normalizeReportMonthDate(selectedReportMonth.value) || undefined,
 			low_stock_threshold: configuredLowStockThreshold.value,
 			item_sales_limit: itemSalesLimit.value,
 			category_report_limit: categoryReportLimit.value,
@@ -4625,7 +4638,7 @@ async function loadDashboard() {
 		logDashboardResponse(response);
 		dashboardData.value = mergeDashboardPayload(response);
 		if (response.date_context?.report_month) {
-			selectedReportMonth.value = String(response.date_context.report_month);
+			selectedReportMonth.value = normalizeReportMonthDate(String(response.date_context.report_month));
 		}
 		isDashboardEnabledOnServer.value = response.enabled !== false;
 		allowAllProfiles.value = Boolean(response.allow_all_profiles);
@@ -4703,7 +4716,12 @@ watch(
 watch(
 	() => selectedReportMonth.value,
 	(newMonth, oldMonth) => {
-		if (newMonth === oldMonth) {
+		const normalizedNewMonth = normalizeReportMonthDate(newMonth);
+		const normalizedOldMonth = normalizeReportMonthDate(oldMonth);
+		if (newMonth !== normalizedNewMonth) {
+			selectedReportMonth.value = normalizedNewMonth;
+		}
+		if (normalizedNewMonth === normalizedOldMonth) {
 			return;
 		}
 		if (fastMovingPage.value !== 1) {

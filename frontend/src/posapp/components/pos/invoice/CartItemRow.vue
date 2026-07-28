@@ -185,6 +185,31 @@
 				</div>
 			</td>
 
+			<!-- Warehouse Column (Optional) -->
+			<td
+				v-else-if="column.key === 'warehouse'"
+				class="text-center"
+				:data-column-key="'warehouse'"
+			>
+				<v-select
+					v-if="isNsItem && warehouseOptions.length"
+					:model-value="item.warehouse"
+					@update:model-value="handleWarehouseSelect"
+					:items="warehouseOptions"
+					item-title="label"
+					item-value="value"
+					density="compact"
+					variant="outlined"
+					class="posa-cart-table__editor-input"
+					hide-details
+					:loading="warehouseLoading"
+					menu-icon="mdi-chevron-down"
+				></v-select>
+				<div v-else class="posa-cart-table__editor-display">
+					<span>{{ item.warehouse || "-" }}</span>
+				</div>
+			</td>
+
 			<!-- Price List Rate (Optional) -->
 			<td
 				v-else-if="column.key === 'price_list_rate'"
@@ -412,6 +437,12 @@ const props = defineProps({
 	isReturnInvoice: Boolean,
 	invoiceType: String,
 	displayCurrency: String,
+	warehouseOptions: {
+		type: Array,
+		default: () => [],
+	},
+	warehouseLoading: Boolean,
+	updateItemDetail: Function,
 	formatFloat: Function,
 	formatCurrency: Function,
 	currencySymbol: Function,
@@ -463,6 +494,7 @@ const memoDeps = computed(() => {
 		props.item.discount_amount,
 		props.item.discount_percentage,
 		props.item.uom,
+		props.item.warehouse,
 		props.item.item_name,
 		props.item.name_overridden,
 		props.item.pricing_rule_badge,
@@ -491,6 +523,12 @@ const memoDeps = computed(() => {
 });
 
 const qtyLength = computed(() => String(Math.abs(props.item.qty || 0)).replace(".", "").length);
+const isNsItem = computed(() =>
+	String(props.item?.item_code || "")
+		.trim()
+		.toLowerCase()
+		.startsWith("ns"),
+);
 
 const disableDecrement = computed(
 	() =>
@@ -665,6 +703,19 @@ function closeDiscountAmountEdit() {
 		}
 		isEditingDiscountAmount.value = false;
 		editingDiscountAmountValue.value = "";
+	}
+}
+
+function handleWarehouseSelect(warehouse) {
+	props.item.warehouse = warehouse;
+	props.item._warehouse_selected_manually = true;
+	props.item._preserve_rate_on_warehouse_change = true;
+	props.item.batch_no = null;
+	props.item.serial_no = null;
+	props.item.serial_no_selected = [];
+	props.item.serial_no_selected_count = 0;
+	if (typeof props.updateItemDetail === "function") {
+		void props.updateItemDetail(props.item, true);
 	}
 }
 </script>

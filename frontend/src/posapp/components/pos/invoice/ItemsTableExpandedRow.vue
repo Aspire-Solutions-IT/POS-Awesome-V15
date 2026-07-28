@@ -19,7 +19,24 @@
 					</div>
 					<div class="posa-form-row">
 						<div class="posa-form-field">
+							<v-select
+								v-if="isNsItem(item) && warehouseOptions.length"
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Warehouse')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.warehouse"
+								:items="warehouseOptions"
+								item-title="label"
+								item-value="value"
+								:loading="warehouseLoading"
+								@update:model-value="onWarehouseChange(item, $event)"
+								prepend-inner-icon="mdi-warehouse"
+							></v-select>
 							<v-text-field
+								v-else
 								density="compact"
 								variant="outlined"
 								color="primary"
@@ -32,7 +49,24 @@
 							></v-text-field>
 						</div>
 						<div class="posa-form-field">
+							<v-select
+								v-if="isNsItem(item) && warehouseOptions.length"
+								density="compact"
+								variant="outlined"
+								color="primary"
+								:label="frappe._('Warehouse')"
+								class="pos-themed-input"
+								hide-details
+								v-model="item.warehouse"
+								:items="warehouseOptions"
+								item-title="label"
+								item-value="value"
+								:loading="warehouseLoading"
+								@update:model-value="onWarehouseChange(item, $event)"
+								prepend-inner-icon="mdi-warehouse"
+							></v-select>
 							<v-text-field
+								v-else
 								density="compact"
 								variant="outlined"
 								color="primary"
@@ -785,6 +819,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
 import { getDisplayableBatchOptions } from "../../../composables/pos/shared/useBatchSerial";
 import type { CartItem, POSProfile, InvoiceDoc } from "../../../types/models";
 
@@ -815,11 +850,17 @@ interface Props {
 	setSerialNo: (_item: any) => void;
 	setBatchQty: (_item: any, _event: any) => void;
 	validateDueDate: (_item: any) => void;
+	warehouseOptions?: Array<{ label: string; value: string }>;
+	warehouseLoading?: boolean;
+	updateItemDetail?: (_item: any, _force?: boolean) => void;
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
 	renderMode: "table",
 });
+
+const warehouseOptions = computed(() => props.warehouseOptions || []);
+const warehouseLoading = computed(() => Boolean(props.warehouseLoading));
 
 const emit = defineEmits<{
 	"qty-change": [item: CartItem, event: any];
@@ -830,6 +871,25 @@ const frappe = (window as any).frappe || { _: (s: string) => s };
 
 const onQtyChange = (item: CartItem, event: any) => {
 	emit("qty-change", item, event);
+};
+
+const isNsItem = (item: any) =>
+	String(item?.item_code || "")
+		.trim()
+		.toLowerCase()
+		.startsWith("ns");
+
+const onWarehouseChange = (item: CartItem, warehouse: string) => {
+	item.warehouse = warehouse;
+	item._warehouse_selected_manually = true;
+	item._preserve_rate_on_warehouse_change = true;
+	item.batch_no = null;
+	item.serial_no = null;
+	item.serial_no_selected = [];
+	item.serial_no_selected_count = 0;
+	if (typeof props.updateItemDetail === "function") {
+		void props.updateItemDetail(item, true);
+	}
 };
 
 const formatDueDate = (value: string | null | undefined) => {

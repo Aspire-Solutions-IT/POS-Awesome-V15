@@ -251,14 +251,14 @@ export default {
 		mobile_no: "",
 		address_line1: "",
 		city: "",
-		country: "Pakistan",
+		country: "United Kingdom",
 		email_id: "",
 		referral_code: "",
 		birthday: "",
 		birthday_menu: false,
 		group: "Individual",
 		groups: [],
-		territory: "All Territories",
+		territory: "United Kingdom",
 		territorys: [],
 		genders: [],
 		customer_type: "Individual",
@@ -438,12 +438,12 @@ export default {
 			this.mobile_no = "";
 			this.address_line1 = "";
 			this.city = "";
-			this.country = (this.pos_profile && this.pos_profile.posa_default_country) || "Pakistan";
+			this.country = (this.pos_profile && this.pos_profile.posa_default_country) || "United Kingdom";
 			this.email_id = "";
 			this.referral_code = "";
 			this.birthday = "";
 			this.group = "Individual";
-			this.territory = "All Territories";
+			this.territory = "United Kingdom";
 			this.customer_id = "";
 			this.customer_type = "Individual";
 			this.gender = "";
@@ -714,7 +714,7 @@ export default {
 						this.country =
 							data.country ||
 							(this.pos_profile && this.pos_profile.posa_default_country) ||
-							"Pakistan";
+							"United Kingdom";
 						this.tax_id = data.tax_id;
 						this.mobile_no = data.mobile_no;
 						this.email_id = data.email_id;
@@ -739,7 +739,7 @@ export default {
 			(profile) => {
 				if (profile) {
 					this.pos_profile = profile;
-					this.country = (profile && profile.posa_default_country) || "Pakistan";
+					this.country = (profile && profile.posa_default_country) || "United Kingdom";
 				}
 			},
 			{ deep: true, immediate: true },
@@ -760,7 +760,7 @@ export default {
 		this.getGenders();
 		// set default values for customer group and territory from user defaults
 		this.group = "Individual";
-		this.territory = "All Territories";
+		this.territory = "United Kingdom";
 	},
 };
 </script>

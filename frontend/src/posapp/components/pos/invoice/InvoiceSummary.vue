@@ -35,7 +35,7 @@
 							>
 							<span>
 								{{ currencySymbol(displayCurrency)
-								}}{{ formatCurrency(total_items_discount_amount) }}
+								}}{{ formatCurrency(combinedDiscountAmount) }}
 								{{ __("discount") }}
 							</span>
 						</div>
@@ -224,6 +224,11 @@ const { parkedOrders } = storeToRefs(uiStore);
 const additionalDiscountDisplay = ref(normalizeDiscountDisplay(props.additional_discount));
 const additionalDiscountPercentageDisplay = ref(
 	normalizeDiscountDisplay(props.additional_discount_percentage),
+);
+const combinedDiscountAmount = computed(
+	() =>
+		Math.abs(Number(props.total_items_discount_amount || 0)) +
+		Math.abs(Number(props.additional_discount || 0)),
 );
 const useCompactSaleDock = computed(() => responsive.windowWidth.value < 1100);
 const showDesktopDrafts = computed(() => Boolean(responsive.isDesktop.value));

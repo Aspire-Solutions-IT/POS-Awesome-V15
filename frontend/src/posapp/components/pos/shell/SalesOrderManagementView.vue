@@ -94,7 +94,7 @@
 								</div>
 								<div class="order-list-item__meta">
 									<span>{{ __("Preferred") }}: {{ formatDate(order.prefered_earliest_delivery_date) }}</span>
-									<span>{{ formatCurrency(order.rounded_total || order.grand_total, order.currency) }}</span>
+									<span>{{ formatCurrency(order.grand_total, order.currency) }}</span>
 								</div>
 							</button>
 						</div>
@@ -247,7 +247,7 @@
 							<div class="items-section">
 								<div class="items-section__header">
 									<h3>{{ __("Items") }}</h3>
-									<span>{{ __("Component due dates are shown per line.") }}</span>
+									<span>{{ __("Unlocked rows can be updated here. Picked, delivered, or linked pick-list rows are read only.") }}</span>
 								</div>
 								<div class="items-table-wrapper">
 									<v-table density="compact">
@@ -255,25 +255,72 @@
 											<tr>
 												<th>{{ __("Item") }}</th>
 												<th>{{ __("Qty") }}</th>
+												<th>{{ __("Picked") }}</th>
 												<th>{{ __("Delivered") }}</th>
-												<th>{{ __("Warehouse") }}</th>
+												<th>{{ __("Rate") }}</th>
 												<th>{{ __("Delivery Date") }}</th>
 												<th>{{ __("Component Due Date") }}</th>
+												<th>{{ __("Status") }}</th>
+												<th>{{ __("Actions") }}</th>
 											</tr>
 										</thead>
 										<tbody>
-											<tr v-for="item in selectedOrder.items || []" :key="item.name">
+											<tr v-for="item in editableItems" :key="item.name">
 												<td>
 													<div class="item-cell">
 														<strong>{{ item.item_code }}</strong>
 														<span>{{ item.item_name }}</span>
+														<span>{{ item.description || __("No description") }}</span>
+														<span>{{ __("UOM") }}: {{ item.uom || __("N/A") }}</span>
+														<span v-if="item.lock_reason" class="item-lock-reason">
+															{{ item.lock_reason }}
+														</span>
 													</div>
 												</td>
-												<td>{{ item.qty }}</td>
+												<td>
+													<input
+														v-model.number="item.qty"
+														class="items-input"
+														type="number"
+														min="0.01"
+														step="0.01"
+														:readonly="item.is_locked || saveLoading"
+													/>
+												</td>
+												<td>{{ item.picked_qty ?? 0 }}</td>
 												<td>{{ item.delivered_qty }}</td>
-												<td>{{ item.warehouse || __("N/A") }}</td>
+												<td>{{ formatCurrency(item.rate, selectedOrder.currency) }}</td>
 												<td>{{ formatDate(item.delivery_date) }}</td>
 												<td>{{ formatDate(item.component_due_date) }}</td>
+												<td>
+													<div class="item-status">
+														<span
+															class="lock-pill"
+															:class="item.is_locked ? 'lock-pill--locked' : 'lock-pill--open'"
+														>
+															{{ item.is_locked ? __("Locked") : __("Editable") }}
+														</span>
+														<span v-if="item.linked_pick_lists?.length" class="item-status__meta">
+															{{ formatPickLists(item.linked_pick_lists) }}
+														</span>
+													</div>
+												</td>
+												<td>
+													<v-btn
+														variant="text"
+														color="error"
+														size="small"
+														:disabled="item.is_locked || saveLoading"
+														@click="removeItem(item.name)"
+													>
+														{{ __("Remove") }}
+													</v-btn>
+												</td>
+											</tr>
+											<tr v-if="!editableItems.length">
+												<td colspan="8" class="items-empty-state">
+													{{ __("No items available on this Sales Order.") }}
+												</td>
 											</tr>
 										</tbody>
 									</v-table>
@@ -379,6 +426,34 @@ type ManagedSalesOrderListRow = {
 	modified?: string | null;
 };
 
+type PickListSummary = {
+	name: string;
+	status?: string | null;
+	docstatus?: number | null;
+	per_delivered?: number | null;
+};
+
+type ManagedSalesOrderItem = {
+	name: string;
+	item_code: string;
+	item_name?: string | null;
+	description?: string | null;
+	warehouse?: string | null;
+	uom?: string | null;
+	qty?: number | null;
+	picked_qty?: number | null;
+	delivered_qty?: number | null;
+	rate?: number | null;
+	amount?: number | null;
+	conversion_factor?: number | null;
+	delivery_date?: string | null;
+	component_due_date?: string | null;
+	quoted_date?: string | null;
+	is_locked?: boolean;
+	lock_reason?: string | null;
+	linked_pick_lists?: PickListSummary[];
+};
+
 type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	auto_release_date?: string | null;
 	shipping_address_name?: string | null;
@@ -388,16 +463,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	latest_component_due_date?: string | null;
 	advance_paid?: number | null;
 	outstanding_balance?: number | null;
-	items?: Array<{
-		name: string;
-		item_code: string;
-		item_name?: string | null;
-		warehouse?: string | null;
-		qty?: number | null;
-		delivered_qty?: number | null;
-		delivery_date?: string | null;
-		component_due_date?: string | null;
-	}>;
+	items?: ManagedSalesOrderItem[];
 };
 
 const uiStore = useUIStore();
@@ -411,6 +477,7 @@ const orders = ref<ManagedSalesOrderListRow[]>([]);
 const selectedOrder = ref<ManagedSalesOrderDetail | null>(null);
 const selectedOrderName = ref("");
 const searchTerm = ref("");
+const editableItems = ref<ManagedSalesOrderItem[]>([]);
 const listLoading = ref(false);
 const detailLoading = ref(false);
 const saveLoading = ref(false);
@@ -432,13 +499,38 @@ const form = reactive({
 	posa_notes: "",
 });
 
+const cloneEditableItems = (items?: ManagedSalesOrderItem[] | null): ManagedSalesOrderItem[] =>
+	(Array.isArray(items) ? items : []).map((item) => ({
+		name: item.name,
+		item_code: item.item_code,
+		item_name: item.item_name ?? "",
+		description: item.description ?? "",
+		warehouse: item.warehouse ?? "",
+		uom: item.uom ?? "",
+		qty: Number(item.qty || 0),
+		picked_qty: Number(item.picked_qty || 0),
+		delivered_qty: Number(item.delivered_qty || 0),
+		rate: Number(item.rate || 0),
+		amount: Number(item.amount || 0),
+		conversion_factor: Number(item.conversion_factor || 1),
+		delivery_date: item.delivery_date ?? "",
+		component_due_date: item.component_due_date ?? "",
+		quoted_date: item.quoted_date ?? "",
+		is_locked: Boolean(item.is_locked),
+		lock_reason: item.lock_reason ?? "",
+		linked_pick_lists: Array.isArray(item.linked_pick_lists)
+			? item.linked_pick_lists.map((link) => ({ ...link }))
+			: [],
+	}));
+
 const resetForm = (order: ManagedSalesOrderDetail | null) => {
 	form.customer_ref = String(order?.customer_ref || "");
 	form.prefered_earliest_delivery_date = String(order?.prefered_earliest_delivery_date || "");
 	form.posa_notes = String(order?.posa_notes || "");
+	editableItems.value = cloneEditableItems(order?.items);
 };
 
-const isDirty = computed(() => {
+const isHeaderDirty = computed(() => {
 	if (!selectedOrder.value) return false;
 	return (
 		form.customer_ref !== String(selectedOrder.value.customer_ref || "") ||
@@ -447,6 +539,27 @@ const isDirty = computed(() => {
 		form.posa_notes !== String(selectedOrder.value.posa_notes || "")
 	);
 });
+
+const normalizeItemForCompare = (item: ManagedSalesOrderItem) => ({
+	name: item.name,
+	item_code: String(item.item_code || ""),
+	uom: String(item.uom || ""),
+	qty: Number(item.qty || 0),
+	conversion_factor: Number(item.conversion_factor || 1),
+	description: String(item.description || ""),
+});
+
+const isItemDirty = computed(() => {
+	const baseline = cloneEditableItems(selectedOrder.value?.items);
+	if (baseline.length !== editableItems.value.length) return true;
+	return editableItems.value.some((item, index) => {
+		const original = baseline[index];
+		if (!original) return true;
+		return JSON.stringify(normalizeItemForCompare(item)) !== JSON.stringify(normalizeItemForCompare(original));
+	});
+});
+
+const isDirty = computed(() => isHeaderDirty.value || isItemDirty.value);
 
 const paymentModeOptions = computed(() =>
 	(Array.isArray(posProfile.value?.payments) ? posProfile.value.payments : [])
@@ -491,6 +604,14 @@ const formatCurrency = (value?: number | null, currency?: string | null) => {
 	}
 };
 
+const formatPickLists = (linkedPickLists?: PickListSummary[]) =>
+	(Array.isArray(linkedPickLists) ? linkedPickLists : [])
+		.map((link) => `${link.name} (${link.status || __("Unknown")})`)
+		.join(", ");
+
+const getErrorMessage = (error: any, fallback: string) =>
+	error?.message?.message || error?.message || error?.exc || fallback;
+
 const syncSelectedListRow = (detail: ManagedSalesOrderDetail) => {
 	const index = orders.value.findIndex((entry) => entry.name === detail.name);
 	if (index === -1) return;
@@ -504,6 +625,10 @@ const syncSelectedListRow = (detail: ManagedSalesOrderDetail) => {
 		outstanding_balance: detail.outstanding_balance,
 		modified: detail.modified,
 	});
+};
+
+const removeItem = (itemName: string) => {
+	editableItems.value = editableItems.value.filter((item) => item.name !== itemName);
 };
 
 const closePaymentDialog = () => {
@@ -599,18 +724,58 @@ const saveOrder = async () => {
 	detailError.value = "";
 
 	try {
-		const message = await api.call<ManagedSalesOrderDetail>(
-			"posawesome.posawesome.api.sales_orders.update_managed_sales_order",
-			{
-				data: {
-					name: selectedOrder.value.name,
-					customer_ref: form.customer_ref,
-					prefered_earliest_delivery_date: form.prefered_earliest_delivery_date || null,
-					posa_notes: form.posa_notes,
+		const pendingHeader = {
+			customer_ref: form.customer_ref,
+			prefered_earliest_delivery_date: form.prefered_earliest_delivery_date || null,
+			posa_notes: form.posa_notes,
+		};
+
+		if (isItemDirty.value) {
+			const itemMessage = await api.call<ManagedSalesOrderDetail>(
+				"posawesome.posawesome.api.sales_orders.update_managed_sales_order_items",
+				{
+					data: {
+						name: selectedOrder.value.name,
+						items: editableItems.value.map((item) => ({
+							docname: item.name,
+							item_code: item.item_code,
+							uom: item.uom || null,
+							description: item.description || null,
+							qty: Number(item.qty || 0),
+							conversion_factor: Number(item.conversion_factor || 1),
+						})),
+					},
 				},
-			},
-		);
-		selectedOrder.value = message || null;
+				{
+					freeze: true,
+					freeze_message: __("Updating Sales Order items..."),
+				},
+			);
+			selectedOrder.value = itemMessage || selectedOrder.value;
+			if (selectedOrder.value) {
+				syncSelectedListRow(selectedOrder.value);
+			}
+			resetForm(selectedOrder.value);
+			form.customer_ref = pendingHeader.customer_ref;
+			form.prefered_earliest_delivery_date = String(pendingHeader.prefered_earliest_delivery_date || "");
+			form.posa_notes = pendingHeader.posa_notes;
+		}
+
+		if (isHeaderDirty.value) {
+			const message = await api.call<ManagedSalesOrderDetail>(
+				"posawesome.posawesome.api.sales_orders.update_managed_sales_order",
+				{
+					data: {
+						name: selectedOrder.value.name,
+						customer_ref: pendingHeader.customer_ref,
+						prefered_earliest_delivery_date: pendingHeader.prefered_earliest_delivery_date,
+						posa_notes: pendingHeader.posa_notes,
+					},
+				},
+			);
+			selectedOrder.value = message || selectedOrder.value;
+		}
+
 		resetForm(selectedOrder.value);
 		if (selectedOrder.value) {
 			syncSelectedListRow(selectedOrder.value);
@@ -619,9 +784,9 @@ const saveOrder = async () => {
 			title: __("Sales Order updated"),
 			color: "success",
 		});
-	} catch (error) {
+	} catch (error: any) {
 		console.error("Failed to update managed Sales Order", error);
-		detailError.value = __("Unable to update the Sales Order");
+		detailError.value = getErrorMessage(error, __("Unable to update the Sales Order"));
 	} finally {
 		saveLoading.value = false;
 	}
@@ -662,10 +827,7 @@ const submitRemainingBalancePayment = async () => {
 		closePaymentDialog();
 	} catch (error: any) {
 		console.error("Failed to pay managed Sales Order balance", error);
-		paymentError.value =
-			error?.message?.message ||
-			error?.message ||
-			__("Unable to create the remaining balance payment");
+		paymentError.value = getErrorMessage(error, __("Unable to create the remaining balance payment"));
 	} finally {
 		paymentLoading.value = false;
 	}
@@ -873,6 +1035,60 @@ watch(
 .item-cell span {
 	color: var(--pos-text-muted);
 	font-size: 0.85rem;
+}
+
+.item-lock-reason {
+	color: var(--v-theme-error);
+}
+
+.items-input {
+	width: 100%;
+	border: 1px solid var(--pos-border);
+	border-radius: 10px;
+	padding: 8px 10px;
+	background: color-mix(in srgb, var(--pos-surface) 88%, white 12%);
+	color: var(--pos-text-primary);
+}
+
+.items-input[readonly] {
+	opacity: 0.7;
+	cursor: not-allowed;
+}
+
+.item-status {
+	display: grid;
+	gap: 6px;
+}
+
+.item-status__meta {
+	font-size: 0.82rem;
+	color: var(--pos-text-muted);
+}
+
+.lock-pill {
+	display: inline-flex;
+	align-items: center;
+	width: fit-content;
+	padding: 4px 10px;
+	border-radius: 999px;
+	font-size: 0.78rem;
+	font-weight: 600;
+}
+
+.lock-pill--locked {
+	background: color-mix(in srgb, var(--v-theme-error) 14%, transparent);
+	color: var(--v-theme-error);
+}
+
+.lock-pill--open {
+	background: color-mix(in srgb, var(--v-theme-success) 14%, transparent);
+	color: var(--v-theme-success);
+}
+
+.items-empty-state {
+	padding: 18px;
+	color: var(--pos-text-muted);
+	text-align: center;
 }
 
 @media (max-width: 960px) {

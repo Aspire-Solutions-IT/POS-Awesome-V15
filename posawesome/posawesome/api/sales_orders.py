@@ -5,6 +5,7 @@ import json
 from copy import deepcopy
 import secrets
 import string
+from collections import defaultdict
 
 import frappe
 from frappe import _
@@ -361,9 +362,110 @@ def _validate_managed_sales_order_doc(doc):
         frappe.throw(_("Sales Order is not available in POS management."))
 
 
+def _get_sales_order_pick_list_links(doc):
+    row_links = defaultdict(list)
+    order_level_links = []
+    rows = frappe.get_all(
+        "Pick List Item",
+        filters={"sales_order": doc.name},
+        fields=["parent", "sales_order_item"],
+        limit_page_length=0,
+    )
+    pick_list_names = sorted({cstr(row.get("parent") or "").strip() for row in rows if row.get("parent")})
+    if not pick_list_names:
+        return row_links, order_level_links
+
+    status_rows = frappe.get_all(
+        "Pick List",
+        filters={"name": ("in", pick_list_names)},
+        fields=["name", "status", "docstatus", "per_delivered"],
+        limit_page_length=0,
+    )
+    statuses = {
+        cstr((row.get("name") if isinstance(row, dict) else getattr(row, "name", "")) or "").strip(): row
+        for row in status_rows
+    }
+
+    for row in rows:
+        pick_list_name = cstr(row.get("parent") or "").strip()
+        if not pick_list_name:
+            continue
+
+        pick_list = statuses.get(pick_list_name)
+        if not pick_list:
+            continue
+
+        link_info = {
+            "name": pick_list.get("name") if isinstance(pick_list, dict) else pick_list.name,
+            "status": pick_list.get("status") if isinstance(pick_list, dict) else pick_list.status,
+            "docstatus": pick_list.get("docstatus") if isinstance(pick_list, dict) else pick_list.docstatus,
+            "per_delivered": flt(
+                (pick_list.get("per_delivered") if isinstance(pick_list, dict) else pick_list.per_delivered)
+                or 0
+            ),
+        }
+        sales_order_item = cstr(row.get("sales_order_item") or "").strip()
+        if sales_order_item:
+            row_links[sales_order_item].append(link_info)
+        else:
+            order_level_links.append(link_info)
+
+    for sales_order_item, links in row_links.items():
+        row_links[sales_order_item] = sorted(links, key=lambda entry: (entry["name"], entry["status"] or ""))
+
+    order_level_links = sorted(order_level_links, key=lambda entry: (entry["name"], entry["status"] or ""))
+    return row_links, order_level_links
+
+
+def _is_active_pick_list(link):
+    return cstr(link.get("status") or "").strip() not in {"Cancelled", "Completed"}
+
+
+def _build_managed_sales_order_item_lock(item, linked_pick_lists):
+    picked_qty = flt(getattr(item, "picked_qty", 0) or 0)
+    delivered_qty = flt(getattr(item, "delivered_qty", 0) or 0)
+    active_pick_lists = [link for link in linked_pick_lists if _is_active_pick_list(link)]
+
+    if picked_qty > 0:
+        return {
+            "picked_qty": picked_qty,
+            "delivered_qty": delivered_qty,
+            "is_locked": True,
+            "lock_reason": _("Picked qty is greater than 0."),
+        }
+
+    if delivered_qty > 0:
+        return {
+            "picked_qty": picked_qty,
+            "delivered_qty": delivered_qty,
+            "is_locked": True,
+            "lock_reason": _("Delivered qty is greater than 0."),
+        }
+
+    if active_pick_lists:
+        label = ", ".join(
+            f"{link['name']} ({cstr(link.get('status') or '').strip() or _('Unknown')})"
+            for link in active_pick_lists
+        )
+        return {
+            "picked_qty": picked_qty,
+            "delivered_qty": delivered_qty,
+            "is_locked": True,
+            "lock_reason": _("Linked Pick Lists block editing: {0}").format(label),
+        }
+
+    return {
+        "picked_qty": picked_qty,
+        "delivered_qty": delivered_qty,
+        "is_locked": False,
+        "lock_reason": None,
+    }
+
+
 def _serialize_managed_sales_order(doc):
     items = []
     latest_component_due_date = None
+    row_pick_lists, order_level_pick_lists = _get_sales_order_pick_list_links(doc)
 
     for item in getattr(doc, "items", []) or []:
         component_due_date = getattr(item, "component_due_date", None)
@@ -372,6 +474,16 @@ def _serialize_managed_sales_order(doc):
             latest_component_due_date is None or parsed_component_due_date > latest_component_due_date
         ):
             latest_component_due_date = parsed_component_due_date
+
+        linked_pick_lists = list(row_pick_lists.get(item.name, []))
+        seen_pick_lists = {entry["name"] for entry in linked_pick_lists}
+        for order_level_link in order_level_pick_lists:
+            if order_level_link["name"] in seen_pick_lists:
+                continue
+            linked_pick_lists.append(order_level_link)
+            seen_pick_lists.add(order_level_link["name"])
+
+        lock_meta = _build_managed_sales_order_item_lock(item, linked_pick_lists)
 
         items.append(
             {
@@ -382,17 +494,22 @@ def _serialize_managed_sales_order(doc):
                 "warehouse": item.warehouse,
                 "uom": item.uom,
                 "qty": item.qty,
+                "picked_qty": lock_meta["picked_qty"],
                 "delivered_qty": item.delivered_qty,
                 "rate": item.rate,
                 "amount": item.amount,
+                "conversion_factor": getattr(item, "conversion_factor", None),
                 "delivery_date": item.delivery_date,
                 "component_due_date": component_due_date,
                 "quoted_date": getattr(item, "quoted_date", None),
                 "posa_notes": getattr(item, "posa_notes", None),
+                "is_locked": lock_meta["is_locked"],
+                "lock_reason": lock_meta["lock_reason"],
+                "linked_pick_lists": linked_pick_lists,
             }
         )
 
-    order_total = flt(getattr(doc, "rounded_total", None) or getattr(doc, "grand_total", None) or 0)
+    order_total = flt(getattr(doc, "grand_total", None) or 0)
     advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
     outstanding_balance = max(flt(order_total - advance_paid), 0)
 
@@ -452,6 +569,132 @@ def _normalize_managed_sales_order_update_payload(data):
     return normalized
 
 
+def _unwrap_managed_sales_order_payload(data):
+    payload = data
+    if isinstance(data, dict) and "data" in data and len(data) == 1:
+        payload = data.get("data")
+    if isinstance(payload, dict) and "data" in payload and len(payload) == 1:
+        payload = payload.get("data")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict):
+        frappe.throw(_("Sales Order update payload must be an object."))
+    return payload
+
+
+def _normalize_managed_sales_order_item_row(row):
+    if not isinstance(row, dict):
+        frappe.throw(_("Each Sales Order item update must be an object."))
+
+    qty = flt(row.get("qty"))
+    conversion_factor = flt(row.get("conversion_factor") or 1)
+    normalized = {
+        "docname": cstr(row.get("docname") or row.get("name") or "").strip() or None,
+        "item_code": cstr(row.get("item_code") or "").strip(),
+        "uom": cstr(row.get("uom") or "").strip() or None,
+        "description": cstr(row.get("description") or "").strip() or None,
+        "bom_no": cstr(row.get("bom_no") or "").strip() or None,
+        "qty": qty,
+        "conversion_factor": conversion_factor,
+    }
+    if normalized["qty"] <= 0:
+        frappe.throw(_("Item {0}: Qty must be greater than 0.").format(normalized["item_code"] or _("Row")))
+    if not normalized["item_code"]:
+        frappe.throw(_("Item code is required for each Sales Order row."))
+    if not normalized["uom"]:
+        frappe.throw(_("Item {0}: UOM is required.").format(normalized["item_code"]))
+    return normalized
+
+
+def _normalize_existing_managed_sales_order_item_row(row):
+    return {
+        "docname": cstr(getattr(row, "name", "") or "").strip() or None,
+        "item_code": cstr(getattr(row, "item_code", "") or "").strip(),
+        "uom": cstr(getattr(row, "uom", "") or "").strip() or None,
+        "description": cstr(getattr(row, "description", "") or "").strip() or None,
+        "bom_no": cstr(getattr(row, "bom_no", "") or "").strip() or None,
+        "qty": flt(getattr(row, "qty", 0)),
+        "conversion_factor": flt(getattr(row, "conversion_factor", 0) or 1),
+    }
+
+
+def _validate_managed_sales_order_item_mutations(doc, normalized_items):
+    row_pick_lists, order_level_pick_lists = _get_sales_order_pick_list_links(doc)
+    order_level_active = [link for link in order_level_pick_lists if _is_active_pick_list(link)]
+    if order_level_active:
+        label = ", ".join(
+            f"{link['name']} ({cstr(link.get('status') or '').strip() or _('Unknown')})"
+            for link in order_level_active
+        )
+        frappe.throw(_("Linked Pick Lists block editing: {0}").format(label))
+
+    existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
+    incoming_by_docname = {row["docname"]: row for row in normalized_items if row.get("docname")}
+
+    for docname, row in existing_rows.items():
+        lock_meta = _build_managed_sales_order_item_lock(row, row_pick_lists.get(docname, []))
+        incoming_row = incoming_by_docname.get(docname)
+        if incoming_row is None:
+            if lock_meta["is_locked"]:
+                frappe.throw(
+                    _("Item {0} cannot be removed from POS. {1}").format(row.item_code, lock_meta["lock_reason"])
+                )
+            continue
+
+        if not lock_meta["is_locked"]:
+            continue
+
+        if incoming_row != _normalize_existing_managed_sales_order_item_row(row):
+            frappe.throw(
+                _("Item {0} cannot be updated from POS. {1}").format(row.item_code, lock_meta["lock_reason"])
+            )
+
+
+@frappe.whitelist()
+def update_managed_sales_order_items(data):
+    payload = _unwrap_managed_sales_order_payload(data)
+    sales_order_name = cstr(payload.get("name") or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    incoming_items = payload.get("items") or []
+    if not isinstance(incoming_items, list):
+        frappe.throw(_("Sales Order items payload must be a list."))
+
+    existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
+    normalized_items = []
+    for row in incoming_items:
+        normalized = _normalize_managed_sales_order_item_row(row)
+        docname = normalized.get("docname")
+        if docname and docname in existing_rows:
+            existing_row = existing_rows[docname]
+            normalized["rate"] = flt(getattr(existing_row, "rate", 0))
+            normalized["warehouse"] = cstr(getattr(existing_row, "warehouse", "") or "").strip() or None
+            delivery_date = getattr(existing_row, "delivery_date", None)
+            normalized["delivery_date"] = str(getdate(delivery_date)) if delivery_date else None
+        else:
+            normalized["rate"] = 0
+            normalized["warehouse"] = None
+            normalized["delivery_date"] = None
+        normalized_items.append(normalized)
+    _validate_managed_sales_order_item_mutations(doc, normalized_items)
+
+    from customer_due_dates.api.update_child_qty_rate import update_child_qty_rate as update_sales_order_items
+
+    update_sales_order_items(
+        parent_doctype="Sales Order",
+        trans_items=json.dumps(normalized_items),
+        parent_doctype_name=sales_order_name,
+        child_docname="items",
+    )
+
+    doc.reload()
+    return _serialize_managed_sales_order(doc)
+
+
 @frappe.whitelist()
 def get_managed_sales_orders(company, currency, order_name=None, limit_page_length=50):
     filters = _managed_sales_order_filters(company, currency, order_name)
@@ -477,7 +720,7 @@ def get_managed_sales_orders(company, currency, order_name=None, limit_page_leng
         order_by="modified desc",
     )
     for row in records:
-        order_total = flt(row.get("rounded_total") or row.get("grand_total") or 0)
+        order_total = flt(row.get("grand_total") or 0)
         advance_paid = flt(row.get("advance_paid") or 0)
         row["outstanding_balance"] = max(flt(order_total - advance_paid), 0)
     return records
@@ -492,15 +735,7 @@ def get_managed_sales_order(sales_order):
 
 @frappe.whitelist()
 def update_managed_sales_order(data):
-    payload = data
-    if isinstance(data, dict) and "data" in data and len(data) == 1:
-        payload = data.get("data")
-    if isinstance(payload, dict) and "data" in payload and len(payload) == 1:
-        payload = payload.get("data")
-    if isinstance(payload, str):
-        payload = json.loads(payload)
-    if not isinstance(payload, dict):
-        frappe.throw(_("Sales Order update payload must be an object."))
+    payload = _unwrap_managed_sales_order_payload(data)
 
     sales_order_name = cstr(payload.get("name") or "").strip()
     if not sales_order_name:
@@ -551,7 +786,7 @@ def pay_managed_sales_order_balance(
     doc = frappe.get_doc("Sales Order", sales_order_name)
     _validate_managed_sales_order_doc(doc)
 
-    order_total = flt(getattr(doc, "rounded_total", None) or getattr(doc, "grand_total", None) or 0)
+    order_total = flt(getattr(doc, "grand_total", None) or 0)
     advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
     outstanding_balance = max(flt(order_total - advance_paid), 0)
     if outstanding_balance <= 0.001:
@@ -723,7 +958,7 @@ def _apply_ns_default_warehouse(order_data):
         if not isinstance(item, dict):
             continue
         item_code = str(item.get("item_code") or "").strip()
-        if item_code.lower().startswith("ns"):
+        if item_code.lower().startswith("ns") and not item.get("warehouse"):
             item["warehouse"] = ns_warehouse
 
 
@@ -1038,6 +1273,13 @@ def _allocate_group_payments(payments, orders, precision):
 def _save_sales_order_doc_from_payload(payload):
     payload = deepcopy(payload)
     payload.pop("posa_split_groups", None)
+    if cint(payload.get("must_be_fully_allocated")):
+        payload["must_be_fully_allocated"] = 1
+    payload["is_pos"] = 1
+    payload["pos_sales_person"] = (
+        cstr(payload.get("pos_sales_person")).strip()
+        or frappe.session.user
+    )
     if payload.get("name") and frappe.db.exists("Sales Order", payload.get("name")):
         so_doc = frappe.get_doc("Sales Order", payload.get("name"))
         so_doc.update(payload)
@@ -1047,6 +1289,8 @@ def _save_sales_order_doc_from_payload(payload):
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
     so_doc.docstatus = 0
+    if cint(payload.get("must_be_fully_allocated")):
+        so_doc.must_be_fully_allocated = 1
     _sync_shopify_notes_from_posa(so_doc)
     _apply_kit_meta_fields(so_doc)
     _apply_delivery_charges_tax_row(so_doc)
@@ -1071,6 +1315,7 @@ def _build_split_group_documents(order):
         _ensure_unique_customer_order_ref(payload)
         so_doc = _save_sales_order_doc_from_payload(payload)
         so_doc.must_be_fully_allocated = 1
+        so_doc.save()
         built.append(
             {
                 "group_id": group["group_id"],
@@ -1162,6 +1407,10 @@ def _should_create_collection_full_payment_synchronously(so_doc, settlement_stat
     )
 
 
+def _should_force_full_allocation_for_pos_order(order):
+    return bool(cint((order or {}).get("posa_split_delivery")))
+
+
 @frappe.whitelist()
 def submit_sales_order(order, data=None):
     """Submit sales order and create payment entries."""
@@ -1174,6 +1423,8 @@ def submit_sales_order(order, data=None):
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
     is_split_group_submit = _is_split_group_submit(order)
+    if _should_force_full_allocation_for_pos_order(order):
+        order["must_be_fully_allocated"] = 1
     if not is_split_group_submit:
         order.pop("posa_split_groups", None)
     _ensure_unique_customer_order_ref(order, order.get("name"))

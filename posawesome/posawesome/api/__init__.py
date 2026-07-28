@@ -79,6 +79,7 @@ from .sales_orders import (
     search_orders,
     submit_sales_order,
     update_managed_sales_order,
+    update_managed_sales_order_items,
     update_sales_order,
 )
 from .quotations import (

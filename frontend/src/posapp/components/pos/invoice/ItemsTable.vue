@@ -40,6 +40,9 @@
 					:isReturnInvoice="isReturnInvoice"
 					:invoiceType="invoiceType"
 					:displayCurrency="displayCurrency"
+					:warehouse-options="warehouseOptions"
+					:warehouse-loading="warehouseLoading"
+					:update-item-detail="updateItemDetail"
 					:formatFloat="memoizedFormatFloat"
 					:formatCurrency="memoizedFormatCurrency"
 					:currencySymbol="currencySymbol"
@@ -111,6 +114,9 @@
 						:set-serial-no="setSerialNo"
 						:set-batch-qty="setBatchQty"
 						:validate-due-date="validateDueDate"
+						:warehouse-options="warehouseOptions"
+						:warehouse-loading="warehouseLoading"
+						:update-item-detail="updateItemDetail"
 						@qty-change="handleQtyChange"
 					/>
 				</v-card-text>
@@ -191,6 +197,7 @@ interface Props {
 	toggleOffer: (_item: any) => void;
 	changePriceListRate: (_item: any) => void;
 	isNegative: (_value: any) => boolean;
+	updateItemDetail?: (_item: any, _force?: boolean) => void;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -209,6 +216,8 @@ const { proxy } = getCurrentInstance() as any;
 const eventBus = proxy?.eventBus;
 const invoiceStore = useInvoiceStore();
 const tableContainer = ref<HTMLElement | null>(null);
+const warehouseOptions = ref<Array<{ label: string; value: string }>>([]);
+const warehouseLoading = ref(false);
 
 // Composables
 const { customItemFilter } = useItemsTableSearch();
@@ -283,6 +292,14 @@ const hide_qty_decimals = computed(() => {
 // Watchers
 watch(() => props.displayCurrency, clearFormatCache);
 watch(() => props.pos_profile, clearFormatCache, { deep: true });
+watch(
+	() => props.pos_profile?.company,
+	(newCompany, oldCompany) => {
+		if (newCompany && newCompany !== oldCompany) {
+			void loadWarehouseOptions();
+		}
+	},
+);
 
 // Methods
 const getSerialOptions = (item: any) => {
@@ -419,11 +436,47 @@ const onDropFromSelector = (event: DragEvent) => dragDropHandlers.onDropFromSele
 // Name editing logic
 const { editNameDialog, editedName, editNameTarget, openNameDialog, saveItemName, resetItemName } = nameEdit;
 
+const loadWarehouseOptions = async () => {
+	if (warehouseLoading.value) return;
+	warehouseLoading.value = true;
+	try {
+		const filters: Record<string, any> = { is_group: 0 };
+		if (props.pos_profile?.company) {
+			filters.company = props.pos_profile.company;
+		}
+		const response = await (window as any).frappe.call({
+			method: "frappe.client.get_list",
+			args: {
+				doctype: "Warehouse",
+				fields: ["name", "warehouse_name"],
+				filters,
+				limit_page_length: 0,
+				order_by: "warehouse_name asc",
+			},
+		});
+		const rows = Array.isArray(response?.message) ? response.message : [];
+		warehouseOptions.value = rows
+			.map((row: any) => {
+				const value = String(row?.name || "").trim();
+				if (!value) return null;
+				const label = String(row?.warehouse_name || row?.name || "").trim() || value;
+				return { label, value };
+			})
+			.filter(Boolean);
+	} catch (error) {
+		console.error("Failed to load warehouse options", error);
+		warehouseOptions.value = [];
+	} finally {
+		warehouseLoading.value = false;
+	}
+};
+
 // Life-cycle
 onMounted(() => {
 	logComponentRender({ $el: tableContainer.value }, "ItemsTable", "mounted", {
 		rows: items.value?.length || 0,
 	});
+	void loadWarehouseOptions();
 });
 
 onBeforeUnmount(() => {
