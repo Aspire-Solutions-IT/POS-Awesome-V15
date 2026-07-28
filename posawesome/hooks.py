@@ -191,6 +191,7 @@ fixtures = [
                     "POS Profile-posa_section_sales_purchase",
                     "POS Profile-posa_section_inventory_controls",
                     "POS Profile-posa_section_print_delivery",
+                    "POS Profile-posa_enable_preferred_delivery_date",
                     "POS Profile-posa_section_cash_movement",
                     "POS Profile-posa_allow_delete",
                     "POS Profile-posa_allow_user_to_edit_rate",

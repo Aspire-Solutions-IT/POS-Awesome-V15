@@ -10,6 +10,7 @@
   "label",
   "company",
   "default_rate",
+  "collect_from_store",
   "disabled",
   "column_break_3",
   "shipping_account",
@@ -19,6 +20,12 @@
   "profiles_list"
  ],
  "fields": [
+  {
+   "default": "0",
+   "fieldname": "collect_from_store",
+   "fieldtype": "Check",
+   "label": "Collect From Store"
+  },
   {
    "default": "0",
    "fieldname": "disabled",

@@ -111,6 +111,10 @@ function set_form_payments_data(data, frm) {
 }
 
 function add_to_pos_transaction(d, frm) {
+	if (d.doctype === "Sales Order") {
+		return;
+	}
+
 	const conversion_rate = get_conversion_rate(d);
 	const child = {
 		posting_date: d.posting_date,

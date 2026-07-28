@@ -16,10 +16,8 @@
 					variant="tonal"
 					class="summary-field summary-field--alert"
 				>
-					{{ __("Prorated return discount") }}:
-					{{ formatRatio(return_discount_meta.ratio) }} -
-					{{ __("Original") }}:
-					{{ formatCurrency(return_discount_meta.original_discount) }},
+					{{ __("Prorated return discount") }}: {{ formatRatio(return_discount_meta.ratio) }} -
+					{{ __("Original") }}: {{ formatCurrency(return_discount_meta.original_discount) }},
 					{{ __("Applied") }}:
 					{{ formatCurrency(return_discount_meta.prorated_discount) }}
 				</v-alert>
@@ -31,9 +29,13 @@
 							{{ currencySymbol(displayCurrency) }}{{ formatCurrency(subtotal) }}
 						</strong>
 						<div class="summary-hero__meta">
-							<span>{{ formatFloat(total_qty, hide_qty_decimals ? 0 : undefined) }} {{ __("qty") }}</span>
+							<span
+								>{{ formatFloat(total_qty, hide_qty_decimals ? 0 : undefined) }}
+								{{ __("qty") }}</span
+							>
 							<span>
-								{{ currencySymbol(displayCurrency) }}{{ formatCurrency(total_items_discount_amount) }}
+								{{ currencySymbol(displayCurrency)
+								}}{{ formatCurrency(combinedDiscountAmount) }}
 								{{ __("discount") }}
 							</span>
 						</div>
@@ -90,7 +92,6 @@
 					:pos_profile="pos_profile"
 					:saveLoading="saveLoading"
 					:loadDraftsLoading="loadDraftsLoading"
-					:selectOrderLoading="selectOrderLoading"
 					:selectPurchaseOrderLoading="selectPurchaseOrderLoading"
 					:cancelLoading="cancelLoading"
 					:invoiceManagementLoading="invoiceManagementLoading"
@@ -100,7 +101,6 @@
 					:customerDisplayLoading="customerDisplayLoading"
 					@save-and-clear="handleSaveAndClear"
 					@load-drafts="handleLoadDrafts"
-					@select-order="handleSelectOrder"
 					@cancel-sale="handleCancelSale"
 					@open-invoice-management="handleOpenInvoiceManagement"
 					@open-returns="handleOpenReturns"
@@ -195,7 +195,6 @@ const emit = defineEmits([
 	"update_discount_umount",
 	"save-and-clear",
 	"load-drafts",
-	"select-order",
 	"cancel-sale",
 	"open-invoice-management",
 	"open-returns",
@@ -207,7 +206,6 @@ const emit = defineEmits([
 
 const saveLoading = ref(false);
 const loadDraftsLoading = ref(false);
-const selectOrderLoading = ref(false);
 const cancelLoading = ref(false);
 const invoiceManagementLoading = ref(false);
 const returnsLoading = ref(false);
@@ -226,6 +224,11 @@ const { parkedOrders } = storeToRefs(uiStore);
 const additionalDiscountDisplay = ref(normalizeDiscountDisplay(props.additional_discount));
 const additionalDiscountPercentageDisplay = ref(
 	normalizeDiscountDisplay(props.additional_discount_percentage),
+);
+const combinedDiscountAmount = computed(
+	() =>
+		Math.abs(Number(props.total_items_discount_amount || 0)) +
+		Math.abs(Number(props.additional_discount || 0)),
 );
 const useCompactSaleDock = computed(() => responsive.windowWidth.value < 1100);
 const showDesktopDrafts = computed(() => Boolean(responsive.isDesktop.value));
@@ -342,15 +345,6 @@ function openDraftsSurface() {
 	}
 
 	mobileDraftsDialog.value = true;
-}
-
-async function handleSelectOrder() {
-	selectOrderLoading.value = true;
-	try {
-		await emit("select-order");
-	} finally {
-		selectOrderLoading.value = false;
-	}
 }
 
 async function handleCancelSale() {

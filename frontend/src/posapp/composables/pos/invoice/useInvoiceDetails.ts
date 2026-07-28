@@ -104,6 +104,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 
 	// Date states
 	const new_delivery_date = ref<string | null>(null);
+	const preferred_delivery_date = ref<string | null>(null);
 	const new_po_date = ref<string | null>(null);
 	const new_credit_due_date = ref<string | null>(null);
 	const credit_due_days = ref<number | null>(null);
@@ -228,8 +229,12 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 			return;
 		}
 		if (eventBus) {
+			const customerName =
+				String(doc.customer_name || dialogOptions.customer_name || "").trim() ||
+				String(doc.customer || "").trim();
 			eventBus.emit("open_new_address", {
 				customer: doc.customer,
+				customer_name: customerName,
 				...dialogOptions,
 			});
 		}
@@ -316,6 +321,21 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 
 		if (!formatted) {
 			addresses.value = [];
+		}
+	};
+
+	const update_preferred_delivery_date = (value: any = preferred_delivery_date.value) => {
+		const formatted = formatDate(value);
+		preferred_delivery_date.value = formatted || null;
+		const doc = unref(invoiceDoc);
+		if (doc) {
+			doc.prefered_earliest_delivery_date = formatted;
+			doc.preferred_earliest_delivery_date = formatted;
+		} else if (stores?.invoiceStore) {
+			stores.invoiceStore.mergeInvoiceDoc({
+				prefered_earliest_delivery_date: formatted,
+				preferred_earliest_delivery_date: formatted,
+			});
 		}
 	};
 
@@ -446,6 +466,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		addresses,
 		sales_persons,
 		new_delivery_date,
+		preferred_delivery_date,
 		new_po_date,
 		new_credit_due_date,
 		credit_due_days,
@@ -460,6 +481,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		normalizeAddress,
 		get_sales_person_names,
 		update_delivery_date,
+		update_preferred_delivery_date,
 		update_po_date,
 		update_credit_due_date,
 		applyDuePreset,

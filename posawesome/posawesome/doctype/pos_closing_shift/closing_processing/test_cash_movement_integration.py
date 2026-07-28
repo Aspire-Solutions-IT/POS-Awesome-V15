@@ -101,6 +101,51 @@ class TestClosingShiftCashMovementIntegration(unittest.TestCase):
         self.assertEqual(by_type["Expense"], 35)
         self.assertEqual(by_type["Deposit"], 15)
 
+    @patch("posawesome.posawesome.doctype.pos_closing_shift.closing_processing.creation.get_payments_entries")
+    @patch("posawesome.posawesome.doctype.pos_closing_shift.closing_processing.creation.get_pos_invoices")
+    @patch("posawesome.posawesome.doctype.pos_closing_shift.closing_processing.creation.submit_printed_invoices")
+    @patch("posawesome.posawesome.doctype.pos_closing_shift.closing_processing.creation.frappe")
+    def test_make_closing_shift_uses_sales_orders_for_create_only_profiles(
+        self,
+        mock_frappe,
+        mock_submit_printed_invoices,
+        mock_get_pos_invoices,
+        mock_get_payments_entries,
+    ):
+        mock_submit_printed_invoices.return_value = []
+        mock_get_pos_invoices.return_value = []
+        mock_get_payments_entries.return_value = []
+        mock_frappe.get_cached_value.return_value = "USD"
+        mock_frappe.get_value.return_value = "Cash"
+        mock_frappe.get_all.return_value = []
+        mock_frappe.utils.get_datetime.return_value = "2026-02-11 10:00:00"
+        mock_frappe.db.get_value.side_effect = lambda doctype, name, field: (
+            1
+            if (doctype, name, field) == ("POS Profile", "POS-PROFILE-1", "posa_create_only_sales_order")
+            else 0
+        )
+        closing_doc = DummyClosingShift()
+        mock_frappe.new_doc.return_value = closing_doc
+        mock_frappe._dict.side_effect = lambda d: SimpleNamespace(**d)
+
+        opening_shift = {
+            "name": "POS-OPEN-1",
+            "period_start_date": "2026-02-11 08:00:00",
+            "pos_profile": "POS-PROFILE-1",
+            "user": "cashier@example.com",
+            "company": "My Co",
+            "balance_details": [],
+        }
+
+        creation.make_closing_shift_from_opening(json.dumps(opening_shift))
+
+        mock_submit_printed_invoices.assert_not_called()
+        mock_get_pos_invoices.assert_called_once_with(
+            "POS-OPEN-1",
+            "Sales Order",
+            submit_printed=0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

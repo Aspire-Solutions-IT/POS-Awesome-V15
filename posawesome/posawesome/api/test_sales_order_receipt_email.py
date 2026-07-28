@@ -155,6 +155,23 @@ class TestSalesOrderReceiptEmail(TestCase):
 
         enqueue.assert_called_once()
 
+    def test_on_submit_skips_duplicate_queue_when_hook_runs_twice(self):
+        doc = SimpleNamespace(name="SO-0002C", pos_profile="POS-1")
+
+        with patch.object(
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt")
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="customer@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=False
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            sales_orders.on_submit(doc, None)
+            sales_orders.on_submit(doc, None)
+
+        enqueue.assert_called_once()
+
     def test_should_auto_email_receipt_requires_pos_order(self):
         doc = SimpleNamespace(name="SO-0003", is_pos=0, pos_profile="POS-1")
 

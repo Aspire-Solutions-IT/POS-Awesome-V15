@@ -425,9 +425,19 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
     if not item_uom:
         item_uom = getattr(item_doc, "stock_uom", None)
 
+    item_name = getattr(item_doc, "item_name", None)
+    if frappe.db.has_column("Item", "custom_tfw_name"):
+        item_name = cstr(getattr(item_doc, "custom_tfw_name", None) or item_name)
+
+    custom_tfw_price = 0
+    if frappe.db.has_column("Item", "custom_tfw_price"):
+        custom_tfw_price = flt(getattr(item_doc, "custom_tfw_price", 0))
+
     rate = None
     if scale_price is not None:
         rate = flt(scale_price)
+    elif custom_tfw_price > 0:
+        rate = custom_tfw_price
     else:
         rate = frappe.db.get_value(
             "Item Price",
@@ -441,12 +451,15 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
 
     return {
         "item_code": item_doc.name,
-        "item_name": item_doc.item_name,
+        "item_name": item_name,
         "barcode": barcode,
         "rate": rate or 0,
         "price_list_rate": rate or 0,
+        "custom_tfw_price": custom_tfw_price or 0,
         "uom": item_uom or item_doc.stock_uom,
         "currency": currency,
+        "price_list_currency": currency,
+        "plc_conversion_rate": 1,
         "scale_qty": scale_qty,
         "scale_price": scale_price,
     }

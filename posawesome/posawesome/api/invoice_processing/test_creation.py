@@ -470,6 +470,66 @@ class TestStaleNamedInvoiceHandling(unittest.TestCase):
         self.assertEqual(result["customer"], "CUST-NEW")
         self.assertEqual(result["customer_name"], "New Customer")
 
+    def test_update_invoice_auto_created_customer_enables_auto_allocate_sales_orders(self):
+        existing_doc = self._build_invoice_doc(
+            name="SINV-DRAFT",
+            docstatus=0,
+            customer="CUST-MISSING",
+            customer_name="Missing Customer",
+        )
+        customer_payloads = []
+
+        def fake_get_doc(*args):
+            if len(args) == 2:
+                return existing_doc
+
+            payload = dict(args[0])
+            if payload.get("doctype") == "Customer":
+                customer_payloads.append(payload)
+                return FakeDoc(
+                    doctype="Customer",
+                    name="CUST-MISSING",
+                    customer_name=payload.get("customer_name"),
+                    flags=types.SimpleNamespace(ignore_permissions=False),
+                    insert=lambda: None,
+                )
+            return existing_doc
+
+        self.creation.frappe.db.exists = (
+            lambda doctype, name: doctype == "Sales Invoice" and name == "SINV-DRAFT"
+        )
+        self.creation.frappe.get_doc = fake_get_doc
+        self.creation.frappe.get_cached_value = lambda *args, **kwargs: 0
+        self.creation.frappe.db.get_value = (
+            lambda doctype, name, fieldname=None, **kwargs:
+                "Missing Customer"
+                if doctype == "Customer" and fieldname == "customer_name" and name == "CUST-MISSING"
+                else None
+        )
+        self.creation._save_draft_with_latest_timestamp = lambda doc: doc
+
+        result = self.creation.update_invoice(
+            json.dumps(
+                {
+                    "doctype": "Sales Invoice",
+                    "name": "SINV-DRAFT",
+                    "pos_profile": "Main POS",
+                    "company": "Test Company",
+                    "currency": "USD",
+                    "posting_date": "2026-03-21",
+                    "customer": "CUST-MISSING",
+                    "customer_name": "Missing Customer",
+                    "items": [],
+                    "payments": [],
+                }
+            )
+        )
+
+        self.assertEqual(len(customer_payloads), 1)
+        self.assertEqual(customer_payloads[0].get("auto_allocate_sales_orders"), 1)
+        self.assertEqual(result["customer"], "CUST-MISSING")
+        self.assertEqual(result["customer_name"], "Missing Customer")
+
     def test_update_invoice_creates_new_draft_when_named_doc_is_missing(self):
         fresh_doc = self._build_invoice_doc()
         created_payloads = []

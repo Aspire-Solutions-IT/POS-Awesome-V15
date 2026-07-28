@@ -1,5 +1,27 @@
 """Expose API functions for POS Awesome."""
 
+from pypika.functions import Function
+
+
+def _ensure_frappe_query_builder_year():
+    """Provide a compatibility shim for benches missing frappe.query_builder.custom.Year."""
+    try:
+        from frappe.query_builder import custom as qb_custom
+    except Exception:
+        return
+
+    if hasattr(qb_custom, "Year"):
+        return
+
+    class Year(Function):
+        def __init__(self, field, alias=None):
+            super().__init__("YEAR", field, alias=alias)
+
+    qb_custom.Year = Year
+
+
+_ensure_frappe_query_builder_year()
+
 from .bundles import get_bundle_components
 from .dashboard import get_dashboard_data
 from .customers import (
@@ -8,7 +30,9 @@ from .customers import (
     get_customer_info,
     get_customer_names,
     get_customers_count,
+    get_store_collection_addresses,
     get_sales_person_names,
+    link_store_collection_address_to_customer,
     make_address,
     set_customer_info,
 )
@@ -49,8 +73,13 @@ from .stored_value import (
     get_stored_value_summary,
 )
 from .sales_orders import (
+    get_managed_sales_order,
+    get_managed_sales_orders,
+    get_unique_order_ref,
     search_orders,
     submit_sales_order,
+    update_managed_sales_order,
+    update_managed_sales_order_items,
     update_sales_order,
 )
 from .quotations import (

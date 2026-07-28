@@ -46,7 +46,10 @@ from posawesome.posawesome.api.item_processing.search import (
     search_items,
     get_items_groups,
     get_items_count,
-    normalize_brand
+    normalize_brand,
+    _item_has_custom_exclude_from_pos,
+    _item_has_custom_tfw_name,
+    _resolve_display_item_name,
 )
 
 
@@ -148,6 +151,8 @@ def get_delta_items(
         "is_sales_item": 1,
         "is_fixed_asset": 0,
     }
+    if _item_has_custom_exclude_from_pos():
+        filters["custom_exclude_from_pos"] = ["!=", 1]
 
     if allowed_groups:
         filters["item_group"] = ["in", allowed_groups]
@@ -180,13 +185,15 @@ def get_delta_items(
         "brand",
         "allow_negative_stock",
     ]
+    if _item_has_custom_tfw_name():
+        fields.append("custom_tfw_name")
 
     item_rows = frappe.get_all(
         "Item",
         filters=filters,
         fields=fields,
         limit_page_length=remaining,
-        order_by="item_name asc",
+        order_by="custom_tfw_name asc, item_name asc" if _item_has_custom_tfw_name() else "item_name asc",
     )
 
     if not item_rows:
@@ -210,6 +217,7 @@ def get_delta_items(
         merged = {}
         merged.update(item)
         merged.update(detail)
+        merged["item_name"] = _resolve_display_item_name(merged)
 
         if (
             profile.get("posa_display_items_in_stock")

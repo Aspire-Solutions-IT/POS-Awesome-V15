@@ -135,13 +135,7 @@
 			@update:modelValue="(val) => !val && toastStore.onSnackbarClosed()"
 		>
 			<div class="d-flex align-center ga-3">
-				<v-progress-circular
-					v-if="toastLoading"
-					indeterminate
-					size="18"
-					width="2"
-					color="white"
-				/>
+				<v-progress-circular v-if="toastLoading" indeterminate size="18" width="2" color="white" />
 				<span>{{ text }}</span>
 			</div>
 			<template v-slot:actions>
@@ -190,7 +184,15 @@ export default {
 		const employeeStore = useEmployeeStore();
 		const offlineSyncStore = useOfflineSyncStore();
 		// Extract reactive refs
-		const { visible, text, color, timeout, loading: toastLoading, history, unreadCount } = storeToRefs(toastStore);
+		const {
+			visible,
+			text,
+			color,
+			timeout,
+			loading: toastLoading,
+			history,
+			unreadCount,
+		} = storeToRefs(toastStore);
 		const { isFrozen, freezeTitle, freezeMessage } = storeToRefs(uiStore);
 		const { currentCashier, currentCashierDisplay } = storeToRefs(employeeStore);
 		const { panelOpen: offlinePanelOpen } = storeToRefs(offlineSyncStore);
@@ -294,12 +296,7 @@ export default {
 			drawer: false,
 			mini: true,
 			item: 0,
-			baseItems: [
-				{ text: "POS", icon: "mdi-network-pos", to: "/pos" },
-				{ text: "Payments", icon: "mdi-credit-card", to: "/payments" },
-				{ text: "Purchase Order", icon: "mdi-cart-plus", to: "/orders" },
-				{ text: "Barcode Printing", icon: "mdi-barcode", to: "/barcode" },
-			],
+			baseItems: [{ text: "POS", icon: "mdi-network-pos", to: "/pos" }],
 			items: [],
 			company: "POS Awesome",
 			companyImg: posLogo,
@@ -534,25 +531,18 @@ export default {
 		},
 		updateNavigationItems() {
 			const items = [...this.baseItems];
-			if (this.posProfile?.posa_use_gift_cards) {
-				items.splice(2, 0, {
-					text: "Gift Cards",
-					icon: "mdi-card-account-details-outline",
-					to: "/gift-cards",
-				});
-			}
 			if (this.currentCashier?.is_supervisor) {
-				items.splice(1, 0, {
-					text: "Awesome Dashboard",
+				items.push({
+					text: "Dashboard",
 					icon: "mdi-view-dashboard-outline",
 					to: "/dashboard",
 				});
 			}
-			if (this.posProfile?.posa_enable_cash_movement) {
+			if (this.posProfile?.custom_allow_select_sales_order == 1) {
 				items.push({
-					text: "Cash Movement",
-					icon: "mdi-cash-sync",
-					to: "/cash-movement",
+					text: "Sales Orders",
+					icon: "mdi-clipboard-text-search-outline",
+					to: "/sales-orders",
 				});
 			}
 			this.items = items;
@@ -785,13 +775,10 @@ export default {
 				messages: warningMessages,
 			});
 			this.offlineSyncStore.setCapabilitySummaries(
-				Array.isArray(this.bootstrapCapabilities)
-					? this.bootstrapCapabilities
-					: [],
+				Array.isArray(this.bootstrapCapabilities) ? this.bootstrapCapabilities : [],
 			);
 
-			const shouldInjectFallback =
-				this.offlineSyncStore.resourceStates.length === 0;
+			const shouldInjectFallback = this.offlineSyncStore.resourceStates.length === 0;
 			if (shouldInjectFallback) {
 				if (this.bootstrapWarningActive) {
 					this.offlineSyncStore.setResourceStates([

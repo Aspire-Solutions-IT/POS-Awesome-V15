@@ -28,11 +28,20 @@
 				persistent-placeholder
 			></v-text-field>
 		</v-col>
+		<v-col cols="12" sm="6" v-if="orderRef">
+			<v-text-field
+				variant="solo"
+				color="primary"
+				:label="frappe._('Order Ref')"
+				class="sleek-field pos-themed-input"
+				hide-details
+				:model-value="orderRef"
+				readonly
+				density="compact"
+			></v-text-field>
+		</v-col>
 
-		<v-col
-			v-if="invoice_doc && giftCardAppliedAmount > 0"
-			cols="12"
-		>
+		<v-col v-if="invoice_doc && giftCardAppliedAmount > 0" cols="12">
 			<div class="payment-summary-pill payment-summary-pill--gift-card">
 				<div class="payment-summary-pill__copy">
 					<p class="payment-summary-pill__label">{{ frappe._("Gift Card Applied") }}</p>
@@ -107,6 +116,10 @@ const props = defineProps({
 		type: String,
 		default: "",
 	},
+	orderRef: {
+		type: String,
+		default: "",
+	},
 });
 
 defineEmits(["show-paid-amount", "show-diff-payment", "show-paid-change", "update-credit-change"]);
@@ -138,7 +151,11 @@ const frappe = window.frappe;
 	padding: 14px 16px;
 	border-radius: var(--pos-radius-md);
 	background:
-		linear-gradient(180deg, rgba(var(--v-theme-success), 0.1) 0%, rgba(var(--v-theme-success), 0.04) 100%),
+		linear-gradient(
+			180deg,
+			rgba(var(--v-theme-success), 0.1) 0%,
+			rgba(var(--v-theme-success), 0.04) 100%
+		),
 		var(--pos-surface-raised);
 	border: 1px solid rgba(var(--v-theme-success), 0.18);
 }

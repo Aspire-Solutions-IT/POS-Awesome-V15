@@ -33,6 +33,15 @@ function resolveOrderDeliveryDate(context: any, sourceDoc: any): string | null {
 	);
 }
 
+function resolvePreferredDeliveryDate(context: any, sourceDoc: any): string | null {
+	return normalizeBackendDate(
+		context,
+		sourceDoc?.prefered_earliest_delivery_date ||
+			sourceDoc?.preferred_earliest_delivery_date ||
+			context.preferred_delivery_date,
+	);
+}
+
 function resolveTodayDate(context: any): string | null {
 	const fallbackToday = new Date().toISOString().slice(0, 10);
 	const rawToday =
@@ -170,6 +179,13 @@ export function get_invoice_doc(context: any) {
 	doc.ignore_pricing_rule = 0;
 	doc.company = doc.company || context.pos_profile?.company || null;
 	doc.pos_profile = doc.pos_profile || context.pos_profile?.name || null;
+	if (doc.doctype === "Sales Order") {
+		doc.pos_sales_person =
+			doc.pos_sales_person ||
+			context.currentCashier?.user ||
+			window.frappe?.session?.user ||
+			null;
+	}
 	doc.posa_show_custom_name_marker_on_print =
 		context.pos_profile?.posa_show_custom_name_marker_on_print ?? null;
 
@@ -421,7 +437,21 @@ export function get_invoice_doc(context: any) {
 	doc.posa_delivery_charges_rate = context.delivery_charges_rate || 0;
 	doc.posa_notes = sourceDoc.posa_notes ?? null;
 	doc.posa_authorization_code = sourceDoc.posa_authorization_code ?? null;
+	doc.customer_order_ref = sourceDoc.customer_order_ref ?? null;
 	doc.posa_return_valid_upto = sourceDoc.posa_return_valid_upto ?? null;
+	doc.posa_split_delivery =
+		sourceDoc.posa_split_delivery === 1 ||
+		sourceDoc.posa_split_delivery === "1" ||
+		sourceDoc.posa_split_delivery === true
+			? 1
+			: 0;
+	doc.posa_split_groups = doc.posa_split_delivery
+		? (sourceDoc.posa_split_groups || []).map((group: any) => ({
+				group_id: group.group_id,
+				label: group.label,
+				row_ids: Array.isArray(group.row_ids) ? [...group.row_ids] : [],
+		  }))
+		: [];
 	doc.posting_date = normalizeBackendDate(
 		context,
 		context.posting_date_display ?? context.posting_date,
@@ -437,6 +467,12 @@ export function get_invoice_doc(context: any) {
 		if (orderDeliveryDate) {
 			doc.delivery_date = orderDeliveryDate;
 		}
+	}
+	if (doc.doctype === "Sales Order") {
+		const preferredDeliveryDate = resolvePreferredDeliveryDate(context, sourceDoc);
+		doc.prefered_earliest_delivery_date = preferredDeliveryDate;
+		doc.preferred_earliest_delivery_date = preferredDeliveryDate;
+		doc.must_be_fully_allocated = doc.posa_split_delivery ? 0 : 1;
 	}
 
 	// Add flags to ensure proper rate handling
@@ -540,6 +576,7 @@ export function get_invoice_items(context: any) {
 			qty: flt(item.qty),
 			uom: item.uom,
 			conversion_factor: item.conversion_factor,
+			warehouse: item.warehouse,
 			serial_no: item.serial_no,
 			// Link to original invoice item when doing returns
 			// Needed for backend validation that the item exists in
@@ -639,6 +676,7 @@ export function get_order_items(context: any) {
 			rate: flt(item.rate),
 			uom: item.uom,
 			amount: flt(item.qty) * flt(item.rate),
+			warehouse: item.warehouse,
 			conversion_factor: item.conversion_factor,
 			serial_no: item.serial_no,
 			discount_percentage: flt(item.discount_percentage),

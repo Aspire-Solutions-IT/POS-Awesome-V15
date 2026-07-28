@@ -12,9 +12,8 @@ from frappe.utils import add_months, cint, cstr, flt, getdate, now_datetime, now
 
 from .utils import get_active_pos_profile, get_default_warehouse
 
-INVOICE_SOURCES: tuple[tuple[str, str], ...] = (
-    ("Sales Invoice", "Sales Invoice Item"),
-    ("POS Invoice", "POS Invoice Item"),
+DASHBOARD_SOURCES: tuple[tuple[str, str], ...] = (
+    ("Sales Order", "Sales Order Item"),
 )
 
 SCOPE_ALL = "all"
@@ -86,6 +85,23 @@ def _build_in_filter(column_sql: str, values: list[str]) -> tuple[str, list[str]
     return f" and {column_sql} in ({placeholders})", cleaned_values
 
 
+def _resolve_parent_date_field(parent_doctype: str, alias: str = "inv") -> str:
+    fieldname = _pick_first_column(parent_doctype, ["posting_date", "transaction_date"])
+    if not fieldname:
+        return f"{alias}.creation"
+    return f"{alias}.{fieldname}"
+
+
+def _build_profile_filter_for_parent(
+    parent_doctype: str,
+    profile_names: list[str],
+    alias: str = "inv",
+) -> tuple[str, list[str]]:
+    if frappe.db.has_column(parent_doctype, "pos_profile"):
+        return _build_in_filter(f"{alias}.pos_profile", profile_names)
+    return "", []
+
+
 def _coerce_limit(value: Any, default: int, minimum: int = 1, maximum: int = 50) -> int:
     coerced = cint(value) if value is not None else default
     if not coerced:
@@ -115,12 +131,15 @@ def _resolve_report_month(report_month: Any, fallback_today) -> tuple[Any, Any, 
 
     month_token = cstr(report_month).strip()
     if not month_token:
-        return current_month_start, current_today, str(current_month_start)[:7]
+        return current_month_start, current_today, str(current_month_start)
 
     try:
-        selected_month_start = getdate(f"{month_token}-01")
+        if len(month_token) == 7:
+            selected_month_start = getdate(f"{month_token}-01")
+        else:
+            selected_month_start = getdate(month_token)
     except Exception:
-        return current_month_start, current_today, str(current_month_start)[:7]
+        return current_month_start, current_today, str(current_month_start)
 
     selected_month_start = selected_month_start.replace(day=1)
     if selected_month_start > current_month_start:
@@ -129,7 +148,7 @@ def _resolve_report_month(report_month: Any, fallback_today) -> tuple[Any, Any, 
     next_month_start = getdate(add_months(selected_month_start, 1)).replace(day=1)
     selected_month_end = next_month_start - timedelta(days=1)
     selected_month_end = min(selected_month_end, current_today)
-    return selected_month_start, selected_month_end, str(selected_month_start)[:7]
+    return selected_month_start, selected_month_end, str(selected_month_start)
 
 
 def _to_bool_setting(value: Any, default: bool = False) -> bool:
@@ -219,27 +238,121 @@ def _get_assigned_profiles(user: str, company_profiles: list[dict[str, Any]]) ->
 
 def _iter_invoice_sources() -> list[tuple[str, str]]:
     available_sources: list[tuple[str, str]] = []
-    for parent_doctype, child_doctype in INVOICE_SOURCES:
+    for parent_doctype, child_doctype in DASHBOARD_SOURCES:
         if not frappe.db.exists("DocType", parent_doctype):
             continue
         if not frappe.db.exists("DocType", child_doctype):
-            continue
-        if not frappe.db.has_column(parent_doctype, "pos_profile"):
             continue
         available_sources.append((parent_doctype, child_doctype))
     return available_sources
 
 
 def _extra_parent_filter(parent_doctype: str, alias: str = "inv") -> str:
+    clauses: list[str] = []
     if parent_doctype == "POS Invoice" and frappe.db.has_column(parent_doctype, "consolidated_invoice"):
-        return f" and ifnull({alias}.consolidated_invoice, '') = ''"
-    return ""
+        clauses.append(f"ifnull({alias}.consolidated_invoice, '') = ''")
+    if parent_doctype == "Sales Order" and frappe.db.has_column(parent_doctype, "is_pos"):
+        clauses.append(f"ifnull({alias}.is_pos, 0) = 1")
+    if not clauses:
+        return ""
+    return " and " + " and ".join(clauses)
+
+
+def _resolve_cashier_expression(parent_doctype: str, alias: str = "inv") -> str:
+    cashier_field = _pick_first_column(parent_doctype, ["pos_sales_person", "owner", "cashier", "modified_by"])
+    return f"coalesce({alias}.{cashier_field}, '')" if cashier_field else "''"
 
 
 def _extra_sle_filter(alias: str = "sle") -> str:
     if frappe.db.has_column("Stock Ledger Entry", "is_cancelled"):
         return f" and ifnull({alias}.is_cancelled, 0) = 0"
     return ""
+
+
+def _use_payment_entry_references(parent_doctype: str) -> bool:
+    return (
+        parent_doctype == "Sales Order"
+        and frappe.db.exists("DocType", "Payment Entry")
+        and frappe.db.exists("DocType", "Payment Entry Reference")
+    )
+
+
+def _collect_payment_rows_from_entries(
+    parent_doctype: str,
+    profile_filter: str,
+    profile_filter_params: list[str],
+    company: str,
+    date_from: str,
+    date_to: str,
+) -> list[dict[str, Any]]:
+    if not _use_payment_entry_references(parent_doctype):
+        return []
+    date_field = _resolve_parent_date_field(parent_doctype)
+
+    rows = frappe.db.sql(
+        f"""
+        select
+            pe.mode_of_payment as mode_of_payment,
+            sum(
+                case
+                    when pe.payment_type = 'Pay' then -abs(coalesce(ref.allocated_amount, 0))
+                    else abs(coalesce(ref.allocated_amount, 0))
+                end
+            ) as collected_amount,
+            count(distinct ref.reference_name) as invoice_count
+        from `tabPayment Entry Reference` ref
+        inner join `tabPayment Entry` pe on pe.name = ref.parent
+        inner join `tab{parent_doctype}` inv on inv.name = ref.reference_name
+        where pe.docstatus = 1
+          and inv.docstatus = 1
+          and ref.reference_doctype = %s
+          and inv.company = %s
+          and {date_field} between %s and %s
+          {profile_filter}
+          {_extra_parent_filter(parent_doctype, "inv")}
+        group by pe.mode_of_payment
+        """,
+        (parent_doctype, company, date_from, date_to, *profile_filter_params),
+        as_dict=True,
+    )
+    return rows or []
+
+
+def _count_split_payments_from_entries(
+    parent_doctype: str,
+    profile_filter: str,
+    profile_filter_params: list[str],
+    company: str,
+    date_from: str,
+    date_to: str,
+) -> int:
+    if not _use_payment_entry_references(parent_doctype):
+        return 0
+    date_field = _resolve_parent_date_field(parent_doctype)
+
+    rows = frappe.db.sql(
+        f"""
+        select count(*) as split_invoice_count
+        from (
+            select ref.reference_name
+            from `tabPayment Entry Reference` ref
+            inner join `tabPayment Entry` pe on pe.name = ref.parent
+            inner join `tab{parent_doctype}` inv on inv.name = ref.reference_name
+            where pe.docstatus = 1
+              and inv.docstatus = 1
+              and ref.reference_doctype = %s
+              and inv.company = %s
+              and {date_field} between %s and %s
+              {profile_filter}
+              {_extra_parent_filter(parent_doctype, "inv")}
+            group by ref.reference_name
+            having count(distinct pe.mode_of_payment) > 1
+        ) split_inv
+        """,
+        (parent_doctype, company, date_from, date_to, *profile_filter_params),
+        as_dict=True,
+    )
+    return cint((rows[0] or {}).get("split_invoice_count")) if rows else 0
 
 
 def _collect_sales_and_profit(
@@ -257,7 +370,8 @@ def _collect_sales_and_profit(
     total_sales_for_profit = 0.0
     total_profit = 0.0
     profit_method = "invoice_item"
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
+    profile_filter, profile_filter_params = _build_profile_filter_for_parent(parent_doctype, profile_names)
+    date_field = _resolve_parent_date_field(parent_doctype)
 
     parent_amount_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
     parent_net_field = _pick_first_column(parent_doctype, ["base_net_total", "net_total"])
@@ -276,7 +390,7 @@ def _collect_sales_and_profit(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             """,
@@ -302,7 +416,7 @@ def _collect_sales_and_profit(
                and sle.voucher_type = %s
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_sle_filter("sle")}
               {_extra_parent_filter(parent_doctype, "inv")}
@@ -339,7 +453,7 @@ def _collect_sales_and_profit(
             inner join `tab{parent_doctype}` inv on inv.name = item.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             """,
@@ -509,7 +623,9 @@ def _collect_sales_summary(
     if not profile_names:
         return summary
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
+    opening_closing_profile_filter, opening_closing_profile_params = _build_in_filter(
+        "inv.pos_profile", profile_names
+    )
     cash_modes = _get_cash_modes(profile_names)
 
     payment_totals: dict[str, float] = defaultdict(float)
@@ -529,10 +645,10 @@ def _collect_sales_summary(
             where inv.docstatus = 1
               and inv.company = %s
               and inv.posting_date between %s and %s
-              {profile_filter}
+              {opening_closing_profile_filter}
             group by detail.mode_of_payment
             """,
-            (company, date_from, date_to, *profile_filter_params),
+            (company, date_from, date_to, *opening_closing_profile_params),
             as_dict=True,
         )
         for row in opening_rows:
@@ -556,10 +672,10 @@ def _collect_sales_summary(
             where inv.docstatus = 1
               and inv.company = %s
               and inv.posting_date between %s and %s
-              {profile_filter}
+              {opening_closing_profile_filter}
             group by detail.mode_of_payment
             """,
-            (company, date_from, date_to, *profile_filter_params),
+            (company, date_from, date_to, *opening_closing_profile_params),
             as_dict=True,
         )
         if closing_rows:
@@ -576,6 +692,8 @@ def _collect_sales_summary(
             summary["closing_amount"] += closing_amount
 
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(parent_doctype, profile_names)
+        date_field = _resolve_parent_date_field(parent_doctype)
         is_return_expression = (
             "ifnull(inv.is_return, 0)" if frappe.db.has_column(parent_doctype, "is_return") else "0"
         )
@@ -641,7 +759,7 @@ def _collect_sales_summary(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             """,
@@ -674,7 +792,7 @@ def _collect_sales_summary(
                 inner join `tab{parent_doctype}` inv on inv.name = item.parent
                 where inv.docstatus = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
                 """,
@@ -683,38 +801,54 @@ def _collect_sales_summary(
             )
             summary["discount_amount"] += flt((item_discount_row[0] or {}).get("item_discount_amount"))
 
-        payment_child_doctype = _resolve_payment_child_doctype(parent_doctype)
-        if payment_child_doctype and frappe.db.has_column(payment_child_doctype, "mode_of_payment"):
-            payment_amount_field = _pick_first_column(payment_child_doctype, ["base_amount", "amount"])
-            if payment_amount_field:
-                payment_rows = frappe.db.sql(
-                    f"""
-                    select
-                        pay.mode_of_payment as mode_of_payment,
-                        sum(
-                            case
-                                when {is_return_expression} = 1 then -abs(coalesce(pay.{payment_amount_field}, 0))
-                                else coalesce(pay.{payment_amount_field}, 0)
-                            end
-                        ) as collected_amount
-                    from `tab{payment_child_doctype}` pay
-                    inner join `tab{parent_doctype}` inv on inv.name = pay.parent
-                    where inv.docstatus = 1
-                      and inv.company = %s
-                      and inv.posting_date between %s and %s
-                      {profile_filter}
-                      {_extra_parent_filter(parent_doctype, "inv")}
-                    group by pay.mode_of_payment
-                    """,
-                    (company, date_from, date_to, *profile_filter_params),
-                    as_dict=True,
-                )
-                for pay_row in payment_rows:
-                    mode_name = cstr(pay_row.get("mode_of_payment")).strip()
-                    if not mode_name:
-                        continue
-                    mode_names.add(mode_name)
-                    payment_totals[mode_name] += flt(pay_row.get("collected_amount"))
+        if _use_payment_entry_references(parent_doctype):
+            payment_rows = _collect_payment_rows_from_entries(
+                parent_doctype,
+                profile_filter,
+                profile_filter_params,
+                company,
+                date_from,
+                date_to,
+            )
+            for pay_row in payment_rows:
+                mode_name = cstr(pay_row.get("mode_of_payment")).strip()
+                if not mode_name:
+                    continue
+                mode_names.add(mode_name)
+                payment_totals[mode_name] += flt(pay_row.get("collected_amount"))
+        else:
+            payment_child_doctype = _resolve_payment_child_doctype(parent_doctype)
+            if payment_child_doctype and frappe.db.has_column(payment_child_doctype, "mode_of_payment"):
+                payment_amount_field = _pick_first_column(payment_child_doctype, ["base_amount", "amount"])
+                if payment_amount_field:
+                    payment_rows = frappe.db.sql(
+                        f"""
+                        select
+                            pay.mode_of_payment as mode_of_payment,
+                            sum(
+                                case
+                                    when {is_return_expression} = 1 then -abs(coalesce(pay.{payment_amount_field}, 0))
+                                    else coalesce(pay.{payment_amount_field}, 0)
+                                end
+                            ) as collected_amount
+                        from `tab{payment_child_doctype}` pay
+                        inner join `tab{parent_doctype}` inv on inv.name = pay.parent
+                        where inv.docstatus = 1
+                          and inv.company = %s
+                          and {date_field} between %s and %s
+                          {profile_filter}
+                          {_extra_parent_filter(parent_doctype, "inv")}
+                        group by pay.mode_of_payment
+                        """,
+                        (company, date_from, date_to, *profile_filter_params),
+                        as_dict=True,
+                    )
+                    for pay_row in payment_rows:
+                        mode_name = cstr(pay_row.get("mode_of_payment")).strip()
+                        if not mode_name:
+                            continue
+                        mode_names.add(mode_name)
+                        payment_totals[mode_name] += flt(pay_row.get("collected_amount"))
 
     mode_type_map = _get_mode_type_map(sorted(mode_names))
     for mode_name, amount in opening_by_mode.items():
@@ -835,7 +969,6 @@ def _collect_payment_method_report(
     if not profile_names:
         return report
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     cash_modes = _get_cash_modes(profile_names)
     mode_names: set[str] = set(cash_modes)
     payment_totals: dict[str, float] = defaultdict(float)
@@ -844,10 +977,15 @@ def _collect_payment_method_report(
     totals = report["totals"]
 
     for parent_doctype, _child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(parent_doctype, profile_names)
+        date_field = _resolve_parent_date_field(parent_doctype)
         is_return_expression = (
             "ifnull(inv.is_return, 0)" if frappe.db.has_column(parent_doctype, "is_return") else "0"
         )
-        paid_field = _pick_first_column(parent_doctype, ["base_paid_amount", "paid_amount"])
+        paid_field = _pick_first_column(
+            parent_doctype,
+            ["base_paid_amount", "paid_amount", "base_advance_paid", "advance_paid"],
+        )
         outstanding_field = _pick_first_column(parent_doctype, ["base_outstanding_amount", "outstanding_amount"])
         grand_total_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
 
@@ -890,7 +1028,7 @@ def _collect_payment_method_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             """,
@@ -908,17 +1046,17 @@ def _collect_payment_method_report(
         day_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 count(inv.name) as invoice_count,
                 sum({non_return_paid}) as paid_amount,
                 sum({non_return_pending}) as pending_amount
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date
+            group by {date_field}
             """,
             (company, date_from, date_to, *profile_filter_params),
             as_dict=True,
@@ -940,65 +1078,91 @@ def _collect_payment_method_report(
             day_entry["paid_amount"] += flt(day_row.get("paid_amount"))
             day_entry["pending_amount"] += flt(day_row.get("pending_amount"))
 
-        payment_child_doctype = _resolve_payment_child_doctype(parent_doctype)
-        if not payment_child_doctype or not frappe.db.has_column(payment_child_doctype, "mode_of_payment"):
-            continue
+        if _use_payment_entry_references(parent_doctype):
+            payment_rows = _collect_payment_rows_from_entries(
+                parent_doctype,
+                profile_filter,
+                profile_filter_params,
+                company,
+                date_from,
+                date_to,
+            )
+            for pay_row in payment_rows:
+                mode_name = cstr(pay_row.get("mode_of_payment")).strip()
+                if not mode_name:
+                    continue
+                mode_names.add(mode_name)
+                payment_totals[mode_name] += flt(pay_row.get("collected_amount"))
+                payment_invoice_counts[mode_name] += cint(pay_row.get("invoice_count"))
 
-        payment_amount_field = _pick_first_column(payment_child_doctype, ["base_amount", "amount"])
-        if not payment_amount_field:
-            continue
-
-        payment_rows = frappe.db.sql(
-            f"""
-            select
-                pay.mode_of_payment as mode_of_payment,
-                sum(
-                    case
-                        when {is_return_expression} = 1 then -abs(coalesce(pay.{payment_amount_field}, 0))
-                        else coalesce(pay.{payment_amount_field}, 0)
-                    end
-                ) as collected_amount,
-                count(distinct pay.parent) as invoice_count
-            from `tab{payment_child_doctype}` pay
-            inner join `tab{parent_doctype}` inv on inv.name = pay.parent
-            where inv.docstatus = 1
-              and inv.company = %s
-              and inv.posting_date between %s and %s
-              {profile_filter}
-              {_extra_parent_filter(parent_doctype, "inv")}
-            group by pay.mode_of_payment
-            """,
-            (company, date_from, date_to, *profile_filter_params),
-            as_dict=True,
-        )
-        for pay_row in payment_rows:
-            mode_name = cstr(pay_row.get("mode_of_payment")).strip()
-            if not mode_name:
+            totals["split_invoice_count"] += _count_split_payments_from_entries(
+                parent_doctype,
+                profile_filter,
+                profile_filter_params,
+                company,
+                date_from,
+                date_to,
+            )
+        else:
+            payment_child_doctype = _resolve_payment_child_doctype(parent_doctype)
+            if not payment_child_doctype or not frappe.db.has_column(payment_child_doctype, "mode_of_payment"):
                 continue
-            mode_names.add(mode_name)
-            payment_totals[mode_name] += flt(pay_row.get("collected_amount"))
-            payment_invoice_counts[mode_name] += cint(pay_row.get("invoice_count"))
 
-        split_rows = frappe.db.sql(
-            f"""
-            select count(*) as split_invoice_count
-            from (
-                select pay.parent
+            payment_amount_field = _pick_first_column(payment_child_doctype, ["base_amount", "amount"])
+            if not payment_amount_field:
+                continue
+
+            payment_rows = frappe.db.sql(
+                f"""
+                select
+                    pay.mode_of_payment as mode_of_payment,
+                    sum(
+                        case
+                            when {is_return_expression} = 1 then -abs(coalesce(pay.{payment_amount_field}, 0))
+                            else coalesce(pay.{payment_amount_field}, 0)
+                        end
+                    ) as collected_amount,
+                    count(distinct pay.parent) as invoice_count
                 from `tab{payment_child_doctype}` pay
                 inner join `tab{parent_doctype}` inv on inv.name = pay.parent
                 where inv.docstatus = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
-                group by pay.parent
-                having count(distinct pay.mode_of_payment) > 1
-            ) split_inv
-            """,
-            (company, date_from, date_to, *profile_filter_params),
-            as_dict=True,
-        )
-        totals["split_invoice_count"] += cint((split_rows[0] or {}).get("split_invoice_count"))
+                group by pay.mode_of_payment
+                """,
+                (company, date_from, date_to, *profile_filter_params),
+                as_dict=True,
+            )
+            for pay_row in payment_rows:
+                mode_name = cstr(pay_row.get("mode_of_payment")).strip()
+                if not mode_name:
+                    continue
+                mode_names.add(mode_name)
+                payment_totals[mode_name] += flt(pay_row.get("collected_amount"))
+                payment_invoice_counts[mode_name] += cint(pay_row.get("invoice_count"))
+
+            split_rows = frappe.db.sql(
+                f"""
+                select count(*) as split_invoice_count
+                from (
+                    select pay.parent
+                    from `tab{payment_child_doctype}` pay
+                    inner join `tab{parent_doctype}` inv on inv.name = pay.parent
+                    where inv.docstatus = 1
+                      and inv.company = %s
+                      and {date_field} between %s and %s
+                      {profile_filter}
+                      {_extra_parent_filter(parent_doctype, "inv")}
+                    group by pay.parent
+                    having count(distinct pay.mode_of_payment) > 1
+                ) split_inv
+                """,
+                (company, date_from, date_to, *profile_filter_params),
+                as_dict=True,
+            )
+            totals["split_invoice_count"] += cint((split_rows[0] or {}).get("split_invoice_count"))
 
     mode_type_map = _get_mode_type_map(sorted(mode_names))
     total_collected = 0.0
@@ -1090,7 +1254,6 @@ def _collect_discount_void_return_report(
     if not profile_names:
         return report
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     row_limit = _coerce_limit(limit, default=20, minimum=1, maximum=200)
     fetch_limit = _coerce_limit(limit * 5, default=100, minimum=20, maximum=500)
     totals = report["totals"]
@@ -1119,6 +1282,10 @@ def _collect_discount_void_return_report(
     )
 
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         amount_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
         if not amount_field:
             continue
@@ -1133,8 +1300,7 @@ def _collect_discount_void_return_report(
             ],
         )
         discount_expression = f"abs(coalesce(inv.{discount_field}, 0))" if discount_field else "0"
-        cashier_field = _pick_first_column(parent_doctype, ["owner", "cashier", "modified_by"])
-        cashier_expression = f"coalesce(inv.{cashier_field}, '')" if cashier_field else "''"
+        cashier_expression = _resolve_cashier_expression(parent_doctype, "inv")
         is_return_expression = (
             "ifnull(inv.is_return, 0)" if frappe.db.has_column(parent_doctype, "is_return") else "0"
         )
@@ -1159,7 +1325,7 @@ def _collect_discount_void_return_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by {cashier_expression}
@@ -1179,7 +1345,7 @@ def _collect_discount_void_return_report(
         discount_day_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 sum(
                     case
                         when {is_return_expression} = 1 then 0
@@ -1189,10 +1355,10 @@ def _collect_discount_void_return_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date
+            group by {date_field}
             """,
             (company, date_from, date_to, *profile_filter_params),
             as_dict=True,
@@ -1225,7 +1391,7 @@ def _collect_discount_void_return_report(
                 where inv.docstatus = 1
                   and ifnull(inv.is_return, 0) = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
                 group by {cashier_expression}
@@ -1245,17 +1411,17 @@ def _collect_discount_void_return_report(
             return_day_rows = frappe.db.sql(
                 f"""
                 select
-                    inv.posting_date as posting_date,
+                    {date_field} as posting_date,
                     count(inv.name) as return_count,
                     sum(abs({amount_expression})) as return_amount
                 from `tab{parent_doctype}` inv
                 where inv.docstatus = 1
                   and ifnull(inv.is_return, 0) = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
-                group by inv.posting_date
+                group by {date_field}
                 """,
                 (company, date_from, date_to, *profile_filter_params),
                 as_dict=True,
@@ -1307,7 +1473,7 @@ def _collect_discount_void_return_report(
                     where inv.docstatus = 1
                       and ifnull(inv.is_return, 0) = 1
                       and inv.company = %s
-                      and inv.posting_date between %s and %s
+                      and {date_field} between %s and %s
                       {profile_filter}
                       {_extra_parent_filter(parent_doctype, "inv")}
                     group by item.item_code
@@ -1341,7 +1507,7 @@ def _collect_discount_void_return_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 2
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by {cashier_expression}
@@ -1361,16 +1527,16 @@ def _collect_discount_void_return_report(
         void_day_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 count(inv.name) as void_count,
                 sum(abs({amount_expression})) as void_amount
             from `tab{parent_doctype}` inv
             where inv.docstatus = 2
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date
+            group by {date_field}
             """,
             (company, date_from, date_to, *profile_filter_params),
             as_dict=True,
@@ -1482,7 +1648,6 @@ def _collect_customer_report(
     if not profile_names:
         return report
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     row_limit = _coerce_limit(limit, default=20, minimum=1, maximum=200)
     customer_buckets: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
@@ -1498,6 +1663,10 @@ def _collect_customer_report(
     )
 
     for parent_doctype, _child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         if not frappe.db.has_column(parent_doctype, "customer"):
             continue
 
@@ -1536,19 +1705,19 @@ def _collect_customer_report(
                 max(
                     case
                         when {is_return_expression} = 1 then null
-                        else inv.posting_date
+                        else {date_field}
                     end
                 ) as last_purchase_date,
                 min(
                     case
                         when {is_return_expression} = 1 then null
-                        else inv.posting_date
+                        else {date_field}
                     end
                 ) as first_purchase_date
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by inv.customer
@@ -1703,7 +1872,6 @@ def _collect_staff_cashier_performance_report(
     if not profile_names:
         return report
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     row_limit = _coerce_limit(limit, default=20, minimum=1, maximum=200)
     summary = report["summary"]
     staff_buckets: dict[str, dict[str, Any]] = defaultdict(
@@ -1722,6 +1890,10 @@ def _collect_staff_cashier_performance_report(
     )
 
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         amount_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
         if not amount_field:
             continue
@@ -1738,8 +1910,7 @@ def _collect_staff_cashier_performance_report(
         parent_discount_expression = (
             f"abs(coalesce(inv.{parent_discount_field}, 0))" if parent_discount_field else "0"
         )
-        cashier_field = _pick_first_column(parent_doctype, ["owner", "cashier", "modified_by"])
-        cashier_expression = f"coalesce(inv.{cashier_field}, '')" if cashier_field else "''"
+        cashier_expression = _resolve_cashier_expression(parent_doctype, "inv")
         is_return_expression = (
             "ifnull(inv.is_return, 0)" if frappe.db.has_column(parent_doctype, "is_return") else "0"
         )
@@ -1771,7 +1942,7 @@ def _collect_staff_cashier_performance_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by {cashier_expression}
@@ -1818,7 +1989,7 @@ def _collect_staff_cashier_performance_report(
                 inner join `tab{parent_doctype}` inv on inv.name = item.parent
                 where inv.docstatus = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
                 group by {cashier_expression}
@@ -1852,7 +2023,7 @@ def _collect_staff_cashier_performance_report(
                     inner join `tab{parent_doctype}` inv on inv.name = item.parent
                     where inv.docstatus = 1
                       and inv.company = %s
-                      and inv.posting_date between %s and %s
+                      and {date_field} between %s and %s
                       {profile_filter}
                       {_extra_parent_filter(parent_doctype, "inv")}
                     group by {cashier_expression}
@@ -1877,7 +2048,7 @@ def _collect_staff_cashier_performance_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 2
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by {cashier_expression}
@@ -2096,9 +2267,12 @@ def _collect_profitability_report(
         else None
     )
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     day_buckets: dict[str, dict[str, Any]] = {}
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         is_return_expression = (
             "ifnull(inv.is_return, 0)" if frappe.db.has_column(parent_doctype, "is_return") else "0"
         )
@@ -2121,17 +2295,17 @@ def _collect_profitability_report(
             day_rows = frappe.db.sql(
                 f"""
                 select
-                    inv.posting_date as posting_date,
+                    {date_field} as posting_date,
                     sum({amount_expression}) as revenue,
                     sum(({qty_expression}) * ({cost_rate_expression})) as cogs
                 from `tab{child_doctype}` item
                 inner join `tab{parent_doctype}` inv on inv.name = item.parent
                 where inv.docstatus = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
-                group by inv.posting_date
+                group by {date_field}
                 """,
                 (company, date_from, date_to, *profile_filter_params),
                 as_dict=True,
@@ -2158,16 +2332,16 @@ def _collect_profitability_report(
         invoice_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 sum(case when {is_return_expression} = 1 then 0 else 1 end) as invoice_count,
                 sum(case when {is_return_expression} = 1 then 1 else 0 end) as return_invoice_count
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date
+            group by {date_field}
             """,
             (company, date_from, date_to, *profile_filter_params),
             as_dict=True,
@@ -2295,7 +2469,6 @@ def _collect_branch_location_report(
     if not valid_profiles:
         return report
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", valid_profiles)
     location_buckets: dict[str, dict[str, Any]] = {
         profile_name: {
             "profile": profile_name,
@@ -2316,6 +2489,12 @@ def _collect_branch_location_report(
     item_codes_seen: set[str] = set()
 
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, valid_profiles
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
+        if not frappe.db.has_column(parent_doctype, "pos_profile"):
+            continue
         amount_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
         if not amount_field:
             continue
@@ -2323,8 +2502,7 @@ def _collect_branch_location_report(
         is_return_expression = (
             "ifnull(inv.is_return, 0)" if frappe.db.has_column(parent_doctype, "is_return") else "0"
         )
-        cashier_field = _pick_first_column(parent_doctype, ["owner", "cashier", "modified_by"])
-        cashier_expression = f"coalesce(inv.{cashier_field}, '')" if cashier_field else "''"
+        cashier_expression = _resolve_cashier_expression(parent_doctype, "inv")
 
         sales_rows = frappe.db.sql(
             f"""
@@ -2340,7 +2518,7 @@ def _collect_branch_location_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by inv.pos_profile
@@ -2356,7 +2534,7 @@ def _collect_branch_location_report(
             entry["invoice_count"] += cint(row.get("invoice_count"))
             entry["sales_amount"] += flt(row.get("sales_amount"))
 
-        if cashier_field:
+        if cashier_expression:
             cashier_rows = frappe.db.sql(
                 f"""
                 select
@@ -2365,7 +2543,7 @@ def _collect_branch_location_report(
                 from `tab{parent_doctype}` inv
                 where inv.docstatus = 1
                   and inv.company = %s
-                  and inv.posting_date between %s and %s
+                  and {date_field} between %s and %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
                 """,
@@ -2407,7 +2585,7 @@ def _collect_branch_location_report(
             inner join `tab{parent_doctype}` inv on inv.name = item.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by inv.pos_profile
@@ -2431,7 +2609,7 @@ def _collect_branch_location_report(
             inner join `tab{parent_doctype}` inv on inv.name = item.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by inv.pos_profile, item.item_code
@@ -2591,7 +2769,6 @@ def _collect_tax_charges_report(
     if not profile_names:
         return report
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     row_limit = _coerce_limit(limit, default=20, minimum=1, maximum=200)
     totals = report["totals"]
 
@@ -2605,6 +2782,10 @@ def _collect_tax_charges_report(
     has_tax_breakdown = False
 
     for parent_doctype, _child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         grand_total_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
         net_total_field = _pick_first_column(parent_doctype, ["base_net_total", "net_total"])
         tax_total_field = _pick_first_column(parent_doctype, ["base_total_taxes_and_charges", "total_taxes_and_charges"])
@@ -2657,7 +2838,7 @@ def _collect_tax_charges_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             """,
@@ -2676,7 +2857,7 @@ def _collect_tax_charges_report(
         day_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 sum(case when {is_return_expression} = 1 then 0 else 1 end) as invoice_count,
                 sum(case when {is_return_expression} = 1 then 1 else 0 end) as return_invoice_count,
                 sum({signed_net_total}) as taxable_amount,
@@ -2687,10 +2868,10 @@ def _collect_tax_charges_report(
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date
+            group by {date_field}
             """,
             (company, date_from, date_to, *profile_filter_params),
             as_dict=True,
@@ -2776,7 +2957,7 @@ def _collect_tax_charges_report(
             inner join `tab{parent_doctype}` inv on inv.name = tax.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by {account_head_expression}, {description_expression}, {charge_type_expression}
@@ -2817,7 +2998,7 @@ def _collect_tax_charges_report(
         day_head_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 {account_head_expression} as account_head,
                 {description_expression} as description,
                 {charge_type_expression} as charge_type,
@@ -2826,10 +3007,10 @@ def _collect_tax_charges_report(
             inner join `tab{parent_doctype}` inv on inv.name = tax.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date, {account_head_expression}, {description_expression}, {charge_type_expression}
+            group by {date_field}, {account_head_expression}, {description_expression}, {charge_type_expression}
             """,
             (company, date_from, date_to, *profile_filter_params),
             as_dict=True,
@@ -2986,8 +3167,6 @@ def _collect_sales_trend(
     if not profile_names:
         return trend
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
-
     day_buckets: dict[str, dict[str, Any]] = {}
     week_buckets: dict[str, dict[str, Any]] = {}
     month_buckets: dict[str, dict[str, Any]] = {}
@@ -2997,6 +3176,10 @@ def _collect_sales_trend(
     }
 
     for parent_doctype, _child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         amount_field = _pick_first_column(parent_doctype, ["base_grand_total", "grand_total"])
         if not amount_field:
             continue
@@ -3005,16 +3188,16 @@ def _collect_sales_trend(
         day_rows = frappe.db.sql(
             f"""
             select
-                inv.posting_date as posting_date,
+                {date_field} as posting_date,
                 sum({amount_expression}) as sales_amount,
                 count(inv.name) as invoice_count
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by inv.posting_date
+            group by {date_field}
             """,
             (company, str(month_start), str(today), *profile_filter_params),
             as_dict=True,
@@ -3033,18 +3216,18 @@ def _collect_sales_trend(
         week_rows = frappe.db.sql(
             f"""
             select
-                yearweek(inv.posting_date, 1) as year_week,
-                min(inv.posting_date) as week_start,
-                max(inv.posting_date) as week_end,
+                yearweek({date_field}, 1) as year_week,
+                min({date_field}) as week_start,
+                max({date_field}) as week_end,
                 sum({amount_expression}) as sales_amount,
                 count(inv.name) as invoice_count
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by yearweek(inv.posting_date, 1)
+            group by yearweek({date_field}, 1)
             """,
             (company, str(week_window_start), str(today), *profile_filter_params),
             as_dict=True,
@@ -3083,18 +3266,18 @@ def _collect_sales_trend(
         month_rows = frappe.db.sql(
             f"""
             select
-                date_format(inv.posting_date, '%%Y-%%m') as month_label,
-                min(inv.posting_date) as month_start,
-                max(inv.posting_date) as month_end,
+                date_format({date_field}, '%%Y-%%m') as month_label,
+                min({date_field}) as month_start,
+                max({date_field}) as month_end,
                 sum({amount_expression}) as sales_amount,
                 count(inv.name) as invoice_count
             from `tab{parent_doctype}` inv
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
-            group by date_format(inv.posting_date, '%%Y-%%m')
+            group by date_format({date_field}, '%%Y-%%m')
             """,
             (company, str(month_window_start), str(today), *profile_filter_params),
             as_dict=True,
@@ -3144,7 +3327,7 @@ def _collect_sales_trend(
                 from `tab{parent_doctype}` inv
                 where inv.docstatus = 1
                   and inv.company = %s
-                  and inv.posting_date = %s
+                  and {date_field} = %s
                   {profile_filter}
                   {_extra_parent_filter(parent_doctype, "inv")}
                 group by {hour_expression}
@@ -3220,7 +3403,6 @@ def _collect_item_totals(
     if not profile_names:
         return {}
 
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
     grouped_items: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "item_code": "",
@@ -3236,6 +3418,10 @@ def _collect_item_totals(
     )
 
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         qty_field = _pick_first_column(child_doctype, ["stock_qty", "qty"])
         if not qty_field:
             continue
@@ -3289,7 +3475,7 @@ def _collect_item_totals(
             inner join `tab{parent_doctype}` inv on inv.name = item.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by item.item_code
@@ -3667,9 +3853,11 @@ def _collect_fast_moving_items(
             "sales_amount": 0.0,
         }
     )
-    profile_filter, profile_filter_params = _build_in_filter("inv.pos_profile", profile_names)
-
     for parent_doctype, child_doctype in _iter_invoice_sources():
+        profile_filter, profile_filter_params = _build_profile_filter_for_parent(
+            parent_doctype, profile_names
+        )
+        date_field = _resolve_parent_date_field(parent_doctype)
         qty_field = _pick_first_column(child_doctype, ["stock_qty", "qty"])
         amount_field = _pick_first_column(child_doctype, ["base_net_amount", "net_amount", "amount"])
         name_field = _pick_first_column(child_doctype, ["item_name"])
@@ -3696,7 +3884,7 @@ def _collect_fast_moving_items(
             inner join `tab{parent_doctype}` inv on inv.name = item.parent
             where inv.docstatus = 1
               and inv.company = %s
-              and inv.posting_date between %s and %s
+              and {date_field} between %s and %s
               {profile_filter}
               {_extra_parent_filter(parent_doctype, "inv")}
             group by item.item_code

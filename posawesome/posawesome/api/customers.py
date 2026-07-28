@@ -14,6 +14,8 @@ from frappe.utils.caching import redis_cache
 from .utils import fetch_sales_person_names
 from .stored_value import get_stored_value_summary
 
+EXCLUDED_POS_CUSTOMER_NAMES = {"13682"}
+
 
 def get_customer_groups(pos_profile):
     customer_groups = []
@@ -53,6 +55,34 @@ def get_customer_group_condition(pos_profile):
         cond = " customer_group in ({})".format(", ".join(escaped_groups))
 
     return cond
+
+
+def _get_rfs_customer_filters(pos_profile, modified_after=None, start_after=None):
+    filters = {"disabled": 0, "rfs_customer": 1}
+
+    customer_groups = get_customer_groups(pos_profile)
+    if customer_groups:
+        filters["customer_group"] = ["in", customer_groups]
+
+    if modified_after:
+        try:
+            parsed_modified_after = get_datetime(modified_after)
+        except Exception:
+            frappe.throw(_("modified_after must be a valid ISO datetime"))
+        filters["modified"] = [">", parsed_modified_after.isoformat()]
+
+    if start_after:
+        filters["name"] = [">", start_after]
+
+    return filters
+
+
+def _exclude_hidden_pos_customers(rows):
+    return [
+        row
+        for row in (rows or [])
+        if cstr((row or {}).get("name")).strip() not in EXCLUDED_POS_CUSTOMER_NAMES
+    ]
 
 
 @frappe.whitelist()
@@ -96,21 +126,11 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
 
     def _get_customer_names(pos_profile, limit=None, offset=None, start_after=None, modified_after=None):
         pos_profile = json.loads(pos_profile)
-        filters = {"disabled": 0}
-
-        customer_groups = get_customer_groups(pos_profile)
-        if customer_groups:
-            filters["customer_group"] = ["in", customer_groups]
-
-        if modified_after:
-            try:
-                parsed_modified_after = get_datetime(modified_after)
-            except Exception:
-                frappe.throw(_("modified_after must be a valid ISO datetime"))
-            filters["modified"] = [">", parsed_modified_after.isoformat()]
-
-        if start_after:
-            filters["name"] = [">", start_after]
+        filters = _get_rfs_customer_filters(
+            pos_profile,
+            modified_after=modified_after,
+            start_after=start_after,
+        )
 
         customers = frappe.get_all(
             "Customer",
@@ -127,7 +147,7 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
             limit_start=None if start_after else offset,
             limit_page_length=limit,
         )
-        return customers
+        return _exclude_hidden_pos_customers(customers)
 
     if _pos_profile.get("posa_use_server_cache") and not (limit or offset or start_after or modified_after):
         return __get_customer_names(pos_profile, limit, offset, start_after, modified_after)
@@ -138,11 +158,20 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
 @frappe.whitelist()
 def get_customers_count(pos_profile):
     pos_profile = json.loads(pos_profile)
-    filters = {"disabled": 0}
-    customer_groups = get_customer_groups(pos_profile)
-    if customer_groups:
-        filters["customer_group"] = ["in", customer_groups]
-    return frappe.db.count("Customer", filters)
+    filters = _get_rfs_customer_filters(pos_profile)
+    count = frappe.db.count("Customer", filters)
+    if not EXCLUDED_POS_CUSTOMER_NAMES:
+        return count
+
+    hidden_count = len(
+        frappe.get_all(
+            "Customer",
+            filters={**filters, "name": ["in", list(EXCLUDED_POS_CUSTOMER_NAMES)]},
+            pluck="name",
+        )
+        or []
+    )
+    return max(0, count - hidden_count)
 
 
 @frappe.whitelist()
@@ -286,6 +315,8 @@ def create_customer(
     if method == "create":
         is_exist = frappe.db.exists("Customer", {"customer_name": customer_name})
         if pos_profile.get("posa_allow_duplicate_customer_names") or not is_exist:
+            resolved_customer_group = "Individual"
+            resolved_territory = "All Territories"
             customer = frappe.get_doc(
                 {
                     "doctype": "Customer",
@@ -298,16 +329,12 @@ def create_customer(
                     "posa_birthday": formatted_birthday,
                     "customer_type": customer_type,
                     "gender": gender,
+                    "rfs_customer": 1,
+                    "auto_allocate_sales_orders": 1,
+                    "customer_group": resolved_customer_group,
+                    "territory": resolved_territory,
                 }
             )
-            if customer_group:
-                customer.customer_group = customer_group
-            else:
-                customer.customer_group = "All Customer Groups"
-            if territory:
-                customer.territory = territory
-            else:
-                customer.territory = "All Territories"
 
             customer.save()
 
@@ -321,6 +348,8 @@ def create_customer(
                     "city": city or "",
                     "state": "",
                     "pincode": "",
+                    "email_id": email_id or "",
+                    "phone": mobile_no or "",
                     "country": country or "",
                 }
                 make_address(json.dumps(args))
@@ -361,6 +390,8 @@ def create_customer(
             address_doc = frappe.get_doc("Address", existing_address_name)
             address_doc.address_line1 = address_line1 or ""
             address_doc.city = city or ""
+            address_doc.email_id = email_id or ""
+            address_doc.phone = mobile_no or ""
             address_doc.country = country or ""
             address_doc.save()
         else:
@@ -374,6 +405,8 @@ def create_customer(
                     "city": city or "",
                     "state": "",
                     "pincode": "",
+                    "email_id": email_id or "",
+                    "phone": mobile_no or "",
                     "country": country or "",
                 }
                 make_address(json.dumps(args))
@@ -443,6 +476,89 @@ def get_customer_addresses(customer):
         (customer,),
         as_dict=1,
     )
+
+
+@frappe.whitelist()
+def get_store_collection_addresses():
+    return frappe.get_all(
+        "Address",
+        filters={
+            "disabled": 0,
+            "posa_is_store_collection_point": 1,
+        },
+        fields=[
+            "name",
+            "address_line1",
+            "address_line2",
+            "address_title",
+            "city",
+            "state",
+            "country",
+            "pincode",
+            "email_id",
+            "phone",
+            "address_type",
+            "posa_is_store_collection_point",
+        ],
+        order_by="address_title asc, name asc",
+    )
+
+
+def _validate_store_collection_address(address_name):
+    if not address_name:
+        frappe.throw(_("Store collection address is required"))
+
+    is_store_collection_point = frappe.db.get_value(
+        "Address", address_name, "posa_is_store_collection_point"
+    )
+    if not is_store_collection_point:
+        frappe.throw(_("Selected address is not a store collection point"))
+
+
+@frappe.whitelist()
+def link_store_collection_address_to_customer(customer, address_name):
+    customer = cstr(customer or "").strip()
+    address_name = cstr(address_name or "").strip()
+
+    if not customer:
+        frappe.throw(_("Customer is required"))
+
+    _validate_store_collection_address(address_name)
+
+    existing_link = frappe.db.exists(
+        "Dynamic Link",
+        {
+            "parenttype": "Address",
+            "parentfield": "links",
+            "parent": address_name,
+            "link_doctype": "Customer",
+            "link_name": customer,
+        },
+    )
+    if existing_link:
+        return {
+            "address_name": address_name,
+            "customer": customer,
+            "linked": False,
+            "already_linked": True,
+        }
+
+    address_doc = frappe.get_doc("Address", address_name)
+    address_doc.append(
+        "links",
+        {
+            "link_doctype": "Customer",
+            "link_name": customer,
+        },
+    )
+    address_doc.save()
+
+    return {
+        "address_name": address_name,
+        "customer": customer,
+        "linked": True,
+        "already_linked": False,
+    }
 
 
 @frappe.whitelist()

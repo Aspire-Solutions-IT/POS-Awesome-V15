@@ -21,6 +21,11 @@ import {
 
 const PAGE_SIZE = 1000;
 const CUSTOMER_SCOPE_STORAGE_KEY = "posa_customers_profile_scope";
+const EXCLUDED_CUSTOMER_NAMES = new Set(["13682"]);
+
+function isCustomerVisible(customer: Pick<Customer, "name"> | null | undefined): boolean {
+	return !EXCLUDED_CUSTOMER_NAMES.has(String(customer?.name || "").trim());
+}
 
 function getCustomerProfileScope(profile: POSProfile | null): string {
 	const profileName =
@@ -176,7 +181,9 @@ export const useCustomersStore = defineStore("customers", () => {
 		customerLoadLogState.final = true;
 	}
 
-	const filteredCustomers = computed(() => customers.value);
+	const filteredCustomers = computed(() =>
+		customers.value.filter((customer) => isCustomerVisible(customer)),
+	);
 
 	const isLoadComplete = computed(
 		() => customersLoaded.value && loadProgress.value >= 100,
@@ -301,11 +308,12 @@ export const useCustomersStore = defineStore("customers", () => {
 			.offset(offset)
 			.limit(PAGE_SIZE)
 			.toArray();
+		const visibleResults = results.filter((customer) => isCustomerVisible(customer));
 
 		if (append) {
-			customers.value = [...customers.value, ...results];
+			customers.value = [...customers.value, ...visibleResults];
 		} else {
-			customers.value = results;
+			customers.value = visibleResults;
 		}
 
 		hasMore.value = results.length === PAGE_SIZE;
@@ -313,7 +321,7 @@ export const useCustomersStore = defineStore("customers", () => {
 			page.value += 1;
 		}
 
-		return results.length;
+		return visibleResults.length;
 	}
 
 	async function searchCustomers(term = "", append = false) {
@@ -631,7 +639,7 @@ export const useCustomersStore = defineStore("customers", () => {
 	}
 
 	async function addOrUpdateCustomer(customer: Customer) {
-		if (!customer || !customer.name) {
+		if (!customer || !customer.name || !isCustomerVisible(customer)) {
 			return;
 		}
 		const existingIndex = customers.value.findIndex(

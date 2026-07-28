@@ -543,8 +543,14 @@ export function useDiscounts() {
 				}
 			}
 
-			// Update stock calculations and force UI update
-			if (context.calc_stock_qty) context.calc_stock_qty(item, item.qty);
+			// Price edits should not re-run quantity stock-limit logic.
+			// Stock qty is driven by qty/UOM, not rate/discount changes.
+			if (item && context?.flt) {
+				item.stock_qty = context.flt(
+					(item.conversion_factor || 1) * (item.qty || 0),
+					context.float_precision,
+				);
+			}
 			if (context.forceUpdate) context.forceUpdate();
 		} catch (error: unknown) {
 			console.error("Error calculating prices:", error);

@@ -21,6 +21,20 @@ from posawesome.posawesome.api.utils import (
 from posawesome.posawesome.api.item_processing.barcode import search_serial_or_batch_or_barcode_number
 from posawesome.posawesome.api.item_processing.details import get_items_details
 
+
+def _item_has_custom_tfw_name() -> bool:
+    return frappe.db.has_column("Item", "custom_tfw_name")
+
+
+def _item_has_custom_exclude_from_pos() -> bool:
+    return frappe.db.has_column("Item", "custom_exclude_from_pos")
+
+
+def _resolve_display_item_name(row: Dict[str, Any]) -> str:
+    custom_name = cstr(row.get("custom_tfw_name")).strip()
+    return custom_name or cstr(row.get("item_name")).strip()
+
+
 @dataclass(frozen=True)
 class ProfileContext:
     """Container describing the active POS profile and caching metadata."""
@@ -103,9 +117,14 @@ def _build_search_plan(
     limit = _to_positive_int(limit)
     offset = _to_positive_int(offset)
 
+    has_custom_tfw_name = _item_has_custom_tfw_name()
+    has_custom_exclude_from_pos = _item_has_custom_exclude_from_pos()
+
     filters: Dict[str, Any] = {"disabled": 0, "is_sales_item": 1, "is_fixed_asset": 0}
+    if has_custom_exclude_from_pos:
+        filters["custom_exclude_from_pos"] = ["!=", 1]
     if start_after:
-        filters["item_name"] = [">", start_after]
+        filters["custom_tfw_name" if has_custom_tfw_name else "item_name"] = [">", start_after]
     if modified_after:
         try:
             parsed_modified_after = get_datetime(modified_after)
@@ -152,6 +171,8 @@ def _build_search_plan(
                     ["item_name", "like", f"{base_search_term}%"],
                     ["item_code", "like", f"%{base_search_term}%"],
                 ]
+                if has_custom_tfw_name:
+                    or_filters.insert(2, ["custom_tfw_name", "like", f"{base_search_term}%"])
                 item_code_for_search = base_search_term
 
             if len(raw_search_value) < min_search_len:
@@ -175,7 +196,7 @@ def _build_search_plan(
 
     limit_page_length: Optional[int] = None
     limit_start: Optional[int] = None
-    order_by = "item_name asc"
+    order_by = "custom_tfw_name asc, item_name asc" if has_custom_tfw_name else "item_name asc"
 
     if limit is not None:
         limit_page_length = limit
@@ -205,6 +226,8 @@ def _build_search_plan(
         "brand",
         "allow_negative_stock",
     ]
+    if has_custom_tfw_name:
+        fields.append("custom_tfw_name")
     if include_description:
         fields.append("description")
     if include_image:
@@ -241,6 +264,7 @@ def _collect_searchable_values(row: Dict[str, Any]) -> List[str]:
     values: List[Any] = [
         row.get("item_code"),
         row.get("item_name"),
+        row.get("custom_tfw_name"),
         row.get("name"),
         row.get("description"),
         row.get("barcode"),
@@ -334,6 +358,7 @@ def _shape_item_row(
     row.update(item)
     row.update(detail or {})
     row.update({"attributes": attributes or "", "item_attributes": item_attributes or ""})
+    row["item_name"] = _resolve_display_item_name(row)
     return row
 
 
@@ -426,14 +451,17 @@ def _run_item_query(
         )
 
         if not items_data and plan.item_code_for_search and page_start == plan.initial_page_start:
+            fallback_or_filters = [
+                ["name", "like", f"%{plan.item_code_for_search}%"],
+                ["item_name", "like", f"%{plan.item_code_for_search}%"],
+                ["item_code", "like", f"%{plan.item_code_for_search}%"],
+            ]
+            if _item_has_custom_tfw_name():
+                fallback_or_filters.insert(2, ["custom_tfw_name", "like", f"%{plan.item_code_for_search}%"])
             items_data = frappe.get_all(
                 "Item",
                 filters=plan.filters,
-                or_filters=[
-                    ["name", "like", f"%{plan.item_code_for_search}%"],
-                    ["item_name", "like", f"%{plan.item_code_for_search}%"],
-                    ["item_code", "like", f"%{plan.item_code_for_search}%"],
-                ],
+                or_filters=fallback_or_filters,
                 fields=plan.fields,
                 limit_start=page_start,
                 limit_page_length=plan.page_size,

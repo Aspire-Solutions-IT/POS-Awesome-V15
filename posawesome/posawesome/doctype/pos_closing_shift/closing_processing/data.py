@@ -2,6 +2,21 @@ import frappe
 from frappe.utils import cint
 from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.invoices import submit_printed_invoices
 
+
+def resolve_shift_sales_doctype(pos_opening_shift, pos_profile=None):
+    if not pos_profile:
+        pos_profile = frappe.db.get_value("POS Opening Shift", pos_opening_shift, "pos_profile")
+
+    if cint(frappe.db.get_value("POS Profile", pos_profile, "posa_create_only_sales_order")):
+        return "Sales Order"
+
+    use_pos_invoice = frappe.db.get_value(
+        "POS Profile",
+        pos_profile,
+        "create_pos_invoice_instead_of_sales_invoice",
+    )
+    return "POS Invoice" if use_pos_invoice else "Sales Invoice"
+
 @frappe.whitelist()
 def get_cashiers(doctype, txt, searchfield, start, page_len, filters):
     cashiers_list = frappe.get_all("POS Profile User", filters=filters, fields=["user"])
@@ -17,13 +32,20 @@ def get_cashiers(doctype, txt, searchfield, start, page_len, filters):
 @frappe.whitelist()
 def get_pos_invoices(pos_opening_shift, doctype=None, submit_printed=1):
     if not doctype:
-        pos_profile = frappe.db.get_value("POS Opening Shift", pos_opening_shift, "pos_profile")
-        use_pos_invoice = frappe.db.get_value(
-            "POS Profile",
-            pos_profile,
-            "create_pos_invoice_instead_of_sales_invoice",
-        )
-        doctype = "POS Invoice" if use_pos_invoice else "Sales Invoice"
+        doctype = resolve_shift_sales_doctype(pos_opening_shift)
+
+    if doctype == "Sales Order":
+        opening_shift = frappe.get_doc("POS Opening Shift", pos_opening_shift)
+        filters = {
+            "docstatus": 1,
+            "company": opening_shift.company,
+            "pos_profile": opening_shift.pos_profile,
+            "is_pos": 1,
+            "creation": ["between", [opening_shift.period_start_date, frappe.utils.now_datetime()]],
+        }
+        orders = frappe.get_all("Sales Order", filters=filters, fields=["name"], order_by="creation asc")
+        return [frappe.get_doc("Sales Order", d.name).as_dict() for d in orders]
+
     if cint(submit_printed):
         submit_printed_invoices(pos_opening_shift, doctype)
     cond = " and ifnull(consolidated_invoice,'') = ''" if doctype == "POS Invoice" else ""

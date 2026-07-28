@@ -7,6 +7,19 @@ from frappe import _, as_json
 import json
 import time
 
+
+def _item_has_custom_tfw_name() -> bool:
+    return frappe.db.has_column("Item", "custom_tfw_name")
+
+
+def _item_has_custom_exclude_from_pos() -> bool:
+    return frappe.db.has_column("Item", "custom_exclude_from_pos")
+
+
+def _resolve_display_item_name(item) -> str:
+    custom_name = frappe.utils.cstr(item.get("custom_tfw_name")).strip()
+    return custom_name or frappe.utils.cstr(item.get("item_name")).strip()
+
 @frappe.whitelist()
 def get_items_details(pos_profile, items_data, price_list=None, customer=None):
     """Bulk fetch item details for a list of items."""
@@ -213,12 +226,18 @@ def get_item_variants(pos_profile, parent_item_code, price_list=None, customer=N
         "brand",
         "allow_negative_stock",
     ]
+    if _item_has_custom_tfw_name():
+        fields.append("custom_tfw_name")
 
     items_data = frappe.get_all(
         "Item",
-        filters={"variant_of": parent_item_code, "disabled": 0},
+        filters={
+            "variant_of": parent_item_code,
+            "disabled": 0,
+            **({"custom_exclude_from_pos": ["!=", 1]} if _item_has_custom_exclude_from_pos() else {}),
+        },
         fields=fields,
-        order_by="item_name asc",
+        order_by="custom_tfw_name asc, item_name asc" if _item_has_custom_tfw_name() else "item_name asc",
     )
 
     if not items_data:
@@ -239,6 +258,7 @@ def get_item_variants(pos_profile, parent_item_code, price_list=None, customer=N
             item.update(detail)
         else:
             item.setdefault("item_barcode", [])
+        item["item_name"] = _resolve_display_item_name(item)
         result.append(item)
 
     # --------------------------

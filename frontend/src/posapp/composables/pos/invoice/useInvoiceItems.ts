@@ -86,6 +86,13 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 		{ title: __("QTY"), key: "qty", align: "center", required: true },
 		{ title: __("UOM"), key: "uom", align: "center", required: false },
 		{
+			title: __("Warehouse"),
+			key: "warehouse",
+			align: "center",
+			required: false,
+			width: "180px",
+		},
+		{
 			title: __("Price List Rate"),
 			key: "price_list_rate",
 			align: "end",
@@ -137,11 +144,15 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 				selected_columns.value = parsed.map((key) =>
 					key === "discount_value" ? "discount_percentage" : key,
 				);
+				if (!selected_columns.value.includes("warehouse")) {
+					selected_columns.value.push("warehouse");
+				}
 			} else if (pos_profile.value) {
 				// Default selection based on POS Profile
 				selected_columns.value = available_columns.value
 					.filter((col) => {
 						if (col.required) return true;
+						if (col.key === "warehouse") return true;
 						if (col.key === "price_list_rate") return true;
 						if (
 							col.key === "discount_percentage" &&

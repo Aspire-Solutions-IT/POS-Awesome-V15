@@ -35,6 +35,7 @@ describe("route loading messaging", () => {
 		const { router } = createPosAppRouter();
 
 		expect(router).toBeTruthy();
+		expect(router.resolve("/sales-orders").matched[0]?.meta?.title).toBe("Sales Orders");
 	});
 
 	it("routes offline chunk failures to an explicit unavailable state", () => {

@@ -5,6 +5,7 @@ from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.utils im
 from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.data import (
     get_pos_invoices,
     get_payments_entries,
+    resolve_shift_sales_doctype,
 )
 from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.invoices import (
     submit_printed_invoices,
@@ -13,13 +14,13 @@ from posawesome.posawesome.doctype.pos_closing_shift.closing_processing.invoices
 @frappe.whitelist()
 def make_closing_shift_from_opening(opening_shift):
     opening_shift = json.loads(opening_shift)
-    use_pos_invoice = frappe.db.get_value(
-        "POS Profile",
+    doctype = resolve_shift_sales_doctype(
+        opening_shift.get("name"),
         opening_shift.get("pos_profile"),
-        "create_pos_invoice_instead_of_sales_invoice",
     )
-    doctype = "POS Invoice" if use_pos_invoice else "Sales Invoice"
-    skipped_printed_invoices = submit_printed_invoices(opening_shift.get("name"), doctype)
+    skipped_printed_invoices = []
+    if doctype != "Sales Order":
+        skipped_printed_invoices = submit_printed_invoices(opening_shift.get("name"), doctype)
     closing_shift = frappe.new_doc("POS Closing Shift")
     closing_shift.pos_opening_shift = opening_shift.get("name")
     closing_shift.period_start_date = opening_shift.get("period_start_date")
@@ -55,22 +56,22 @@ def make_closing_shift_from_opening(opening_shift):
             )
         )
 
-    invoice_field = "pos_invoice" if doctype == "POS Invoice" else "sales_invoice"
-
     for d in invoices:
         conversion_rate = d.get("conversion_rate")
-        pos_transactions.append(
-            frappe._dict(
-                {
-                    invoice_field: d.name,
-                    "posting_date": d.posting_date,
-                    "grand_total": get_base_value(d, "grand_total", "base_grand_total", conversion_rate),
-                    "transaction_currency": d.get("currency") or company_currency,
-                    "transaction_amount": flt(d.get("grand_total")),
-                    "customer": d.customer,
-                }
+        if doctype != "Sales Order":
+            invoice_field = "pos_invoice" if doctype == "POS Invoice" else "sales_invoice"
+            pos_transactions.append(
+                frappe._dict(
+                    {
+                        invoice_field: d.name,
+                        "posting_date": d.posting_date,
+                        "grand_total": get_base_value(d, "grand_total", "base_grand_total", conversion_rate),
+                        "transaction_currency": d.get("currency") or company_currency,
+                        "transaction_amount": flt(d.get("grand_total")),
+                        "customer": d.customer,
+                    }
+                )
             )
-        )
         base_grand_total = get_base_value(d, "grand_total", "base_grand_total", conversion_rate)
         base_net_total = get_base_value(d, "net_total", "base_net_total", conversion_rate)
         closing_shift.grand_total += base_grand_total
@@ -96,7 +97,7 @@ def make_closing_shift_from_opening(opening_shift):
                     )
                 )
 
-        for p in d.payments:
+        for p in d.get("payments", []):
             existing_pay = [pay for pay in payments if pay.mode_of_payment == p.mode_of_payment]
             if existing_pay:
                 conversion_rate = d.get("conversion_rate")
