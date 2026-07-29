@@ -291,20 +291,22 @@
 						/>
 					</section>
 
-					<section v-if="showPaymentStep" class="payment-section payment-section--meta">
+					<section
+						v-if="
+							showPaymentStep &&
+							parseBooleanSetting(pos_profile?.posa_allow_select_print_format_in_payments)
+						"
+						class="payment-section payment-section--meta"
+					>
 						<div class="payment-section__header">
-							<h3 class="payment-section__title">{{ __("Sales Person and Print") }}</h3>
+							<h3 class="payment-section__title">{{ __("Print") }}</h3>
 						</div>
 						<PaymentSelectionFields
-							:sales-persons="sales_persons"
-							:sales-person="sales_person"
-							:readonly="readonly"
 							:print-formats="print_formats"
 							:print-format="print_format"
 							:show-print-format="
 								parseBooleanSetting(pos_profile?.posa_allow_select_print_format_in_payments)
 							"
-							@update:sales-person="sales_person = $event"
 							@update:print-format="print_format = $event"
 						/>
 					</section>
@@ -467,7 +469,6 @@ const paid_change = ref(0);
 const credit_change = ref(0);
 const loading = ref(false);
 const show_change_dialog = ref(false);
-const sales_person = ref("");
 const is_credit_return = ref(false);
 const customer_info = ref("");
 const print_format = ref("");
@@ -481,7 +482,6 @@ const paymentVisible = ref(false);
 const paymentContainer = ref(null);
 const submitButton = ref(null);
 const _shortcutHandlers = ref({});
-const readonly = ref(false); // Add missing readonly ref
 const submissionInFlight = ref(false);
 const queuedShortcutSubmit = ref(null);
 const missingOrderAddressDialog = ref(false);
@@ -1222,7 +1222,6 @@ const {
 
 const {
 	addresses,
-	sales_persons,
 	new_delivery_date,
 	preferred_delivery_date,
 	new_po_date,
@@ -1236,7 +1235,6 @@ const {
 	new_address,
 	addressFilter,
 	normalizeAddress,
-	get_sales_person_names,
 	update_delivery_date,
 	update_preferred_delivery_date,
 	update_po_date,
@@ -2498,7 +2496,6 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 				is_cashback.value = true;
 				show_change_dialog.value = true;
 				is_credit_return.value = false;
-				sales_person.value = "";
 			},
 			onFinishNavigation: (clearInvoice) => {
 				finishSubmissionNavigation(clearInvoice);
@@ -2750,20 +2747,6 @@ watch(loyalty_amount, (value) => {
 
 watch(redeemed_customer_credit, () => {
 	rebalancePreferredPaymentCoverage();
-});
-
-watch(sales_person, (newVal) => {
-	if (!invoice_doc.value) return;
-	if (newVal) {
-		invoice_doc.value.sales_team = [
-			{
-				sales_person: newVal,
-				allocated_percentage: 100,
-			},
-		];
-	} else {
-		invoice_doc.value.sales_team = [];
-	}
 });
 
 watch(is_credit_sale, (newVal) => {
@@ -3028,7 +3011,6 @@ onMounted(() => {
 					get_addresses();
 				}
 			}
-			get_sales_person_names();
 		});
 
 		eventBus.on("register_pos_profile", (data) => {
