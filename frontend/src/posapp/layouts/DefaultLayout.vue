@@ -87,6 +87,7 @@ import ClosingDialog from "../components/pos/shell/ClosingDialog.vue";
 import AppLoadingOverlay from "../components/ui/LoadingOverlay.vue";
 import UpdatePrompt from "../components/ui/UpdatePrompt.vue";
 import { useLoading } from "../composables/core/useLoading.js";
+import { useInactivityLock } from "../composables/core/useInactivityLock";
 import { usePosShift } from "../composables/pos/shared/usePosShift";
 import { loadingState, initLoadingSources, setSourceProgress, markSourceLoaded } from "../utils/loading.js";
 import { useCustomersStore } from "../stores/customersStore.js";
@@ -249,6 +250,9 @@ const eventBus = instance?.proxy?.eventBus;
 
 // Initialize loading sources immediately in setup so watchers can mark them 100%
 initLoadingSources(["init", "items", "customers"]);
+
+// Auto-lock the terminal after 5 minutes of no activity, once a POS profile is registered.
+useInactivityLock(5 * 60 * 1000, () => Boolean(posProfile.value?.name));
 
 function getCurrentBootstrapProfile() {
 	return posProfile.value || frappe?.boot?.pos_profile || null;

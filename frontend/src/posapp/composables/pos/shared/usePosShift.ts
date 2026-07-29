@@ -1,6 +1,7 @@
 import { ref, getCurrentInstance, inject } from "vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
+import { useEmployeeStore } from "../../../stores/employeeStore";
 import {
 	initPromise,
 	checkDbHealth,
@@ -84,6 +85,7 @@ export function usePosShift(openDialog?: () => void) {
 		typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
 	const toastStore = useToastStore();
 	const uiStore = useUIStore();
+	const employeeStore = useEmployeeStore();
 
 	const pos_profile = ref<any>(null);
 	const pos_opening_shift = ref<any>(null);
@@ -108,6 +110,10 @@ export function usePosShift(openDialog?: () => void) {
 		} catch (e) {
 			console.warn("Realtime emit failed", e);
 		}
+
+		// Always require a cashier PIN unlock after the opening balance is
+		// confirmed, rather than silently continuing as the logged-in browser user.
+		employeeStore.lockTerminal();
 	}
 
 	async function check_opening_entry() {

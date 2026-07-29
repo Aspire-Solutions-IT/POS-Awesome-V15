@@ -86,6 +86,20 @@
 						</v-tooltip>
 					</v-btn>
 
+					<v-btn
+						icon
+						size="small"
+						class="lock-screen-btn mobile-btn pos-themed-button"
+						:aria-label="__('Lock Screen')"
+						data-test="lock-screen-btn"
+						@click="$emit('lock-screen')"
+					>
+						<v-icon class="pos-text-primary">mdi-lock-outline</v-icon>
+						<v-tooltip activator="parent" location="bottom">
+							{{ __("Lock Screen") }}
+						</v-tooltip>
+					</v-btn>
+
 					<!-- Notification bell centered between offline invoices and menu -->
 					<div class="notification-wrapper">
 						<slot name="notification-bell"></slot>
@@ -192,6 +206,26 @@
 							:close-delay="200"
 						>
 							{{ __("Offline Invoices") }} ({{ pendingInvoices }})
+						</v-tooltip>
+					</v-btn>
+
+					<v-btn
+						icon
+						class="lock-screen-btn pos-themed-button"
+						:aria-label="__('Lock Screen')"
+						data-test="lock-screen-btn"
+						tabindex="0"
+						@click="$emit('lock-screen')"
+						@keydown.enter="$emit('lock-screen')"
+					>
+						<v-icon class="pos-text-primary">mdi-lock-outline</v-icon>
+						<v-tooltip
+							activator="parent"
+							:location="isRtl ? 'bottom start' : 'bottom end'"
+							:open-delay="500"
+							:close-delay="200"
+						>
+							{{ __("Lock Screen") }}
 						</v-tooltip>
 					</v-btn>
 
@@ -384,7 +418,7 @@ export default {
 			}
 		},
 	},
-	emits: ["nav-click", "go-desk", "show-offline-invoices", "open-employee-switch"],
+	emits: ["nav-click", "go-desk", "show-offline-invoices", "open-employee-switch", "lock-screen"],
 };
 </script>
 
@@ -825,6 +859,35 @@ export default {
 
 .offline-invoices-btn .pos-text-primary {
 	color: #1976d2 !important;
+}
+
+.lock-screen-btn {
+	position: relative;
+	transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+	padding: 4px;
+	min-width: 40px;
+	min-height: 40px;
+	background: rgba(25, 118, 210, 0.08) !important;
+	border: 1px solid rgba(25, 118, 210, 0.12);
+	border-radius: 12px;
+	backdrop-filter: blur(8px);
+}
+
+.lock-screen-btn:hover {
+	transform: translateY(-1px);
+	background: rgba(25, 118, 210, 0.12) !important;
+	border-color: rgba(25, 118, 210, 0.2);
+	box-shadow: 0 4px 12px rgba(25, 118, 210, 0.15);
+}
+
+.lock-screen-btn:hover .pos-text-primary {
+	color: #1565c0 !important;
+}
+
+.mobile-navbar .lock-screen-btn {
+	min-width: 36px !important;
+	min-height: 36px !important;
+	padding: 6px !important;
 }
 
 /* Elite styling for navbar text and icons */

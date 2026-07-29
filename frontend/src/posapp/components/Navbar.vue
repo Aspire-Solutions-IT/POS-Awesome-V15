@@ -13,6 +13,7 @@
 			@go-desk="goDesk"
 			@show-offline-invoices="showOfflineInvoices = true"
 			@open-employee-switch="openEmployeeSwitch"
+			@lock-screen="lockPosScreen"
 		>
 			<!-- Slot for status indicator -->
 			<template #status-indicator>

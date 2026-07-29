@@ -224,6 +224,7 @@ import { useResponsive } from "../../../composables/core/useResponsive";
 import { useRtl } from "../../../composables/core/useRtl";
 import { useCustomersStore } from "../../../stores/customersStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
+import { useEmployeeStore } from "../../../stores/employeeStore";
 import { useInvoiceStore } from "../../../stores/invoiceStore.js";
 import { useItemsStore } from "../../../stores/itemsStore.js";
 import { storeToRefs } from "pinia";
@@ -243,6 +244,7 @@ export default {
 		});
 		const offers = useOffers();
 		const uiStore = useUIStore();
+		const employeeStore = useEmployeeStore();
 		const invoiceStore = useInvoiceStore();
 		const itemsStore = useItemsStore();
 		const __ = window.__;
@@ -537,6 +539,7 @@ export default {
 			...shift,
 			...offers,
 			uiStore,
+			employeeStore,
 			invoiceStore,
 			itemsStore,
 			__,
@@ -627,6 +630,10 @@ export default {
 
 			// Update Store
 			this.uiStore.setRegisterData(data);
+
+			// Always require a cashier PIN unlock after the opening balance is
+			// confirmed, rather than silently continuing as the logged-in browser user.
+			this.employeeStore.lockTerminal();
 		},
 		closeOpeningDialog() {
 			this.dialog = false;
