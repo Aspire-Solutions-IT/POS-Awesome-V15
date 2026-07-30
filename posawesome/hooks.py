@@ -327,6 +327,7 @@ fixtures = [
                     "POS Profile-posa_return_validity_days",
                     "POS Profile-posa_auto_email_receipt_on_submit",
                     "POS Profile-posa_receipt_email_print_format",
+                    "POS Profile-posa_receipt_email_cc",
                     "POS Profile-posa_enable_cash_movement",
                     "POS Profile-posa_allow_pos_expense",
                     "POS Profile-posa_allow_cash_deposit",

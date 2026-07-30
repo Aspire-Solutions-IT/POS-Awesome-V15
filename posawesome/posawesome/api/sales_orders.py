@@ -11,7 +11,7 @@ import frappe
 from frappe import _
 from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
-from frappe.utils import cint, cstr, flt, getdate, nowdate
+from frappe.utils import cint, cstr, flt, getdate, nowdate, split_emails, validate_email_address
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
@@ -86,14 +86,20 @@ def _split_payment_entry_job(order_name, payments):
     _create_payment_entries(so_doc, payments)
 
 
+def _parse_cc_emails(raw):
+    sanitized = validate_email_address(raw, throw=False)
+    return split_emails(sanitized)
+
+
 def _get_receipt_email_settings(profile_name):
     if not profile_name:
-        return 0, ""
+        return 0, "", []
 
     profile = frappe.get_cached_doc("POS Profile", profile_name)
     enabled = cint(getattr(profile, "posa_auto_email_receipt_on_submit", 0) or 0)
     print_format = str(getattr(profile, "posa_receipt_email_print_format", "") or "").strip()
-    return enabled, print_format
+    cc_emails = _parse_cc_emails(getattr(profile, "posa_receipt_email_cc", "") or "")
+    return enabled, print_format, cc_emails
 
 
 def _get_receipt_sender():
@@ -181,21 +187,21 @@ def _build_receipt_attachment(so_doc, print_format):
 
 def _should_auto_email_receipt(so_doc, log_skip=False):
     if not cint(getattr(so_doc, "is_pos", 0) or 0):
-        return False, ""
+        return False, "", []
 
     if not getattr(so_doc, "pos_profile", None):
-        return False, ""
+        return False, "", []
 
-    enabled, print_format = _get_receipt_email_settings(so_doc.pos_profile)
+    enabled, print_format, cc_emails = _get_receipt_email_settings(so_doc.pos_profile)
     if not enabled:
-        return False, ""
+        return False, "", []
 
     if not print_format:
         if log_skip:
             _log_receipt_skip(so_doc, "Receipt email is enabled but no print format is configured.")
-        return False, ""
+        return False, "", []
 
-    return True, print_format
+    return True, print_format, cc_emails
 
 
 def _is_dev_or_local_environment():
@@ -211,7 +217,7 @@ def on_submit(doc, method):
         "POSAwesome receipt email: on_submit start for Sales Order %s",
         getattr(doc, "name", "Unknown"),
     )
-    should_send, print_format = _should_auto_email_receipt(doc, log_skip=True)
+    should_send, print_format, cc_emails = _should_auto_email_receipt(doc, log_skip=True)
     frappe.logger().info(
         "POSAwesome receipt email: eligibility checked for Sales Order %s should_send=%s",
         getattr(doc, "name", "Unknown"),
@@ -249,10 +255,11 @@ def on_submit(doc, method):
         recipient=recipient,
         pos_profile=doc.pos_profile,
         print_format=print_format,
+        cc=cc_emails,
     )
 
 
-def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print_format=None):
+def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print_format=None, cc=None):
     try:
         frappe.logger().info(
             "POSAwesome receipt email: job start for Sales Order %s",
@@ -260,14 +267,17 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
         )
         so_doc = frappe.get_doc("Sales Order", sales_order_name)
         resolved_print_format = str(print_format or "").strip()
+        cc_emails = list(cc or [])
         if not resolved_print_format and pos_profile:
-            enabled, resolved_print_format = _get_receipt_email_settings(pos_profile)
+            enabled, resolved_print_format, profile_cc_emails = _get_receipt_email_settings(pos_profile)
             if not enabled:
                 frappe.logger().info(
                     "POSAwesome receipt email: job disabled by POS Profile for Sales Order %s",
                     sales_order_name,
                 )
                 return
+            if not cc_emails:
+                cc_emails = profile_cc_emails
 
         if not resolved_print_format:
             frappe.logger().info(
@@ -283,12 +293,13 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
         )
         attachment = _build_receipt_attachment(so_doc, resolved_print_format)
         frappe.logger().info(
-            "POSAwesome receipt email: before sendmail for Sales Order %s recipient=%s bytes=%s",
+            "POSAwesome receipt email: before sendmail for Sales Order %s recipient=%s cc=%s bytes=%s",
             sales_order_name,
             recipient,
+            cc_emails,
             len(attachment.get("fcontent") or b""),
         )
-        frappe.sendmail(
+        send_kwargs = dict(
             recipients=[recipient],
             sender=_get_receipt_sender(),
             subject=_("Your Receipt for Order - {0} - The Furniture Warehouse").format(
@@ -299,6 +310,9 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
             reference_doctype=so_doc.doctype,
             reference_name=so_doc.name,
         )
+        if cc_emails:
+            send_kwargs["cc"] = cc_emails
+        frappe.sendmail(**send_kwargs)
         frappe.logger().info(
             "POSAwesome receipt email: after sendmail for Sales Order %s",
             sales_order_name,

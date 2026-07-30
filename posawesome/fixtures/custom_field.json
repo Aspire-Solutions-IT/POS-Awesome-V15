@@ -7980,6 +7980,18 @@
 	{
 		"doctype": "Custom Field",
 		"dt": "POS Profile",
+		"fieldname": "posa_receipt_email_cc",
+		"fieldtype": "Small Text",
+		"label": "CC Receipt Confirmations",
+		"options": "Email",
+		"description": "Comma-separated email addresses to CC when the receipt email is sent.",
+		"depends_on": "eval:doc.posa_auto_email_receipt_on_submit==1",
+		"insert_after": "posa_receipt_email_print_format",
+		"name": "POS Profile-posa_receipt_email_cc"
+	},
+	{
+		"doctype": "Custom Field",
+		"dt": "POS Profile",
 		"fieldname": "posa_enable_cash_movement",
 		"fieldtype": "Check",
 		"label": "Enable Cash Movement",
@@ -8143,7 +8155,7 @@
 		"fieldtype": "Section Break",
 		"label": "Cash Movement",
 		"collapsible": 1,
-		"insert_after": "posa_receipt_email_print_format",
+		"insert_after": "posa_receipt_email_cc",
 		"name": "POS Profile-posa_section_cash_movement"
 	},
 	{

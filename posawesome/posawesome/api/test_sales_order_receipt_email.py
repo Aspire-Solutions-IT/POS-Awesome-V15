@@ -28,11 +28,26 @@ def _install_stub_modules():
     frappe_module.conf = {}
     frappe_module.local = SimpleNamespace(conf={}, site="")
 
+    import re as _re
+
+    def _stub_split_emails(txt):
+        if not txt:
+            return []
+        parts = _re.split(r"[,\n;]", str(txt))
+        return [part.strip() for part in parts if part.strip()]
+
+    def _stub_validate_email_address(email_str, throw=False):
+        emails = _stub_split_emails(email_str)
+        valid = [e for e in emails if _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", e)]
+        return ", ".join(valid)
+
     frappe_utils = types.ModuleType("frappe.utils")
     frappe_utils.cint = lambda value=0: int(value or 0)
     frappe_utils.flt = lambda value=0, *args, **kwargs: float(value or 0)
     frappe_utils.getdate = lambda value: value
     frappe_utils.nowdate = lambda: "2026-06-03"
+    frappe_utils.split_emails = _stub_split_emails
+    frappe_utils.validate_email_address = _stub_validate_email_address
     frappe_utils_pdf = types.ModuleType("frappe.utils.pdf")
     frappe_utils_pdf.get_pdf = lambda html, options=None, output=None: b"pdf"
     frappe_utils_print_utils = types.ModuleType("frappe.utils.print_utils")
@@ -88,7 +103,9 @@ class TestSalesOrderReceiptEmail(TestCase):
         doc = SimpleNamespace(name="SO-0001", pos_profile="POS-1")
 
         with patch.object(
-            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt")
+            sales_orders,
+            "_should_auto_email_receipt",
+            return_value=(True, "POS Receipt", ["cc@example.com"]),
         ), patch.object(
             sales_orders, "_resolve_customer_email", return_value="customer@example.com"
         ), patch.object(
@@ -104,13 +121,14 @@ class TestSalesOrderReceiptEmail(TestCase):
             recipient="customer@example.com",
             pos_profile="POS-1",
             print_format="POS Receipt",
+            cc=["cc@example.com"],
         )
 
     def test_on_submit_skips_when_customer_email_is_missing(self):
         doc = SimpleNamespace(name="SO-0002", pos_profile="POS-1")
 
         with patch.object(
-            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt")
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt", [])
         ), patch.object(
             sales_orders, "_resolve_customer_email", return_value=""
         ), patch.object(
@@ -127,7 +145,7 @@ class TestSalesOrderReceiptEmail(TestCase):
         doc = SimpleNamespace(name="SO-0002A", pos_profile="POS-1")
 
         with patch.object(
-            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt")
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt", [])
         ), patch.object(
             sales_orders, "_resolve_customer_email", return_value="customer@example.com"
         ), patch.object(
@@ -143,7 +161,7 @@ class TestSalesOrderReceiptEmail(TestCase):
         doc = SimpleNamespace(name="SO-0002B", pos_profile="POS-1")
 
         with patch.object(
-            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt")
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt", [])
         ), patch.object(
             sales_orders, "_resolve_customer_email", return_value="customer@example.com"
         ), patch.object(
@@ -159,7 +177,7 @@ class TestSalesOrderReceiptEmail(TestCase):
         doc = SimpleNamespace(name="SO-0002C", pos_profile="POS-1")
 
         with patch.object(
-            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt")
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt", [])
         ), patch.object(
             sales_orders, "_resolve_customer_email", return_value="customer@example.com"
         ), patch.object(
@@ -175,24 +193,47 @@ class TestSalesOrderReceiptEmail(TestCase):
     def test_should_auto_email_receipt_requires_pos_order(self):
         doc = SimpleNamespace(name="SO-0003", is_pos=0, pos_profile="POS-1")
 
-        should_send, print_format = sales_orders._should_auto_email_receipt(doc)
+        should_send, print_format, cc_emails = sales_orders._should_auto_email_receipt(doc)
 
         self.assertFalse(should_send)
         self.assertEqual(print_format, "")
+        self.assertEqual(cc_emails, [])
 
     def test_should_auto_email_receipt_logs_when_print_format_missing(self):
         doc = SimpleNamespace(name="SO-0004", is_pos=1, pos_profile="POS-1")
 
         with patch.object(
-            sales_orders, "_get_receipt_email_settings", return_value=(1, "")
+            sales_orders, "_get_receipt_email_settings", return_value=(1, "", [])
         ), patch.object(sales_orders, "_log_receipt_skip") as log_skip:
-            should_send, print_format = sales_orders._should_auto_email_receipt(doc, log_skip=True)
+            should_send, print_format, cc_emails = sales_orders._should_auto_email_receipt(
+                doc, log_skip=True
+            )
 
         self.assertFalse(should_send)
         self.assertEqual(print_format, "")
+        self.assertEqual(cc_emails, [])
         log_skip.assert_called_once_with(
             doc, "Receipt email is enabled but no print format is configured."
         )
+
+    def test_should_auto_email_receipt_returns_cc_emails_when_eligible(self):
+        doc = SimpleNamespace(name="SO-0004A", is_pos=1, pos_profile="POS-1")
+
+        with patch.object(
+            sales_orders,
+            "_get_receipt_email_settings",
+            return_value=(1, "POS Receipt", ["cc@example.com"]),
+        ):
+            should_send, print_format, cc_emails = sales_orders._should_auto_email_receipt(doc)
+
+        self.assertTrue(should_send)
+        self.assertEqual(print_format, "POS Receipt")
+        self.assertEqual(cc_emails, ["cc@example.com"])
+
+    def test_parse_cc_emails_splits_and_filters_invalid_addresses(self):
+        cc_emails = sales_orders._parse_cc_emails("a@example.com, not-an-email\nb@example.com")
+
+        self.assertEqual(cc_emails, ["a@example.com", "b@example.com"])
 
     def test_is_dev_or_local_environment_uses_local_site_name(self):
         with patch.object(sales_orders.frappe, "conf", {}), patch.object(
@@ -272,6 +313,69 @@ class TestSalesOrderReceiptEmail(TestCase):
             attachments=[attachment],
             reference_doctype="Sales Order",
             reference_name="SO-0005",
+        )
+
+    def test_send_receipt_email_job_includes_cc_when_provided(self):
+        doc = SimpleNamespace(name="SO-0005A", doctype="Sales Order", is_pos=1, pos_profile="POS-1")
+        attachment = {"fname": "SO-0005A.pdf", "fcontent": b"pdf"}
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_build_receipt_attachment", return_value=attachment
+        ), patch.object(
+            sales_orders, "_get_receipt_sender", return_value="erp@example.com"
+        ), patch.object(
+            sales_orders.frappe, "sendmail"
+        ) as sendmail:
+            sales_orders._send_receipt_email_job(
+                "SO-0005A",
+                "customer@example.com",
+                "POS-1",
+                "POS Receipt",
+                cc=["cc1@example.com", "cc2@example.com"],
+            )
+
+        sendmail.assert_called_once_with(
+            recipients=["customer@example.com"],
+            sender="erp@example.com",
+            subject="Your Receipt for Order - SO-0005A - The Furniture Warehouse",
+            message="Please find your receipt attached.",
+            attachments=[attachment],
+            reference_doctype="Sales Order",
+            reference_name="SO-0005A",
+            cc=["cc1@example.com", "cc2@example.com"],
+        )
+
+    def test_send_receipt_email_job_falls_back_to_profile_cc_when_none_passed(self):
+        doc = SimpleNamespace(name="SO-0005B", doctype="Sales Order", is_pos=1, pos_profile="POS-1")
+        attachment = {"fname": "SO-0005B.pdf", "fcontent": b"pdf"}
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_build_receipt_attachment", return_value=attachment
+        ), patch.object(
+            sales_orders, "_get_receipt_sender", return_value="erp@example.com"
+        ), patch.object(
+            sales_orders,
+            "_get_receipt_email_settings",
+            return_value=(1, "POS Receipt", ["profile-cc@example.com"]),
+        ), patch.object(
+            sales_orders.frappe, "sendmail"
+        ) as sendmail:
+            sales_orders._send_receipt_email_job(
+                "SO-0005B",
+                "customer@example.com",
+                pos_profile="POS-1",
+                print_format=None,
+            )
+
+        sendmail.assert_called_once_with(
+            recipients=["customer@example.com"],
+            sender="erp@example.com",
+            subject="Your Receipt for Order - SO-0005B - The Furniture Warehouse",
+            message="Please find your receipt attached.",
+            attachments=[attachment],
+            reference_doctype="Sales Order",
+            reference_name="SO-0005B",
+            cc=["profile-cc@example.com"],
         )
 
     def test_build_receipt_attachment_uses_attach_print_without_override(self):
