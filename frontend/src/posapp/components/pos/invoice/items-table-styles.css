@@ -448,6 +448,20 @@
 	font-weight: 500;
 }
 
+/* Warehouse names can run much longer than the other values shown in this box
+   (rate, discount, uom); clip with an ellipsis instead of wrapping, since wrapped
+   text overflows the fixed row height and bleeds into the row below/above. */
+.posa-cart-table__editor-display--warehouse {
+	overflow: hidden;
+}
+
+.posa-cart-table__warehouse-text {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Input field overrides within the table */
 .posa-cart-table__editor-input,
 .posa-cart-table__qty-input {

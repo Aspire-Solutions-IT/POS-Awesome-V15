@@ -42,6 +42,7 @@
 					:displayCurrency="displayCurrency"
 					:warehouse-options="warehouseOptions"
 					:warehouse-loading="warehouseLoading"
+					:hide-warehouse-selector="hideWarehouseSelector"
 					:update-item-detail="updateItemDetail"
 					:formatFloat="memoizedFormatFloat"
 					:formatCurrency="memoizedFormatCurrency"
@@ -116,6 +117,7 @@
 						:validate-due-date="validateDueDate"
 						:warehouse-options="warehouseOptions"
 						:warehouse-loading="warehouseLoading"
+						:hide-warehouse-selector="hideWarehouseSelector"
 						:update-item-detail="updateItemDetail"
 						@qty-change="handleQtyChange"
 					/>
@@ -238,6 +240,30 @@ const nameEdit = useItemsTableNameEdit();
 // Computed
 const items = computed(() => invoiceStore.items);
 const invoice_doc = computed(() => invoiceStore.invoiceDoc || {});
+
+// A "Collection" delivery charge hides the NS-item warehouse selector everywhere
+// except the Peterborough POS Profile, where staff still need to pick a warehouse.
+const isCollectionDeliveryChargeSelected = computed(() => {
+	// `selectedDeliveryCharge` mirrors the live UI selection immediately; `invoice_doc`
+	// only gets a fresh `posa_delivery_charges` value on the next doc rebuild/save, so it
+	// must be the fallback, not the primary source, or switching charges gets "stuck".
+	const selectedName = String(
+		invoiceStore.selectedDeliveryCharge || (invoice_doc.value as any)?.posa_delivery_charges || "",
+	).trim();
+	if (!selectedName) {
+		return false;
+	}
+	const rows = Array.isArray(invoiceStore.deliveryCharges) ? invoiceStore.deliveryCharges : [];
+	const selectedRow = rows.find((row: any) => String(row?.name || "").trim() === selectedName);
+	const collectionFlag = selectedRow?.collection;
+	return collectionFlag === 1 || collectionFlag === "1" || collectionFlag === true;
+});
+
+const hideWarehouseSelector = computed(
+	() =>
+		isCollectionDeliveryChargeSelected.value &&
+		String(props.pos_profile?.name || "").trim() !== "Peterborough",
+);
 const hasItemSearch = computed(() => !!props.itemSearch?.trim());
 const emptyStateIcon = computed(() => (hasItemSearch.value ? "mdi-cart-search" : "mdi-cart-outline"));
 const emptyStateTitle = computed(() =>
@@ -300,6 +326,37 @@ watch(
 		}
 	},
 );
+const syncNsItemWarehousesToDefault = () => {
+	if (!hideWarehouseSelector.value) return;
+	const defaultWarehouse = String(props.pos_profile?.default_ns_warehouse || "").trim();
+	if (!defaultWarehouse) return;
+	for (const item of items.value) {
+		const isNs = String(item?.item_code || "")
+			.trim()
+			.toLowerCase()
+			.startsWith("ns");
+		if (!isNs || item.warehouse === defaultWarehouse) continue;
+		item.warehouse = defaultWarehouse;
+		// Flagging this as "manually" selected (even though it's an automatic default)
+		// is required: `_applyItemDetailPayload` otherwise lets the server's item-detail
+		// response overwrite `item.warehouse` with its own default warehouse right after
+		// the `updateItemDetail` call below resolves.
+		item._warehouse_selected_manually = true;
+		item._preserve_rate_on_warehouse_change = true;
+		item.batch_no = null;
+		item.serial_no = null;
+		item.serial_no_selected = [];
+		item.serial_no_selected_count = 0;
+		if (typeof props.updateItemDetail === "function") {
+			void props.updateItemDetail(item, true);
+		}
+	}
+};
+// Re-run whenever the flag flips AND whenever items are (re)loaded/added, since a
+// Collection delivery charge selected before an item is added never flips the flag.
+watch([hideWarehouseSelector, () => items.value.length], syncNsItemWarehousesToDefault, {
+	immediate: true,
+});
 
 // Methods
 const getSerialOptions = (item: any) => {
@@ -440,7 +497,7 @@ const loadWarehouseOptions = async () => {
 	if (warehouseLoading.value) return;
 	warehouseLoading.value = true;
 	try {
-		const filters: Record<string, any> = { is_group: 0 };
+		const filters: Record<string, any> = { is_group: 0, is_ns_location: 1 };
 		if (props.pos_profile?.company) {
 			filters.company = props.pos_profile.company;
 		}

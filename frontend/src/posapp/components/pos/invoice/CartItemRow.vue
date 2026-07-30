@@ -192,7 +192,7 @@
 				:data-column-key="'warehouse'"
 			>
 				<v-select
-					v-if="isNsItem && warehouseOptions.length"
+					v-if="isNsItem && warehouseOptions.length && !hideWarehouseSelector"
 					:model-value="item.warehouse"
 					@update:model-value="handleWarehouseSelect"
 					:items="warehouseOptions"
@@ -205,8 +205,12 @@
 					:loading="warehouseLoading"
 					menu-icon="mdi-chevron-down"
 				></v-select>
-				<div v-else class="posa-cart-table__editor-display">
-					<span>{{ item.warehouse || "-" }}</span>
+				<div
+					v-else
+					class="posa-cart-table__editor-display posa-cart-table__editor-display--warehouse"
+					:title="item.warehouse || ''"
+				>
+					<span class="posa-cart-table__warehouse-text">{{ item.warehouse || "-" }}</span>
 				</div>
 			</td>
 
@@ -442,6 +446,7 @@ const props = defineProps({
 		default: () => [],
 	},
 	warehouseLoading: Boolean,
+	hideWarehouseSelector: Boolean,
 	updateItemDetail: Function,
 	formatFloat: Function,
 	formatCurrency: Function,
@@ -505,6 +510,8 @@ const memoDeps = computed(() => {
 		props.item.is_free_item,
 		props.item.price_list_rate,
 		props.isExpanded,
+		props.hideWarehouseSelector,
+		props.warehouseOptions.length,
 		props.visibleColumns.map((column) => column?.key).join("|"),
 		// Include edit states to ensure UI updates when switching modes
 		isEditingQty.value,

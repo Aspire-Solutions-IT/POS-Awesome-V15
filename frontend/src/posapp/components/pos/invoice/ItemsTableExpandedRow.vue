@@ -20,7 +20,7 @@
 					<div class="posa-form-row">
 						<div class="posa-form-field">
 							<v-select
-								v-if="isNsItem(item) && warehouseOptions.length"
+								v-if="isNsItem(item) && warehouseOptions.length && !hideWarehouseSelector"
 								density="compact"
 								variant="outlined"
 								color="primary"
@@ -50,7 +50,7 @@
 						</div>
 						<div class="posa-form-field">
 							<v-select
-								v-if="isNsItem(item) && warehouseOptions.length"
+								v-if="isNsItem(item) && warehouseOptions.length && !hideWarehouseSelector"
 								density="compact"
 								variant="outlined"
 								color="primary"
@@ -852,6 +852,7 @@ interface Props {
 	validateDueDate: (_item: any) => void;
 	warehouseOptions?: Array<{ label: string; value: string }>;
 	warehouseLoading?: boolean;
+	hideWarehouseSelector?: boolean;
 	updateItemDetail?: (_item: any, _force?: boolean) => void;
 }
 
