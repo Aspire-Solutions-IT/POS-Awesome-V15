@@ -992,20 +992,44 @@ def _is_collect_from_store_delivery_charge_selected(so_doc):
     return bool(flt(collect_from_store))
 
 
+def _add_tag_ignore_permissions(doc, tag):
+    """Tag a document without the write-permission recheck that Document.add_tag performs.
+
+    Document.add_tag reloads the doc via frappe.get_lazy_doc and calls check_permission("write")
+    on that fresh instance, which does not carry the ignore_permissions flag set on so_doc
+    elsewhere in this module. For POS users without Sales Order write permission this raises a
+    bare frappe.PermissionError, which frappe.desk.doctype.tag.tag.DocTags.update then mishandles
+    (is_missing_column indexes into empty e.args), surfacing as an opaque IndexError instead.
+    """
+    if not frappe.db.exists("Tag", tag):
+        frappe.get_doc({"doctype": "Tag", "name": tag}).insert(ignore_permissions=True)
+
+    if not frappe.db.exists(
+        "Tag Link", {"document_type": doc.doctype, "document_name": doc.name, "tag": tag}
+    ):
+        frappe.get_doc(
+            {
+                "doctype": "Tag Link",
+                "document_type": doc.doctype,
+                "document_name": doc.name,
+                "title": doc.get_title() or "",
+                "tag": tag,
+            }
+        ).insert(ignore_permissions=True)
+
+
 def _apply_collect_from_store_tag(so_doc):
     if not _is_collect_from_store_delivery_charge_selected(so_doc):
         return
 
-    if hasattr(so_doc, "add_tag"):
-        so_doc.add_tag("Collect from Store")
+    _add_tag_ignore_permissions(so_doc, "Collect from Store")
 
 
 def _apply_collection_flow_tag(so_doc):
     if not _is_collection_delivery_charge_selected(so_doc):
         return
 
-    if hasattr(so_doc, "add_tag"):
-        so_doc.add_tag("Taken on Day")
+    _add_tag_ignore_permissions(so_doc, "Taken on Day")
 
 
 def _auto_create_delivery_note_for_non_ns_items(so_doc):
