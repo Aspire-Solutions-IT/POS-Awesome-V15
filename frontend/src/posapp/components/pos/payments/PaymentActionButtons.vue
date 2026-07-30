@@ -17,20 +17,20 @@
 					{{ __("Submit") }}
 				</v-btn>
 			</v-col>
-			<v-col cols="12" sm="6" class="payment-action-col">
-				<v-btn
-					block
-					size="large"
-					color="success"
-					variant="flat"
-					class="payment-submit-print-btn payment-footer-btn"
-					@click="$emit('submit-and-print')"
-					:loading="loading"
-					:disabled="loading || validatePayment"
-				>
-					{{ __("Submit & Print") }}
-				</v-btn>
-			</v-col>
+<!--			<v-col cols="12" sm="6" class="payment-action-col">-->
+<!--				<v-btn-->
+<!--					block-->
+<!--					size="large"-->
+<!--					color="success"-->
+<!--					variant="flat"-->
+<!--					class="payment-submit-print-btn payment-footer-btn"-->
+<!--					@click="$emit('submit-and-print')"-->
+<!--					:loading="loading"-->
+<!--					:disabled="loading || validatePayment"-->
+<!--				>-->
+<!--					{{ __("Submit & Print") }}-->
+<!--				</v-btn>-->
+<!--			</v-col>-->
 			<v-col v-if="showSubmitWithoutPayment" cols="12" sm="6" class="payment-action-col payment-action-col--stacked">
 				<v-btn
 					block
@@ -46,8 +46,8 @@
 				</v-btn>
 			</v-col>
 			<v-col
-				:cols="showSubmitWithoutPayment ? 12 : 12"
-				:sm="showSubmitWithoutPayment ? 6 : 12"
+				cols="12"
+				sm="12"
 				:class="[
 					showSubmitWithoutPayment ? 'payment-action-col payment-action-col--stacked' : '',
 				]"

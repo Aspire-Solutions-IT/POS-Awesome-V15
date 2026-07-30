@@ -1,45 +1,45 @@
 <template>
 	<v-row dense>
-		<v-col cols="12" sm="6">
-			<v-btn
-				block
-				color="accent"
-				theme="dark"
-				prepend-icon="mdi-content-save"
-				@click="$emit('save-and-clear')"
-				class="summary-btn"
-				:loading="saveLoading"
-			>
-				{{ __("Save & Clear") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6">
-			<v-btn
-				block
-				color="warning"
-				theme="dark"
-				prepend-icon="mdi-tray-full"
-				@click="$emit('load-drafts')"
-				class="white-text-btn summary-btn"
-				:loading="loadDraftsLoading"
-			>
-				{{ __("Drafts") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6">
-			<v-btn
-				block
-				color="deep-purple"
-				theme="dark"
-				prepend-icon="mdi-folder-search-outline"
-				@click="$emit('open-invoice-management')"
-				class="summary-btn"
-				:loading="invoiceManagementLoading"
-			>
-				{{ __("Invoice Mgmt") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6">
+<!--		<v-col cols="12" sm="6">-->
+<!--			<v-btn-->
+<!--				block-->
+<!--				color="accent"-->
+<!--				theme="dark"-->
+<!--				prepend-icon="mdi-content-save"-->
+<!--				@click="$emit('save-and-clear')"-->
+<!--				class="summary-btn"-->
+<!--				:loading="saveLoading"-->
+<!--			>-->
+<!--				{{ __("Save & Clear") }}-->
+<!--			</v-btn>-->
+<!--		</v-col>-->
+<!--		<v-col cols="12" sm="6">-->
+<!--			<v-btn-->
+<!--				block-->
+<!--				color="warning"-->
+<!--				theme="dark"-->
+<!--				prepend-icon="mdi-tray-full"-->
+<!--				@click="$emit('load-drafts')"-->
+<!--				class="white-text-btn summary-btn"-->
+<!--				:loading="loadDraftsLoading"-->
+<!--			>-->
+<!--				{{ __("Drafts") }}-->
+<!--			</v-btn>-->
+<!--		</v-col>-->
+<!--		<v-col cols="12" sm="6">-->
+<!--			<v-btn-->
+<!--				block-->
+<!--				color="deep-purple"-->
+<!--				theme="dark"-->
+<!--				prepend-icon="mdi-folder-search-outline"-->
+<!--				@click="$emit('open-invoice-management')"-->
+<!--				class="summary-btn"-->
+<!--				:loading="invoiceManagementLoading"-->
+<!--			>-->
+<!--				{{ __("Invoice Mgmt") }}-->
+<!--			</v-btn>-->
+<!--		</v-col>-->
+		<v-col cols="12">
 			<v-btn
 				block
 				color="error"

@@ -13,7 +13,7 @@
 				:placeholder="customerFieldPlaceholder"
 				:loading="isCustomerSearchLocked"
 				v-model="internalCustomer"
-				:items="filteredCustomers"
+				:items="customerAutocompleteItems"
 				item-title="customer_name"
 				item-value="name"
 				:no-data-text="customerNoDataText"
@@ -66,7 +66,20 @@
 
 				<!-- Dropdown display -->
 				<template #item="{ props, item }">
-					<v-list-item v-bind="props">
+					<v-list-item
+						v-if="item.raw.__isCreateNew"
+						v-bind="props"
+						class="create-customer-list-item"
+					>
+						<template #prepend>
+							<v-icon color="primary">mdi-plus-circle-outline</v-icon>
+						</template>
+						<v-list-item-title>{{ __("Create new customer") }}</v-list-item-title>
+						<v-list-item-subtitle>
+							{{ createCustomerHint }}
+						</v-list-item-subtitle>
+					</v-list-item>
+					<v-list-item v-else v-bind="props">
 						<v-list-item-subtitle v-if="item.raw.customer_name !== item.raw.name">
 							<div v-html="`ID: ${item.raw.name}`"></div>
 						</v-list-item-subtitle>
@@ -278,16 +291,28 @@ export default {
 		);
 		const trimmedCustomerSearch = computed(() => customerSearch.value.trim());
 		const showCreateCustomerAction = computed(
-			() =>
-				!isCustomerSearchLocked.value &&
-				Boolean(trimmedCustomerSearch.value) &&
-				filteredCustomers.value.length === 0,
+			() => !isCustomerSearchLocked.value && Boolean(trimmedCustomerSearch.value),
 		);
 		const createCustomerHint = computed(() =>
 			trimmedCustomerSearch.value
 				? `Use "${trimmedCustomerSearch.value}" as the customer name`
 				: "",
 		);
+		const CREATE_NEW_CUSTOMER_VALUE = "__create_new_customer__";
+		const customerAutocompleteItems = computed(() => {
+			const items = filteredCustomers.value || [];
+			if (!showCreateCustomerAction.value) {
+				return items;
+			}
+			return [
+				...items,
+				{
+					name: CREATE_NEW_CUSTOMER_VALUE,
+					customer_name: trimmedCustomerSearch.value,
+					__isCreateNew: true,
+				},
+			];
+		});
 
 		const formatCustomerMetric = (value) => {
 			const numericValue = Number(value || 0);
@@ -386,6 +411,12 @@ export default {
 		};
 
 		const onCustomerChange = (val) => {
+			if (val === CREATE_NEW_CUSTOMER_VALUE) {
+				internalCustomer.value = selectedCustomer.value || null;
+				createCustomerFromSearch();
+				return;
+			}
+
 			if (val && val === selectedCustomer.value) {
 				internalCustomer.value = selectedCustomer.value;
 				toastStore.show({
@@ -558,6 +589,7 @@ export default {
 		return {
 			customerDropdown,
 			filteredCustomers,
+			customerAutocompleteItems,
 			loadingCustomers,
 			isCustomerBackgroundLoading,
 			showCustomerLoadProgress,

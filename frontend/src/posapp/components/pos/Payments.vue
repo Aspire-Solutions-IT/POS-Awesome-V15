@@ -984,7 +984,7 @@ const returnValidityMinDate = computed(() => {
 const preferredDeliveryMinDate = computed(() => {
 	const postingDate = invoice_doc.value?.posting_date || frappe.datetime?.nowdate?.();
 	const baseDate = parseDateOnly(postingDate) || new Date();
-	return addDays(baseDate, 3) || baseDate;
+	return addDays(baseDate, 4) || baseDate;
 });
 
 const parseDateOnly = (value) => {
@@ -1091,7 +1091,7 @@ const holdHelpText = computed(() => {
 const getDefaultPreferredDeliveryDate = () => {
 	const baseDate =
 		parseDateOnly(invoice_doc.value?.posting_date || frappe.datetime?.nowdate?.()) || new Date();
-	return formatDateOnly(addDays(baseDate, 3));
+	return formatDateOnly(addDays(baseDate, 4));
 };
 
 const applyDefaultPreferredDeliveryDate = ({ force = false } = {}) => {
