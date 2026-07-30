@@ -1073,7 +1073,7 @@ const autoHoldReleaseDate = computed(() => {
 });
 
 const effectiveHoldOrder = computed(() =>
-	Boolean(autoHoldFromPreferredDelivery.value),
+	Boolean(autoHoldFromPreferredDelivery.value || isPartialPaymentOrder.value),
 );
 
 const holdHelpText = computed(() => {
@@ -1084,6 +1084,9 @@ const holdHelpText = computed(() => {
 	}
 	if (autoHoldFromPreferredDelivery.value) {
 		return __("Automatically on hold because the preferred delivery date is more than 2 weeks away.");
+	}
+	if (isPartialPaymentOrder.value) {
+		return __("Automatically on hold because only a partial payment has been received.");
 	}
 	return "";
 });
@@ -1158,6 +1161,13 @@ const paymentCalculations = usePaymentCalculations({
 
 const { diff_payment, total_payments, total_payments_display, diff_payment_display, diff_label, change_due } =
 	paymentCalculations;
+
+const isPartialPaymentOrder = computed(() => {
+	if (invoiceType.value !== "Order" || !pos_profile.value?.posa_create_only_sales_order) {
+		return false;
+	}
+	return total_payments.value > 0 && diff_payment.value > 0.001;
+});
 
 const {
 	phone_dialog,
@@ -2422,7 +2432,9 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 		? "submitted without payment"
 		: autoHoldFromPreferredDelivery.value
 			? "preferred delivery date is more than 2 weeks away"
-			: String(invoice_doc.value?.posa_notes || "").trim();
+			: isPartialPaymentOrder.value
+				? "partial payment received"
+				: String(invoice_doc.value?.posa_notes || "").trim();
 	const holdReleaseDate = shouldHoldOrder
 		? (
 			options.forceHoldOrder
@@ -2430,6 +2442,17 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 				: normalizeDateForBackend(autoHoldReleaseDate.value || hold_release_date.value)
 		)
 		: null;
+	if (invoice_doc.value) {
+		invoice_doc.value.posa_pending_auto_hold_reason = !shouldHoldOrder
+			? ""
+			: options.forceHoldOrder
+				? "No Payment"
+				: autoHoldFromPreferredDelivery.value
+					? "Preferred Delivery Date"
+					: isPartialPaymentOrder.value
+						? "Partial Payment"
+						: "Other";
+	}
 	try {
 		await validateSubmission(options.paymentReceived || false, {
 			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),

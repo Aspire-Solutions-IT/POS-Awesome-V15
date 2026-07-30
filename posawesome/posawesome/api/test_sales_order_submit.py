@@ -950,6 +950,78 @@ class TestSalesOrderSubmit(TestCase):
         self.assertEqual(result["name"], "SO-POS-SPLIT-0001")
         self.assertEqual(captured_payloads[0]["must_be_fully_allocated"], 1)
 
+    def test_submit_sales_order_preserves_pending_auto_hold_reason(self):
+        order = {
+            "customer": "CUST-0001",
+            "doctype": "Sales Order",
+            "company": "Test Company",
+            "pos_profile": "Main POS",
+            "posa_pending_auto_hold_reason": "Partial Payment",
+            "payments": [{"mode_of_payment": "Cash", "amount": 50}],
+            "rounded_total": 100,
+            "grand_total": 100,
+            "items": [{"item_code": "ITEM-1", "qty": 1, "rate": 100}],
+        }
+
+        captured_payloads = []
+
+        class FakeSalesOrder:
+            def __init__(self, payload):
+                self.payload = payload
+                self.name = "SO-HOLD-0001"
+                self.docstatus = 0
+                self.doctype = "Sales Order"
+                self.flags = SimpleNamespace(ignore_permissions=False)
+                self.posa_delivery_charges = payload.get("posa_delivery_charges")
+                self.must_be_fully_allocated = payload.get("must_be_fully_allocated", 0)
+                self.rounded_total = payload.get("rounded_total", 0)
+                self.grand_total = payload.get("grand_total", 0)
+                self.posa_pending_auto_hold_reason = payload.get("posa_pending_auto_hold_reason", "")
+
+            def update(self, values):
+                self.payload.update(values)
+
+            def save(self):
+                return self
+
+            def submit(self):
+                self.docstatus = 1
+
+            def precision(self, _fieldname):
+                return 2
+
+        def fake_get_doc(payload_or_doctype, name=None):
+            if isinstance(payload_or_doctype, dict):
+                captured_payloads.append(dict(payload_or_doctype))
+                return FakeSalesOrder(payload_or_doctype)
+            raise AssertionError(f"Unexpected get_doc call: {payload_or_doctype}, {name}")
+
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(
+            sales_orders, "_apply_kit_meta_fields"
+        ), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(
+            sales_orders, "_apply_collection_flow_tag"
+        ), patch.object(
+            sales_orders, "_apply_collect_from_store_tag"
+        ), patch.object(
+            sales_orders, "_auto_create_delivery_note_for_non_ns_items"
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ), patch.object(
+            sales_orders.frappe.db, "exists", return_value=False
+        ), patch.object(
+            sales_orders.frappe, "get_doc", side_effect=fake_get_doc
+        ):
+            result = sales_orders.submit_sales_order(json.dumps(order), json.dumps({}))
+
+        self.assertEqual(result["name"], "SO-HOLD-0001")
+        self.assertEqual(captured_payloads[0]["posa_pending_auto_hold_reason"], "Partial Payment")
+
     def test_submit_sales_order_allows_zero_payment_when_explicitly_enabled(self):
         so_doc = FakeSalesOrder()
         order = {
