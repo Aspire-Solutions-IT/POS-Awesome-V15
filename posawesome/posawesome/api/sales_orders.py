@@ -1300,6 +1300,10 @@ def _save_sales_order_doc_from_payload(payload):
     else:
         so_doc = frappe.get_doc(payload)
 
+        from customer_due_dates.utils.rfs_customer import apply_sales_order_naming_series
+
+        apply_sales_order_naming_series(so_doc, force=True)
+
     so_doc.flags.ignore_permissions = True
     frappe.flags.ignore_account_permission = True
     so_doc.docstatus = 0

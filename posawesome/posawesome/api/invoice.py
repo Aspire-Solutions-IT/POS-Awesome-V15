@@ -127,10 +127,12 @@ def create_sales_order(doc):
         sales_order_doc = make_sales_order(doc.name)
         if sales_order_doc:
             from posawesome.posawesome.api.sales_orders import _apply_kit_meta_fields
+            from customer_due_dates.utils.rfs_customer import apply_sales_order_naming_series
 
             sales_order_doc.posa_notes = getattr(doc, "posa_notes", None)
             if hasattr(sales_order_doc, "shopify_notes"):
                 sales_order_doc.shopify_notes = getattr(doc, "posa_notes", None) or ""
+            apply_sales_order_naming_series(sales_order_doc, force=True)
             _apply_kit_meta_fields(sales_order_doc)
             sales_order_doc.flags.ignore_permissions = True
             sales_order_doc.flags.ignore_account_permission = True
