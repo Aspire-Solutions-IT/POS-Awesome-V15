@@ -130,6 +130,7 @@
 							:additional-notes-error="fulfillmentValidationErrors.additionalNotes"
 							:collect-from-store-tag-label="__('Collect from Store')"
 							:preferred-delivery-date="preferred_delivery_date"
+							:asap-delivery="customer_unsure_delivery_date"
 							:preferred-delivery-min-date="preferredDeliveryMinDate"
 							:selected-shipping-address="invoice_doc.shipping_address_name || null"
 							:split-delivery="Boolean(invoice_doc.posa_split_delivery)"
@@ -150,6 +151,7 @@
 									update_preferred_delivery_date(val);
 								}
 							"
+							@update:asap-delivery="handleAsapDeliveryToggle"
 							@update:selected-shipping-address="handleShippingAddressSelection"
 							@update:split-delivery="
 								(val) => {
@@ -1120,6 +1122,19 @@ const applyDefaultPreferredDeliveryDate = ({ force = false } = {}) => {
 	preferred_delivery_date.value = defaultDate;
 	invoice_doc.value.prefered_earliest_delivery_date = defaultDate;
 	invoice_doc.value.preferred_earliest_delivery_date = defaultDate;
+};
+
+const handleAsapDeliveryToggle = (val) => {
+	customer_unsure_delivery_date.value = Boolean(val);
+	if (customer_unsure_delivery_date.value) {
+		preferred_delivery_date.value = null;
+		if (invoice_doc.value) {
+			invoice_doc.value.prefered_earliest_delivery_date = null;
+			invoice_doc.value.preferred_earliest_delivery_date = null;
+		}
+	} else {
+		applyDefaultPreferredDeliveryDate();
+	}
 };
 
 // Logic Composables

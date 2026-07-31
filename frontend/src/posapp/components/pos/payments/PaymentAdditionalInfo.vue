@@ -99,11 +99,21 @@
 					format="dd-MM-yyyy"
 					:min-date="preferredDeliveryMinDate"
 					:enable-time-picker="false"
+					:disabled="asapDelivery"
 					auto-apply
 					class="sleek-field pos-themed-input"
 					:placeholder="preferredDeliveryPlaceholder"
 					@update:model-value="$emit('update:preferredDeliveryDate', $event)"
 				/>
+				<v-checkbox
+					:model-value="asapDelivery"
+					:label="$frappe._('ASAP')"
+					color="primary"
+					density="compact"
+					hide-details
+					class="mt-1"
+					@update:model-value="$emit('update:asapDelivery', $event)"
+				></v-checkbox>
 				<div v-if="preferredDeliveryDateError" class="text-error text-caption mt-1">
 					{{ preferredDeliveryDateError }}
 				</div>
@@ -210,6 +220,10 @@ defineProps({
 		type: String,
 		default: null,
 	},
+	asapDelivery: {
+		type: Boolean,
+		default: false,
+	},
 	preferredDeliveryMinDate: {
 		type: Date,
 		default: () => new Date(),
@@ -259,6 +273,7 @@ defineProps({
 defineEmits([
 	"update:returnValidUptoDate",
 	"update:preferredDeliveryDate",
+	"update:asapDelivery",
 	"update:selectedShippingAddress",
 	"update:splitDelivery",
 	"new-address",
