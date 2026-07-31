@@ -113,6 +113,8 @@ const invoiceWatchers: Record<string, unknown> & ThisType<InvoiceWatchersVm> = {
 		if (hasCustomer) {
 			this.fetch_customer_details();
 			this.fetch_customer_balance();
+		} else {
+			this.customer_info = {};
 		}
 		this.set_delivery_charges();
 		this.sync_invoice_customer_details();

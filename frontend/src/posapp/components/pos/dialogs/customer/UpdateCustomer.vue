@@ -34,26 +34,6 @@
 									v-model="customer_name"
 								></v-text-field>
 							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									density="compact"
-									color="primary"
-									:label="frappe._('Tax ID')"
-									class="pos-themed-input"
-									hide-details
-									v-model="tax_id"
-								></v-text-field>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									density="compact"
-									color="primary"
-									:label="frappe._('Mobile No')"
-									class="pos-themed-input"
-									hide-details
-									v-model="mobile_no"
-								></v-text-field>
-							</v-col>
 							<v-col cols="12" v-if="!hideNonEssential">
 								<v-text-field
 									density="compact"
@@ -65,7 +45,18 @@
 								></v-text-field>
 							</v-col>
 
-							<v-col cols="12" sm="6" v-if="!hideNonEssential">
+							<v-col cols="12" v-if="!hideNonEssential">
+								<v-text-field
+									density="compact"
+									color="primary"
+									:label="__('Address Line 2')"
+									hide-details
+									class="pos-themed-input"
+									v-model="address_line2"
+								></v-text-field>
+							</v-col>
+
+							<v-col cols="6" v-if="!hideNonEssential">
 								<v-text-field
 									v-model="city"
 									variant="outlined"
@@ -75,7 +66,27 @@
 								></v-text-field>
 							</v-col>
 
-							<v-col cols="12" sm="6" v-if="!hideNonEssential">
+							<v-col cols="6" v-if="!hideNonEssential">
+								<v-text-field
+									v-model="county"
+									variant="outlined"
+									density="compact"
+									:label="__('County')"
+									class="pos-themed-input"
+								></v-text-field>
+							</v-col>
+
+							<v-col cols="6" v-if="!hideNonEssential">
+								<v-text-field
+									v-model="postcode"
+									variant="outlined"
+									density="compact"
+									:label="__('Postcode')"
+									class="pos-themed-input"
+								></v-text-field>
+							</v-col>
+
+							<v-col cols="6" v-if="!hideNonEssential">
 								<v-select
 									v-model="country"
 									:items="countries"
@@ -90,44 +101,26 @@
 								<v-text-field
 									density="compact"
 									color="primary"
+									:label="frappe._('Mobile No')"
+									class="pos-themed-input"
+									hide-details
+									v-model="mobile_no"
+								></v-text-field>
+							</v-col>
+
+
+
+							<v-col cols="6">
+								<v-text-field
+									density="compact"
+									color="primary"
 									:label="frappe._('Email Id')"
 									class="pos-themed-input"
 									hide-details
 									v-model="email_id"
 								></v-text-field>
 							</v-col>
-							<v-col cols="6">
-								<v-select
-									density="compact"
-									label="Gender"
-									:items="genders"
-									v-model="gender"
-									class="pos-themed-input"
-								></v-select>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									density="compact"
-									color="primary"
-									:label="frappe._('Referral Code')"
-									class="pos-themed-input"
-									hide-details
-									v-model="referral_code"
-								></v-text-field>
-							</v-col>
-							<v-col cols="6">
-								<v-text-field
-									v-model="birthday"
-									:label="frappe._('Birthday (DD-MM-YYYY)')"
-									density="compact"
-									clearable
-									hide-details
-									color="primary"
-									placeholder="DD-MM-YYYY"
-									@update:model-value="formatBirthdayOnInput"
-									class="pos-themed-input"
-								></v-text-field>
-							</v-col>
+
 							<v-col cols="6" v-if="!hideNonEssential">
 								<v-autocomplete
 									clearable
@@ -250,17 +243,18 @@ export default {
 		tax_id: "",
 		mobile_no: "",
 		address_line1: "",
+		address_line2: "",
 		city: "",
+		postcode: "",
+		county: "",
 		country: "United Kingdom",
 		email_id: "",
 		referral_code: "",
 		birthday: "",
-		birthday_menu: false,
 		group: "Individual",
 		groups: [],
 		territory: "United Kingdom",
 		territorys: [],
-		genders: [],
 		customer_type: "Individual",
 		gender: "",
 		loyalty_points: null,
@@ -312,57 +306,6 @@ export default {
 				localStorage.setItem("posawesome_hide_non_essential_fields", JSON.stringify(val));
 			}
 		},
-		birthday(newVal) {
-			// Check if the user has entered 8 digits without separators (e.g., 04111994)
-			if (newVal && /^\d{8}$/.test(newVal)) {
-				try {
-					const day = newVal.substring(0, 2);
-					const month = newVal.substring(2, 4);
-					const year = newVal.substring(4);
-
-					// Format it as a hyphenated date for display
-					this.birthday = `${day}-${month}-${year}`;
-
-					// Update calendar (implemented below)
-					this.updateCalendarDate(day, month, year);
-				} catch (error) {
-					console.error("Error processing 8-digit date:", error);
-				}
-			}
-			// Check if the date is already in DD-MM-YYYY format
-			else if (newVal && /^\d{2}-\d{2}-\d{4}$/.test(newVal)) {
-				try {
-					const parts = newVal.split("-");
-					const day = parts[0];
-					const month = parts[1];
-					const year = parts[2];
-
-					// Update calendar to show the correct month
-					this.updateCalendarDate(day, month, year);
-				} catch (error) {
-					console.error("Error processing formatted date:", error);
-				}
-			}
-		},
-
-		// Add a watcher for the calendar menu to ensure it shows the right date when opened
-		birthday_menu(isOpen) {
-			if (isOpen && this.birthday && /^\d{2}-\d{2}-\d{4}$/.test(this.birthday)) {
-				try {
-					const parts = this.birthday.split("-");
-					const day = parts[0];
-					const month = parts[1];
-					const year = parts[2];
-
-					// Update calendar date when menu opens
-					this.$nextTick(() => {
-						this.updateCalendarDate(day, month, year);
-					});
-				} catch (error) {
-					console.error("Error updating calendar on menu open:", error);
-				}
-			}
-		},
 	},
 	computed: {},
 	methods: {
@@ -384,39 +327,13 @@ export default {
 		handleConfirmEscape() {
 			this.confirmClose();
 		},
-		// Add a new method to update calendar date
-		updateCalendarDate(day, month, year) {
-			// First close the date picker if it's open
-			const wasOpen = this.birthday_menu;
-			this.birthday_menu = false;
-
-			// Use nextTick to ensure DOM updates
-			this.$nextTick(() => {
-				// Format date in YYYY-MM-DD format for Vuetify
-				const tempDate = `${year}-${month}-${day}`;
-
-				// Try to directly set the calendar's date
-				setTimeout(() => {
-					if (this.$refs.birthday_menu) {
-						this.$refs.birthday_menu.date = tempDate;
-						// Optionally reopen menu if it was open
-						if (wasOpen) {
-							this.birthday_menu = true;
-						}
-					}
-				}, 50);
-			});
-		},
 		confirm_close() {
 			// Check if any data has been entered
 			if (
 				this.customer_name ||
-				this.tax_id ||
 				this.mobile_no ||
 				this.address_line1 ||
-				this.email_id ||
-				this.referral_code ||
-				this.birthday
+				this.email_id
 			) {
 				this.confirmDialog = true;
 			} else {
@@ -437,7 +354,10 @@ export default {
 			this.tax_id = "";
 			this.mobile_no = "";
 			this.address_line1 = "";
+			this.address_line2 = "";
 			this.city = "";
+			this.postcode = "";
+			this.county = "";
 			this.country = (this.pos_profile && this.pos_profile.posa_default_country) || "United Kingdom";
 			this.email_id = "";
 			this.referral_code = "";
@@ -485,34 +405,6 @@ export default {
 						});
 					}
 				});
-		},
-		getGenders() {
-			const vm = this;
-			frappe.db
-				.get_list("Gender", {
-					fields: ["name"],
-					page_length: 10,
-				})
-				.then((data) => {
-					if (data.length > 0) {
-						data.forEach((el) => {
-							vm.genders.push(el.name);
-						});
-					}
-				});
-		},
-		formatBirthdayOnInput() {
-			// Handle 8-digit format (DDMMYYYY)
-			if (this.birthday && /^\d{8}$/.test(this.birthday)) {
-				try {
-					const day = this.birthday.substring(0, 2);
-					const month = this.birthday.substring(2, 4);
-					const year = this.birthday.substring(4);
-					this.birthday = `${day}-${month}-${year}`;
-				} catch (error) {
-					console.error("Error formatting date:", error);
-				}
-			}
 		},
 		async submit_dialog() {
 			const vm = this;
@@ -590,7 +482,10 @@ export default {
 				tax_id: this.tax_id,
 				mobile_no: this.mobile_no,
 				address_line1: this.address_line1,
+				address_line2: this.address_line2,
 				city: this.city,
+				postcode: this.postcode,
+				county: this.county,
 				country: this.country,
 				email_id: this.email_id,
 				referral_code: this.referral_code,
@@ -659,38 +554,6 @@ export default {
 				},
 			});
 		},
-		onDateSelect() {
-			// Close the menu
-			this.birthday_menu = false;
-
-			// Format date if it's a JavaScript Date object or full date string (from date picker)
-			if (this.birthday) {
-				try {
-					// Handle both JavaScript Date objects and strings with GMT
-					let dateObj;
-					if (typeof this.birthday === "object") {
-						dateObj = this.birthday;
-					} else if (
-						typeof this.birthday === "string" &&
-						(this.birthday.includes("GMT") || this.birthday.includes("T"))
-					) {
-						dateObj = new Date(this.birthday);
-					} else {
-						// Already formatted or something else, leave it
-						return;
-					}
-
-					const year = dateObj.getFullYear();
-					const month = String(dateObj.getMonth() + 1).padStart(2, "0");
-					const day = String(dateObj.getDate()).padStart(2, "0");
-
-					// Format as DD-MM-YYYY
-					this.birthday = `${day}-${month}-${year}`;
-				} catch (error) {
-					console.error("Error formatting date from picker:", error);
-				}
-			}
-		},
 	},
 	created: function () {
 		if (typeof localStorage !== "undefined") {
@@ -710,7 +573,10 @@ export default {
 						this.customer_name = data.customer_name || data.name || ""; // fallback
 						this.customer_id = data.name;
 						this.address_line1 = data.primary_address || data.address_line1 || "";
+						this.address_line2 = data.address_line2 || "";
 						this.city = data.city || "";
+						this.postcode = data.pincode || data.postcode || "";
+						this.county = data.state || data.county || "";
 						this.country =
 							data.country ||
 							(this.pos_profile && this.pos_profile.posa_default_country) ||
@@ -720,8 +586,8 @@ export default {
 						this.email_id = data.email_id;
 						this.referral_code = data.referral_code;
 						this.birthday = data.birthday;
-						this.group = data.customer_group;
-						this.territory = data.territory;
+						this.group = data.customer_group || "Individual";
+						this.territory = data.territory || "United Kingdom";
 						this.loyalty_points = data.loyalty_points;
 						this.loyalty_program = data.loyalty_program;
 						this.gender = data.gender;
@@ -757,7 +623,6 @@ export default {
 		*/
 		this.getCustomerGroups();
 		this.getCustomerTerritorys();
-		this.getGenders();
 		// set default values for customer group and territory from user defaults
 		this.group = "Individual";
 		this.territory = "United Kingdom";

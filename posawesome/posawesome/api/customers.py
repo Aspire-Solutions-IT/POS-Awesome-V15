@@ -291,7 +291,10 @@ def create_customer(
     gender=None,
     method="create",
     address_line1=None,
+    address_line2=None,
     city=None,
+    postcode=None,
+    county=None,
     country=None,
 ):
     pos_profile = json.loads(pos_profile_doc)
@@ -338,16 +341,16 @@ def create_customer(
 
             customer.save()
 
-            if address_line1 or city:
+            if address_line1 or city or postcode or county:
                 args = {
                     "name": f"{customer.customer_name} - Shipping",
                     "doctype": "Customer",
                     "customer": customer.name,
                     "address_line1": address_line1 or "",
-                    "address_line2": "",
+                    "address_line2": address_line2 or "",
                     "city": city or "",
-                    "state": "",
-                    "pincode": "",
+                    "state": county or "",
+                    "pincode": postcode or "",
                     "email_id": email_id or "",
                     "phone": mobile_no or "",
                     "country": country or "",
@@ -389,22 +392,25 @@ def create_customer(
         if existing_address_name:
             address_doc = frappe.get_doc("Address", existing_address_name)
             address_doc.address_line1 = address_line1 or ""
+            address_doc.address_line2 = address_line2 or ""
             address_doc.city = city or ""
+            address_doc.pincode = postcode or ""
+            address_doc.state = county or ""
             address_doc.email_id = email_id or ""
             address_doc.phone = mobile_no or ""
             address_doc.country = country or ""
             address_doc.save()
         else:
-            if address_line1 or city:
+            if address_line1 or city or postcode or county:
                 args = {
                     "name": f"{customer_doc.customer_name} - Shipping",
                     "doctype": "Customer",
                     "customer": customer_doc.name,
                     "address_line1": address_line1 or "",
-                    "address_line2": "",
+                    "address_line2": address_line2 or "",
                     "city": city or "",
-                    "state": "",
-                    "pincode": "",
+                    "state": county or "",
+                    "pincode": postcode or "",
                     "email_id": email_id or "",
                     "phone": mobile_no or "",
                     "country": country or "",

@@ -118,7 +118,7 @@
 						type="button"
 						class="employee-switch-dialog__option"
 						:class="{ 'employee-switch-dialog__option--active': selectedUser === employee.user }"
-						@click="selectEmployee(employee.user)"
+						@click="openUnlockPinPrompt(employee.user)"
 					>
 						<div>
 							<strong>{{ employee.full_name }}</strong>
@@ -127,6 +127,25 @@
 						<v-icon icon="mdi-lock-open-outline" color="primary" />
 					</button>
 				</div>
+			</v-card-text>
+		</v-card>
+	</v-dialog>
+
+	<v-dialog v-model="pinPromptOpen" max-width="420" persistent>
+		<v-card class="pos-themed-card employee-lock-dialog">
+			<v-card-title class="employee-switch-dialog__title">
+				<div>
+					<div class="employee-switch-dialog__eyebrow">{{ __("Terminal locked") }}</div>
+					<div class="text-h6">{{ selectedCashier?.full_name || __("Enter PIN") }}</div>
+				</div>
+				<v-btn
+					icon="mdi-close"
+					variant="text"
+					:aria-label="__('Cancel')"
+					@click="closeUnlockPinPrompt"
+				/>
+			</v-card-title>
+			<v-card-text>
 				<v-alert
 					variant="tonal"
 					type="info"
@@ -147,6 +166,7 @@
 					density="comfortable"
 					hide-details="auto"
 					:label="__('Cashier PIN')"
+					autofocus
 					@click:append-inner="showPin = !showPin"
 					@keyup.enter="submitUnlock"
 				/>
@@ -161,6 +181,9 @@
 				</v-alert>
 			</v-card-text>
 			<v-card-actions class="employee-switch-dialog__actions">
+				<v-btn variant="text" @click="closeUnlockPinPrompt">
+					{{ __("Cancel") }}
+				</v-btn>
 				<v-btn color="primary" :disabled="!canSubmit" :loading="isSubmitting" @click="submitUnlock">
 					{{ __("Unlock POS") }}
 				</v-btn>
@@ -183,6 +206,7 @@ const cashierPin = ref("");
 const pinError = ref("");
 const isSubmitting = ref(false);
 const showPin = ref(false);
+const pinPromptOpen = ref(false);
 const posProfileName = computed(
 	() => uiStore.posProfile?.name || window.frappe?.boot?.pos_profile?.name || "",
 );
@@ -195,6 +219,9 @@ watch(
 			cashierPin.value = "";
 			pinError.value = "";
 			showPin.value = false;
+		}
+		if (!lockOpen) {
+			pinPromptOpen.value = false;
 		}
 	},
 	{ immediate: true },
@@ -213,6 +240,19 @@ const normalizeErrorMessage = (error) =>
 
 const selectEmployee = (user) => {
 	selectedUser.value = user;
+	pinError.value = "";
+};
+
+const openUnlockPinPrompt = (user) => {
+	selectEmployee(user);
+	cashierPin.value = "";
+	showPin.value = false;
+	pinPromptOpen.value = true;
+};
+
+const closeUnlockPinPrompt = () => {
+	pinPromptOpen.value = false;
+	cashierPin.value = "";
 	pinError.value = "";
 };
 
@@ -273,6 +313,7 @@ const submitUnlock = async () => {
 	}
 	employeeStore.unlockTerminal(verifiedCashier);
 	cashierPin.value = "";
+	pinPromptOpen.value = false;
 };
 
 const __ = window.__;

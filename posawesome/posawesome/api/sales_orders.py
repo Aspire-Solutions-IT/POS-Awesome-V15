@@ -898,6 +898,12 @@ def _apply_delivery_charges_tax_row(so_doc):
 
     Keeps Sales Taxes and Charges in sync with `posa_delivery_charges` selection.
     """
+    # Sales Order's `apply_discount_on` field defaults to "Grand Total" at the
+    # doctype level, which pulls delivery charges (an "Actual" tax row) into the
+    # discount base. POSAwesome always computes its discount against item totals
+    # only, so force "Net Total" here to keep delivery charges undiscounted.
+    so_doc.apply_discount_on = "Net Total"
+
     old_doc = so_doc.get_doc_before_save() if not so_doc.is_new() else None
     old_charge_name = getattr(old_doc, "posa_delivery_charges", None) if old_doc else None
     current_charge_name = getattr(so_doc, "posa_delivery_charges", None)
