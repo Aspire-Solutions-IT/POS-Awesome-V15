@@ -904,6 +904,15 @@ def _apply_delivery_charges_tax_row(so_doc):
     # only, so force "Net Total" here to keep delivery charges undiscounted.
     so_doc.apply_discount_on = "Net Total"
 
+    # Same issue with `disable_rounded_total`: it defaults to unchecked at the
+    # doctype level and is never copied from the POS Profile, so ERPNext rounds
+    # grand_total while POSAwesome (which never rounds) collects payment against
+    # the unrounded figure. Mirror the POS Profile's setting so the two agree.
+    if so_doc.get("pos_profile"):
+        so_doc.disable_rounded_total = frappe.get_cached_value(
+            "POS Profile", so_doc.pos_profile, "disable_rounded_total"
+        )
+
     old_doc = so_doc.get_doc_before_save() if not so_doc.is_new() else None
     old_charge_name = getattr(old_doc, "posa_delivery_charges", None) if old_doc else None
     current_charge_name = getattr(so_doc, "posa_delivery_charges", None)
