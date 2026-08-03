@@ -8,6 +8,16 @@ import unittest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
+class _AttrDict(dict):
+	"""Minimal stand-in for frappe._dict: supports both dict and attribute access."""
+
+	def __getattr__(self, name):
+		try:
+			return self[name]
+		except KeyError as exc:
+			raise AttributeError(name) from exc
+
+
 class _FakeCustomerDoc:
 	def __init__(self, payload):
 		self.payload = dict(payload)
@@ -32,6 +42,34 @@ class _FakeAddressDoc:
 
 	def save(self):
 		self.saved = True
+		return self
+
+
+class _FakeNewAddressDoc:
+	_counter = 0
+
+	def __init__(self, payload, registry):
+		self.payload = dict(payload)
+		self.links = list(self.payload.get("links") or [])
+		self.name = None
+		self._registry = registry
+
+	def insert(self):
+		_FakeNewAddressDoc._counter += 1
+		self.name = f"NEW-ADDR-{_FakeNewAddressDoc._counter}"
+		record = dict(self.payload)
+		record.pop("links", None)
+		record.setdefault("disabled", 0)
+		self._registry.addresses[self.name] = record
+		for link in self.links:
+			self._registry.dynamic_links.append(
+				{
+					"parenttype": "Address",
+					"parent": self.name,
+					"link_doctype": link.get("link_doctype"),
+					"link_name": link.get("link_name"),
+				}
+			)
 		return self
 
 
@@ -61,8 +99,15 @@ class TestPosCustomersRfs(unittest.TestCase):
 				self.count_calls = []
 				self.exists_calls = []
 				self.get_value_calls = []
+				self.sql_calls = []
 				self.exists_return_value = False
 				self.address_flags = {}
+				# Extra per-doctype field storage used by the store-collection
+				# address cloning logic.
+				self.addresses = {}
+				self.customers = {}
+				self.contacts = {}
+				self.dynamic_links = []
 
 			def count(self, doctype, filters):
 				self.count_calls.append((doctype, filters))
@@ -72,16 +117,55 @@ class TestPosCustomersRfs(unittest.TestCase):
 				self.exists_calls.append((doctype, filters))
 				return self.exists_return_value
 
-			def get_value(self, doctype, name, fieldname):
+			def _lookup(self, doctype, name, fieldname, as_dict):
+				table = {
+					"Address": self.addresses,
+					"Customer": self.customers,
+					"Contact": self.contacts,
+				}.get(doctype)
+				if table is None:
+					return None
+				record = table.get(name)
+				if record is None:
+					return None
+				if isinstance(fieldname, (list, tuple)):
+					values = [record.get(f) for f in fieldname]
+					if as_dict:
+						return dict(zip(fieldname, values))
+					return tuple(values)
+				return record.get(fieldname)
+
+			def get_value(self, doctype, name, fieldname, as_dict=False):
 				self.get_value_calls.append((doctype, name, fieldname))
 				if doctype == "Address" and fieldname == "posa_is_store_collection_point":
 					return self.address_flags.get(name, 0)
-				return None
+				return self._lookup(doctype, name, fieldname, as_dict)
+
+			def sql(self, query, params=None, as_dict=0):
+				self.sql_calls.append((query, params))
+				if "posa_source_address" in query:
+					source_address, customer = params
+					copy_names = {
+						name
+						for name, record in self.addresses.items()
+						if record.get("posa_source_address") == source_address
+					}
+					for link in self.dynamic_links:
+						if (
+							link.get("parenttype") == "Address"
+							and link.get("link_doctype") == "Customer"
+							and link.get("link_name") == customer
+							and link.get("parent") in copy_names
+						):
+							return [_AttrDict(address_name=link.get("parent"))]
+					return []
+				return []
 
 		frappe_module.db = _FakeDb()
 		frappe_module.last_get_all = None
 		frappe_module.last_customer_doc = None
 		frappe_module.last_address_doc = None
+		frappe_module.last_new_address_doc = None
 		frappe_module.address_docs = {}
 
 		def fake_get_all(
@@ -106,6 +190,12 @@ class TestPosCustomersRfs(unittest.TestCase):
 				if filters and filters.get("name") == ["in", ["13682"]]:
 					return ["13682"]
 				return []
+			if doctype == "Dynamic Link" and pluck == "parent":
+				return [
+					link.get("parent")
+					for link in frappe_module.db.dynamic_links
+					if filters and all(link.get(k) == v for k, v in filters.items())
+				]
 			if doctype == "Address":
 				return [
 					{
@@ -127,6 +217,11 @@ class TestPosCustomersRfs(unittest.TestCase):
 				return doc
 
 			payload = args[0]
+			if isinstance(payload, dict) and payload.get("doctype") == "Address":
+				doc = _FakeNewAddressDoc(payload, frappe_module.db)
+				frappe_module.last_new_address_doc = doc
+				return doc
+
 			doc = _FakeCustomerDoc(payload)
 			frappe_module.last_customer_doc = doc
 			return doc
@@ -190,9 +285,14 @@ class TestPosCustomersRfs(unittest.TestCase):
 		self.frappe.last_get_all = None
 		self.frappe.last_customer_doc = None
 		self.frappe.last_address_doc = None
+		self.frappe.last_new_address_doc = None
 		self.frappe.address_docs = {}
 		self.frappe.db.exists_return_value = False
 		self.frappe.db.address_flags = {}
+		self.frappe.db.addresses = {}
+		self.frappe.db.customers = {}
+		self.frappe.db.contacts = {}
+		self.frappe.db.dynamic_links = []
 
 	def test_get_customer_names_filters_to_rfs_customers(self):
 		self.module.get_customer_names('{"customer_groups":[]}', limit=25)
@@ -282,9 +382,20 @@ class TestPosCustomersRfs(unittest.TestCase):
 			{"disabled": 0, "posa_is_store_collection_point": 1},
 		)
 
-	def test_link_store_collection_address_to_customer_creates_dynamic_link(self):
+	def test_link_store_collection_address_to_customer_creates_a_copy_not_a_link_on_original(self):
 		self.frappe.db.address_flags["STORE-ADDR-1"] = 1
-		self.frappe.db.exists_return_value = False
+		self.frappe.db.addresses["STORE-ADDR-1"] = {
+			"address_title": "Main Store",
+			"address_line1": "1 High Street",
+			"address_line2": None,
+			"city": "London",
+			"state": None,
+			"country": "United Kingdom",
+			"pincode": "SW1A 1AA",
+			"address_type": "Shipping",
+			"phone": "020 7946 0000",
+			"email_id": "store@example.com",
+		}
 
 		result = self.module.link_store_collection_address_to_customer(
 			"Customer A", "STORE-ADDR-1"
@@ -292,15 +403,62 @@ class TestPosCustomersRfs(unittest.TestCase):
 
 		self.assertTrue(result["linked"])
 		self.assertFalse(result["already_linked"])
+		self.assertEqual(result["source_address"], "STORE-ADDR-1")
+		# A new Address was created and linked - the original store address was untouched.
+		self.assertNotEqual(result["address_name"], "STORE-ADDR-1")
+		self.assertIsNone(self.frappe.last_address_doc)
+		copy_doc = self.frappe.last_new_address_doc
+		self.assertEqual(copy_doc.name, result["address_name"])
 		self.assertEqual(
-			self.frappe.last_address_doc.links,
-			[{"link_doctype": "Customer", "link_name": "Customer A"}],
+			copy_doc.links, [{"link_doctype": "Customer", "link_name": "Customer A"}]
 		)
-		self.assertTrue(self.frappe.last_address_doc.saved)
+		self.assertEqual(copy_doc.payload["posa_source_address"], "STORE-ADDR-1")
+		self.assertEqual(copy_doc.payload["posa_is_store_collection_point"], 0)
+		self.assertEqual(copy_doc.payload["address_line1"], "1 High Street")
+		# No customer contact details on file - falls back to the store address's own.
+		self.assertEqual(copy_doc.payload["phone"], "020 7946 0000")
+		self.assertEqual(copy_doc.payload["email_id"], "store@example.com")
+
+	def test_link_store_collection_address_to_customer_prefers_customer_contact_details(self):
+		self.frappe.db.address_flags["STORE-ADDR-1"] = 1
+		self.frappe.db.addresses["STORE-ADDR-1"] = {
+			"address_title": "Main Store",
+			"address_line1": "1 High Street",
+			"phone": "020 7946 0000",
+			"email_id": "store@example.com",
+		}
+		self.frappe.db.customers["Customer A"] = {
+			"customer_primary_address": "CUST-ADDR-1",
+			"customer_primary_contact": None,
+		}
+		self.frappe.db.addresses["CUST-ADDR-1"] = {
+			"phone": "07123 456789",
+			"email_id": "customer@example.com",
+		}
+
+		result = self.module.link_store_collection_address_to_customer(
+			"Customer A", "STORE-ADDR-1"
+		)
+
+		copy_doc = self.frappe.last_new_address_doc
+		self.assertEqual(copy_doc.name, result["address_name"])
+		self.assertEqual(copy_doc.payload["phone"], "07123 456789")
+		self.assertEqual(copy_doc.payload["email_id"], "customer@example.com")
 
 	def test_link_store_collection_address_to_customer_is_idempotent(self):
 		self.frappe.db.address_flags["STORE-ADDR-1"] = 1
-		self.frappe.db.exists_return_value = True
+		self.frappe.db.addresses["STORE-ADDR-1"] = {"address_title": "Main Store"}
+		self.frappe.db.addresses["EXISTING-COPY-1"] = {
+			"posa_source_address": "STORE-ADDR-1",
+		}
+		self.frappe.db.dynamic_links.append(
+			{
+				"parenttype": "Address",
+				"parent": "EXISTING-COPY-1",
+				"link_doctype": "Customer",
+				"link_name": "Customer A",
+			}
+		)
 
 		result = self.module.link_store_collection_address_to_customer(
 			"Customer A", "STORE-ADDR-1"
@@ -308,7 +466,8 @@ class TestPosCustomersRfs(unittest.TestCase):
 
 		self.assertFalse(result["linked"])
 		self.assertTrue(result["already_linked"])
-		self.assertIsNone(self.frappe.last_address_doc)
+		self.assertEqual(result["address_name"], "EXISTING-COPY-1")
+		self.assertIsNone(self.frappe.last_new_address_doc)
 
 	def test_link_store_collection_address_to_customer_rejects_non_store_address(self):
 		self.frappe.db.address_flags["STORE-ADDR-1"] = 0

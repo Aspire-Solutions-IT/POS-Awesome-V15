@@ -132,7 +132,11 @@
 							:preferred-delivery-date="preferred_delivery_date"
 							:asap-delivery="customer_unsure_delivery_date"
 							:preferred-delivery-min-date="preferredDeliveryMinDate"
-							:selected-shipping-address="invoice_doc.shipping_address_name || null"
+							:selected-shipping-address="
+								shouldUseStoreCollectionFlow
+									? selectedStoreCollectionAddressName || null
+									: invoice_doc.shipping_address_name || null
+							"
 							:split-delivery="Boolean(invoice_doc.posa_split_delivery)"
 							:split-delivery-warning-text="splitDeliveryWarningText"
 							:hold-help-text="holdHelpText"
@@ -491,6 +495,7 @@ const fulfillmentValidationVisible = ref(false);
 const pendingMissingAddressSubmit = ref(null);
 const pendingCollectedAddressSubmit = ref(false);
 const storeCollectionAddresses = ref([]);
+const selectedStoreCollectionAddressName = ref(null);
 const defaultSplitGroupId = "default";
 const currentStep = ref(1);
 const customer_unsure_delivery_date = ref(false);
@@ -577,7 +582,9 @@ const availableFulfillmentAddresses = computed(() =>
 );
 
 const selectedFulfillmentAddress = computed(() => {
-	const selectedAddressName = String(invoice_doc.value?.shipping_address_name || "").trim();
+	const selectedAddressName = shouldUseStoreCollectionFlow.value
+		? String(selectedStoreCollectionAddressName.value || "").trim()
+		: String(invoice_doc.value?.shipping_address_name || "").trim();
 	if (!selectedAddressName) {
 		return null;
 	}
@@ -2355,16 +2362,18 @@ const ensureStoreCollectionAddressLinked = async (addressName) => {
 	const customer = String(invoice_doc.value?.customer || "").trim();
 	const normalizedName = String(addressName || "").trim();
 	if (!customer || !normalizedName) {
-		return;
+		return normalizedName || null;
 	}
 
-	await frappe.call({
+	const response = await frappe.call({
 		method: "posawesome.posawesome.api.customers.link_store_collection_address_to_customer",
 		args: {
 			customer,
 			address_name: normalizedName,
 		},
 	});
+
+	return String(response?.message?.address_name || normalizedName).trim();
 };
 
 const handleShippingAddressSelection = async (addressName) => {
@@ -2374,8 +2383,10 @@ const handleShippingAddressSelection = async (addressName) => {
 
 	const normalizedName = String(addressName || "").trim() || null;
 	if (shouldUseStoreCollectionFlow.value && normalizedName) {
+		selectedStoreCollectionAddressName.value = normalizedName;
+		let linkedCopyName = normalizedName;
 		try {
-			await ensureStoreCollectionAddressLinked(normalizedName);
+			linkedCopyName = await ensureStoreCollectionAddressLinked(normalizedName);
 		} catch (error) {
 			console.error("Failed to link store collection address to customer", error);
 			toastStore.show({
@@ -2384,7 +2395,11 @@ const handleShippingAddressSelection = async (addressName) => {
 			});
 			return;
 		}
+		invoice_doc.value.shipping_address_name = linkedCopyName;
+		invoice_doc.value.customer_address = linkedCopyName;
+		return;
 	}
+	selectedStoreCollectionAddressName.value = null;
 	invoice_doc.value.shipping_address_name = normalizedName;
 	invoice_doc.value.customer_address = normalizedName;
 };
@@ -2637,6 +2652,7 @@ watch(
 			invoice_doc.value.posa_authorization_code = null;
 			invoice_doc.value.posa_split_delivery = 0;
 			invoice_doc.value.shipping_address_name = null;
+			selectedStoreCollectionAddressName.value = null;
 			customer_unsure_delivery_date.value = false;
 			hold_release_date.value = null;
 		} else if (invoice_doc.value && data === "Order") {
@@ -2849,6 +2865,7 @@ watch(
 		} else if (!customer) {
 			addresses.value = [];
 			storeCollectionAddresses.value = [];
+			selectedStoreCollectionAddressName.value = null;
 			set_print_format();
 		}
 	},
@@ -2875,6 +2892,7 @@ watch(
 			if (invoice_doc.value) {
 				invoice_doc.value.shipping_address_name = null;
 			}
+			selectedStoreCollectionAddressName.value = null;
 			addresses.value = [];
 			storeCollectionAddresses.value = [];
 			return;
@@ -2949,6 +2967,7 @@ watch(
 
 		invoice_doc.value.shipping_address_name = null;
 		invoice_doc.value.customer_address = null;
+		selectedStoreCollectionAddressName.value = null;
 
 		if (!invoice_doc.value.customer) {
 			addresses.value = [];
@@ -3094,6 +3113,7 @@ onMounted(() => {
 			pendingMissingAddressSubmit.value = null;
 			pendingCollectedAddressSubmit.value = false;
 			storeCollectionAddresses.value = [];
+			selectedStoreCollectionAddressName.value = null;
 			customer_unsure_delivery_date.value = false;
 			hold_release_date.value = null;
 			is_return.value = false;

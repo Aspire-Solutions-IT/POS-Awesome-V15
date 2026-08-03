@@ -295,6 +295,7 @@ fixtures = [
                     "POS Profile-posa_allow_print_draft_invoices",
                     "POS Profile-posa_allow_select_print_format_in_payments",
                     "Address-posa_delivery_charges",
+                    "Address-posa_source_address",
                     "Sales Invoice-posa_delivery_charges",
                     "Sales Invoice-posa_delivery_charges_rate",
                     "POS Invoice-posa_delivery_charges",

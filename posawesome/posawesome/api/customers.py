@@ -521,8 +521,113 @@ def _validate_store_collection_address(address_name):
         frappe.throw(_("Selected address is not a store collection point"))
 
 
+def _first_value(*values):
+    for value in values:
+        normalized = cstr(value or "").strip()
+        if normalized:
+            return normalized
+    return ""
+
+
+def _get_customer_contact_details(customer):
+    """Best-effort (phone, email) for a customer: the customer's primary
+    address/contact first, falling back to any other linked address/contact
+    that has a value."""
+    phone = ""
+    email = ""
+
+    customer_fields = (
+        frappe.db.get_value(
+            "Customer",
+            customer,
+            ["customer_primary_address", "customer_primary_contact"],
+            as_dict=True,
+        )
+        or {}
+    )
+
+    primary_address = customer_fields.get("customer_primary_address")
+    if primary_address:
+        address_phone, address_email = frappe.db.get_value(
+            "Address", primary_address, ["phone", "email_id"]
+        ) or ("", "")
+        phone = _first_value(phone, address_phone)
+        email = _first_value(email, address_email)
+
+    primary_contact = customer_fields.get("customer_primary_contact")
+    if primary_contact and (not phone or not email):
+        contact_phone, contact_email = frappe.db.get_value(
+            "Contact", primary_contact, ["phone", "email_id"]
+        ) or ("", "")
+        phone = _first_value(phone, contact_phone)
+        email = _first_value(email, contact_email)
+
+    if not phone or not email:
+        for linked_address in frappe.get_all(
+            "Dynamic Link",
+            filters={
+                "parenttype": "Address",
+                "link_doctype": "Customer",
+                "link_name": customer,
+            },
+            pluck="parent",
+        ):
+            if phone and email:
+                break
+            address_phone, address_email = frappe.db.get_value(
+                "Address", linked_address, ["phone", "email_id"]
+            ) or ("", "")
+            phone = _first_value(phone, address_phone)
+            email = _first_value(email, address_email)
+
+    if not phone or not email:
+        for linked_contact in frappe.get_all(
+            "Dynamic Link",
+            filters={
+                "parenttype": "Contact",
+                "link_doctype": "Customer",
+                "link_name": customer,
+            },
+            pluck="parent",
+        ):
+            if phone and email:
+                break
+            contact_phone, contact_email = frappe.db.get_value(
+                "Contact", linked_contact, ["phone", "email_id"]
+            ) or ("", "")
+            phone = _first_value(phone, contact_phone)
+            email = _first_value(email, contact_email)
+
+    return phone, email
+
+
+def _get_existing_store_collection_copy(customer, source_address_name):
+    """An Address previously cloned from source_address_name and already
+    linked to this customer, if one exists."""
+    rows = frappe.db.sql(
+        """
+        SELECT address.name AS address_name
+        FROM `tabAddress` AS address
+        INNER JOIN `tabDynamic Link` AS link
+                ON link.parent = address.name
+                AND link.parenttype = 'Address'
+        WHERE address.posa_source_address = %s
+            AND link.link_doctype = 'Customer'
+            AND link.link_name = %s
+        LIMIT 1
+        """,
+        (source_address_name, customer),
+        as_dict=True,
+    )
+    return rows[0].address_name if rows else None
+
+
 @frappe.whitelist()
 def link_store_collection_address_to_customer(customer, address_name):
+    """Link a customer to a store collection point without mutating the
+    shared store Address record. A personal copy of the store address is
+    created (carrying the customer's own phone/email where available) and
+    that copy is linked to the customer instead."""
     customer = cstr(customer or "").strip()
     address_name = cstr(address_name or "").strip()
 
@@ -531,36 +636,61 @@ def link_store_collection_address_to_customer(customer, address_name):
 
     _validate_store_collection_address(address_name)
 
-    existing_link = frappe.db.exists(
-        "Dynamic Link",
-        {
-            "parenttype": "Address",
-            "parentfield": "links",
-            "parent": address_name,
-            "link_doctype": "Customer",
-            "link_name": customer,
-        },
-    )
-    if existing_link:
+    existing_copy = _get_existing_store_collection_copy(customer, address_name)
+    if existing_copy:
         return {
-            "address_name": address_name,
+            "address_name": existing_copy,
+            "source_address": address_name,
             "customer": customer,
             "linked": False,
             "already_linked": True,
         }
 
-    address_doc = frappe.get_doc("Address", address_name)
-    address_doc.append(
-        "links",
+    source_address = frappe.db.get_value(
+        "Address",
+        address_name,
+        [
+            "address_title",
+            "address_line1",
+            "address_line2",
+            "city",
+            "state",
+            "country",
+            "pincode",
+            "address_type",
+            "phone",
+            "email_id",
+        ],
+        as_dict=True,
+    ) or {}
+
+    customer_phone, customer_email = _get_customer_contact_details(customer)
+    phone = _first_value(customer_phone, source_address.get("phone"))
+    email = _first_value(customer_email, source_address.get("email_id"))
+
+    copy_doc = frappe.get_doc(
         {
-            "link_doctype": "Customer",
-            "link_name": customer,
-        },
+            "doctype": "Address",
+            "address_title": source_address.get("address_title"),
+            "address_line1": source_address.get("address_line1"),
+            "address_line2": source_address.get("address_line2"),
+            "city": source_address.get("city"),
+            "state": source_address.get("state"),
+            "country": source_address.get("country"),
+            "pincode": source_address.get("pincode"),
+            "address_type": source_address.get("address_type") or "Shipping",
+            "phone": phone,
+            "email_id": email,
+            "posa_is_store_collection_point": 0,
+            "posa_source_address": address_name,
+            "links": [{"link_doctype": "Customer", "link_name": customer}],
+        }
     )
-    address_doc.save()
+    copy_doc.insert()
 
     return {
-        "address_name": address_name,
+        "address_name": copy_doc.name,
+        "source_address": address_name,
         "customer": customer,
         "linked": True,
         "already_linked": False,
