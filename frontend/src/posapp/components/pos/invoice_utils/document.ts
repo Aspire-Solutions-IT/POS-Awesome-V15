@@ -452,12 +452,26 @@ export function get_invoice_doc(context: any) {
 				row_ids: Array.isArray(group.row_ids) ? [...group.row_ids] : [],
 		  }))
 		: [];
-	doc.posting_date = normalizeBackendDate(
+	const resolvedPostingDate = normalizeBackendDate(
 		context,
 		context.posting_date_display ?? context.posting_date,
 	);
-	if (shouldEnableManualPostingDate(context, sourceDoc, doc.posting_date)) {
-		doc.set_posting_time = 1;
+	if (doc.doctype === "Sales Order" || doc.doctype === "Quotation") {
+		// Sales Order/Quotation use `transaction_date`, not `posting_date`. Setting
+		// `posting_date` here would still land on the in-memory doc (Frappe assigns
+		// any payload key as an attribute even if it isn't a real field) and leak
+		// into ERPNext's set_payment_schedule(), which prefers `posting_date` over
+		// `transaction_date` when computing payment term due dates. That can desync
+		// the due date from the `transaction_date` actually used for validation -
+		// e.g. after the POS page sits open overnight and `posting_date` still holds
+		// yesterday's date while `transaction_date` defaults to the new day.
+		doc.transaction_date = resolvedPostingDate;
+		delete doc.posting_date;
+	} else {
+		doc.posting_date = resolvedPostingDate;
+		if (shouldEnableManualPostingDate(context, sourceDoc, doc.posting_date)) {
+			doc.set_posting_time = 1;
+		}
 	}
 
 	// Sales Order/Quotation require delivery dates at validation time.

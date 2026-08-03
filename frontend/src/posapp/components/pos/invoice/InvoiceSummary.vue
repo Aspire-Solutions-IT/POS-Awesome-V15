@@ -59,6 +59,8 @@
 								!pos_profile.posa_allow_user_to_edit_additional_discount ||
 								!!discount_percentage_offer_name
 							"
+							autocomplete="off"
+							name="posa-additional-discount"
 							class="summary-field summary-field--dock"
 						/>
 
@@ -81,6 +83,8 @@
 								!pos_profile.posa_allow_user_to_edit_additional_discount ||
 								!!discount_percentage_offer_name
 							"
+							autocomplete="off"
+							name="posa-additional-discount-percentage"
 							class="summary-field summary-field--dock"
 						/>
 					</div>

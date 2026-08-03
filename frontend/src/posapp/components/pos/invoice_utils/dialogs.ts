@@ -43,6 +43,19 @@ export async function show_payment(context: any) {
 	}
 	context._suppressClosePayments = true;
 
+	// The posting date cache (context.invoiceStore.postingDate) is set once when the
+	// store is created and only reset after a successful submission - if the POS page
+	// is left open across midnight it keeps holding yesterday's date. When the cashier
+	// has no way to edit it (posa_allow_change_posting_date is off), always re-derive
+	// it from the real current date right before building the invoice/order, instead of
+	// only refreshing on page load.
+	if (!context.pos_profile?.posa_allow_change_posting_date && context.invoiceStore?.resetPostingDate) {
+		context.invoiceStore.resetPostingDate();
+		context.posting_date_display = context.formatDateForDisplay
+			? context.formatDateForDisplay(context.invoiceStore.postingDate)
+			: context.invoiceStore.postingDate;
+	}
+
 	try {
 		if (!context.customer) {
 			context.toastStore.show({

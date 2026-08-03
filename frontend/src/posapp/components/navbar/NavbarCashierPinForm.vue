@@ -52,6 +52,9 @@
 						class="navbar-cashier-pin-form__input"
 						:type="pinVisibility.current_pin ? 'text' : 'password'"
 						:disabled="pinStatusLoading || pinSubmitting"
+						autocomplete="off"
+						name="posa-cashier-current-pin"
+						inputmode="numeric"
 					/>
 					<button
 						type="button"
@@ -74,6 +77,9 @@
 						class="navbar-cashier-pin-form__input"
 						:type="pinVisibility.new_pin ? 'text' : 'password'"
 						:disabled="pinStatusLoading || pinSubmitting"
+						autocomplete="new-password"
+						name="posa-cashier-new-pin"
+						inputmode="numeric"
 					/>
 					<button
 						type="button"
@@ -96,6 +102,9 @@
 						class="navbar-cashier-pin-form__input"
 						:type="pinVisibility.confirm_pin ? 'text' : 'password'"
 						:disabled="pinStatusLoading || pinSubmitting"
+						autocomplete="new-password"
+						name="posa-cashier-confirm-pin"
+						inputmode="numeric"
 					/>
 					<button
 						type="button"
