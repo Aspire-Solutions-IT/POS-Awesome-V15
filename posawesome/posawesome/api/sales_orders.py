@@ -348,7 +348,7 @@ def search_orders(company, currency, order_name=None):
     return data
 
 
-def _managed_sales_order_filters(company, currency, order_name=None, pos_profile=None):
+def _managed_sales_order_filters(company, currency, pos_profile=None):
     filters = {
         "docstatus": 1,
         "company": company,
@@ -357,11 +357,57 @@ def _managed_sales_order_filters(company, currency, order_name=None, pos_profile
         "is_pos": 1,
         "customer": ["not in", sorted(MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS)],
     }
-    if order_name:
-        filters["name"] = ["like", f"%{order_name}%"]
     if pos_profile:
         filters["pos_profile"] = pos_profile
     return filters
+
+
+def _search_managed_sales_order_names(search_term, base_filters):
+    """Sales Order names matching search_term on order name, customer name, payment ref, or postcode.
+
+    base_filters scopes each lookup to the same company/currency/pos_profile/etc as
+    the main listing query, so the search never surfaces orders outside that scope.
+    """
+    like_term = f"%{search_term}%"
+    names = set()
+
+    name_filters = dict(base_filters)
+    name_filters["name"] = ["like", like_term]
+    names.update(frappe.get_all("Sales Order", filters=name_filters, pluck="name", limit_page_length=0))
+
+    customer_name_filters = dict(base_filters)
+    customer_name_filters["customer_name"] = ["like", like_term]
+    names.update(
+        frappe.get_all("Sales Order", filters=customer_name_filters, pluck="name", limit_page_length=0)
+    )
+
+    customer_order_ref_filters = dict(base_filters)
+    customer_order_ref_filters["customer_order_ref"] = ["like", like_term]
+    names.update(
+        frappe.get_all("Sales Order", filters=customer_order_ref_filters, pluck="name", limit_page_length=0)
+    )
+
+    address_names = frappe.get_all(
+        "Address", filters={"pincode": ["like", like_term]}, pluck="name", limit_page_length=0
+    )
+    if address_names:
+        customer_address_filters = dict(base_filters)
+        customer_address_filters["customer_address"] = ["in", address_names]
+        names.update(
+            frappe.get_all(
+                "Sales Order", filters=customer_address_filters, pluck="name", limit_page_length=0
+            )
+        )
+
+        shipping_address_filters = dict(base_filters)
+        shipping_address_filters["shipping_address_name"] = ["in", address_names]
+        names.update(
+            frappe.get_all(
+                "Sales Order", filters=shipping_address_filters, pluck="name", limit_page_length=0
+            )
+        )
+
+    return names
 
 
 def _is_managed_sales_order_doc(doc):
@@ -716,7 +762,15 @@ def update_managed_sales_order_items(data):
 
 @frappe.whitelist()
 def get_managed_sales_orders(company, currency, order_name=None, pos_profile=None, limit_page_length=50):
-    filters = _managed_sales_order_filters(company, currency, order_name, pos_profile)
+    filters = _managed_sales_order_filters(company, currency, pos_profile)
+
+    search_term = cstr(order_name or "").strip()
+    if search_term:
+        matched_names = _search_managed_sales_order_names(search_term, filters)
+        if not matched_names:
+            return []
+        filters["name"] = ["in", sorted(matched_names)]
+
     records = frappe.get_list(
         "Sales Order",
         filters=filters,

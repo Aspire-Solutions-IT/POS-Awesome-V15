@@ -32,7 +32,7 @@
 		</v-row>
 
 		<v-row v-else class="content-grid">
-			<v-col cols="12" lg="4">
+			<v-col cols="12" lg="4" class="left-panel-col">
 				<v-card class="pos-themed-card left-panel">
 					<v-card-title class="panel-title">
 						<span>{{ __("RFS Sales Orders") }}</span>
@@ -44,11 +44,11 @@
 							@click="loadOrders"
 						/>
 					</v-card-title>
-					<v-card-text>
+					<v-card-text class="left-panel-body">
 						<div class="search-row">
 							<v-text-field
 								v-model="searchTerm"
-								:label="__('Sales Order')"
+								:label="__('Order, Customer, Payment Ref or Postcode')"
 								density="compact"
 								hide-details
 								clearable
@@ -113,7 +113,7 @@
 				</v-card>
 			</v-col>
 
-			<v-col cols="12" lg="8">
+			<v-col cols="12" lg="8" class="right-panel-col">
 				<v-card class="pos-themed-card right-panel">
 					<v-card-title class="panel-title">
 						<span>{{ selectedOrder?.name || __("Sales Order Details") }}</span>
@@ -138,7 +138,7 @@
 							</v-btn>
 						</div>
 					</v-card-title>
-					<v-card-text>
+					<v-card-text class="right-panel-body">
 						<v-alert
 							v-if="detailError"
 							type="error"
@@ -269,7 +269,6 @@
 												<th>{{ __("Picked") }}</th>
 												<th>{{ __("Delivered") }}</th>
 												<th>{{ __("Rate") }}</th>
-												<th>{{ __("Delivery Date") }}</th>
 												<th>{{ __("Component Due Date") }}</th>
 												<th>{{ __("Status") }}</th>
 												<th>{{ __("Actions") }}</th>
@@ -301,7 +300,6 @@
 												<td>{{ item.picked_qty ?? 0 }}</td>
 												<td>{{ item.delivered_qty }}</td>
 												<td>{{ formatCurrency(item.rate, selectedOrder.currency) }}</td>
-												<td>{{ formatDate(item.delivery_date) }}</td>
 												<td>{{ formatDate(item.component_due_date) }}</td>
 												<td>
 													<div class="item-status">
@@ -894,6 +892,13 @@ watch(
 <style scoped>
 .sales-order-management {
 	padding: 20px;
+	height: calc(100dvh - 32px);
+	max-height: calc(100dvh - 32px);
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+	overflow: hidden;
 }
 
 .page-header {
@@ -918,11 +923,36 @@ watch(
 
 .content-grid {
 	align-items: stretch;
+	flex: 1 1 auto;
+	min-height: 0;
+	max-height: 100%;
+	overflow: hidden;
+}
+
+.left-panel-col,
+.right-panel-col {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	max-height: 100%;
+	min-height: 0;
 }
 
 .left-panel,
 .right-panel {
+	flex: 1 1 auto;
 	height: 100%;
+	max-height: 100%;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.left-panel-body,
+.right-panel-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
 }
 
 .panel-title {
@@ -1146,6 +1176,37 @@ watch(
 	.items-section__header {
 		flex-direction: column;
 		align-items: flex-start;
+	}
+}
+
+/* Below the `lg` breakpoint the panels stack full-width, so let the page scroll
+   naturally instead of constraining each panel to its own scroll region. */
+@media (max-width: 1279px) {
+	.sales-order-management {
+		height: auto;
+		max-height: none;
+		overflow: visible;
+	}
+
+	.content-grid {
+		flex: 0 1 auto;
+		min-height: auto;
+	}
+
+	.left-panel-col,
+	.right-panel-col {
+		display: block;
+	}
+
+	.left-panel,
+	.right-panel {
+		flex: 0 1 auto;
+		height: auto;
+	}
+
+	.left-panel-body,
+	.right-panel-body {
+		overflow-y: visible;
 	}
 }
 </style>
