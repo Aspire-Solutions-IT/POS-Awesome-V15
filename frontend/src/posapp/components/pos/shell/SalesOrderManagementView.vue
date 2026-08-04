@@ -59,6 +59,17 @@
 								{{ __("Search") }}
 							</v-btn>
 						</div>
+						<v-select
+							v-model="selectedPosProfile"
+							:items="posProfileFilterItems"
+							item-title="title"
+							item-value="value"
+							:label="__('POS Profile')"
+							density="compact"
+							hide-details
+							class="pos-themed-input mt-4"
+							@update:model-value="loadOrders"
+						/>
 						<v-alert
 							v-if="listError"
 							type="error"
@@ -419,11 +430,18 @@ type ManagedSalesOrderListRow = {
 	customer_ref?: string | null;
 	customer_order_ref?: string | null;
 	currency?: string | null;
+	pos_profile?: string | null;
 	grand_total?: number | null;
 	rounded_total?: number | null;
 	advance_paid?: number | null;
 	outstanding_balance?: number | null;
 	modified?: string | null;
+};
+
+type ManagedSalesOrderPosProfile = {
+	name: string;
+	company?: string | null;
+	currency?: string | null;
 };
 
 type PickListSummary = {
@@ -477,6 +495,8 @@ const orders = ref<ManagedSalesOrderListRow[]>([]);
 const selectedOrder = ref<ManagedSalesOrderDetail | null>(null);
 const selectedOrderName = ref("");
 const searchTerm = ref("");
+const posProfileOptions = ref<ManagedSalesOrderPosProfile[]>([]);
+const selectedPosProfile = ref("");
 const editableItems = ref<ManagedSalesOrderItem[]>([]);
 const listLoading = ref(false);
 const detailLoading = ref(false);
@@ -578,6 +598,11 @@ const canPayRemainingBalance = computed(
 	() => Number(selectedOrder.value?.outstanding_balance || 0) > 0.001 && paymentModeOptions.value.length > 0,
 );
 
+const posProfileFilterItems = computed(() => [
+	{ title: __("All Profiles"), value: "" },
+	...posProfileOptions.value.map((profile) => ({ title: profile.name, value: profile.name })),
+]);
+
 const formatDate = (value?: string | null) => {
 	if (!value) return __("N/A");
 	const parsed = new Date(`${value}T00:00:00`);
@@ -648,6 +673,26 @@ const openPaymentDialog = () => {
 	paymentDialogOpen.value = true;
 };
 
+const loadPosProfileOptions = async () => {
+	if (!posProfile.value?.company) {
+		return;
+	}
+
+	try {
+		const message = await api.call<ManagedSalesOrderPosProfile[]>(
+			"posawesome.posawesome.api.sales_orders.get_managed_sales_order_pos_profiles",
+			{ company: posProfile.value.company },
+		);
+		posProfileOptions.value = Array.isArray(message) ? message : [];
+	} catch (error) {
+		console.error("Failed to load POS Profiles for Sales Orders filter", error);
+	}
+
+	if (!selectedPosProfile.value && posProfile.value?.name) {
+		selectedPosProfile.value = posProfile.value.name;
+	}
+};
+
 const loadOrders = async () => {
 	if (!canAccess.value || !posProfile.value?.company || !posProfile.value?.currency) {
 		return;
@@ -663,6 +708,7 @@ const loadOrders = async () => {
 				company: posProfile.value.company,
 				currency: posProfile.value.currency,
 				order_name: searchTerm.value || null,
+				pos_profile: selectedPosProfile.value || null,
 			},
 		);
 		orders.value = Array.isArray(message) ? message : [];
@@ -835,8 +881,9 @@ const submitRemainingBalancePayment = async () => {
 
 watch(
 	() => [profileReady.value, canAccess.value, posProfile.value?.company, posProfile.value?.currency],
-	([ready, access]) => {
+	async ([ready, access]) => {
 		if (ready && access) {
+			await loadPosProfileOptions();
 			void loadOrders();
 		}
 	},

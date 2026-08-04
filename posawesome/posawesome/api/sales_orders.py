@@ -348,16 +348,19 @@ def search_orders(company, currency, order_name=None):
     return data
 
 
-def _managed_sales_order_filters(company, currency, order_name=None):
+def _managed_sales_order_filters(company, currency, order_name=None, pos_profile=None):
     filters = {
         "docstatus": 1,
         "company": company,
         "currency": currency,
         "rfs_order": 1,
+        "is_pos": 1,
         "customer": ["not in", sorted(MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS)],
     }
     if order_name:
         filters["name"] = ["like", f"%{order_name}%"]
+    if pos_profile:
+        filters["pos_profile"] = pos_profile
     return filters
 
 
@@ -367,6 +370,8 @@ def _is_managed_sales_order_doc(doc):
     if cint(getattr(doc, "docstatus", 0)) != 1:
         return False
     if cint(getattr(doc, "rfs_order", 0)) != 1:
+        return False
+    if cint(getattr(doc, "is_pos", 0)) != 1:
         return False
     return cstr(getattr(doc, "customer", "")).strip() not in MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS
 
@@ -710,8 +715,8 @@ def update_managed_sales_order_items(data):
 
 
 @frappe.whitelist()
-def get_managed_sales_orders(company, currency, order_name=None, limit_page_length=50):
-    filters = _managed_sales_order_filters(company, currency, order_name)
+def get_managed_sales_orders(company, currency, order_name=None, pos_profile=None, limit_page_length=50):
+    filters = _managed_sales_order_filters(company, currency, order_name, pos_profile)
     records = frappe.get_list(
         "Sales Order",
         filters=filters,
@@ -725,6 +730,7 @@ def get_managed_sales_orders(company, currency, order_name=None, limit_page_leng
             "customer_ref",
             "customer_order_ref",
             "currency",
+            "pos_profile",
             "grand_total",
             "rounded_total",
             "advance_paid",
@@ -738,6 +744,28 @@ def get_managed_sales_orders(company, currency, order_name=None, limit_page_leng
         advance_paid = flt(row.get("advance_paid") or 0)
         row["outstanding_balance"] = max(flt(order_total - advance_paid), 0)
     return records
+
+
+@frappe.whitelist()
+def get_managed_sales_order_pos_profiles(company=None):
+    """Enabled POS Profiles assigned to the current user, for the Sales Orders filter."""
+    conditions = ["p.disabled = 0", "u.user = %(user)s"]
+    values = {"user": frappe.session.user}
+    if company:
+        conditions.append("p.company = %(company)s")
+        values["company"] = company
+
+    return frappe.db.sql(
+        f"""
+        SELECT DISTINCT p.name, p.company, p.currency
+        FROM `tabPOS Profile` p
+        INNER JOIN `tabPOS Profile User` u ON u.parent = p.name
+        WHERE {" AND ".join(conditions)}
+        ORDER BY p.name
+        """,
+        values,
+        as_dict=1,
+    )
 
 
 @frappe.whitelist()
