@@ -185,6 +185,7 @@
 							:groups="splitOrderGroups"
 							:items="invoice_doc.items || []"
 							:default-group-id="defaultSplitGroupId"
+							:max-groups="MAX_SPLIT_GROUPS"
 							:format-currency="(value) => formatCurrency(value, invoice_doc.currency)"
 							@create-group="createSplitGroup"
 							@remove-group="removeSplitGroup"
@@ -497,6 +498,7 @@ const pendingCollectedAddressSubmit = ref(false);
 const storeCollectionAddresses = ref([]);
 const selectedStoreCollectionAddressName = ref(null);
 const defaultSplitGroupId = "default";
+const MAX_SPLIT_GROUPS = 4;
 const currentStep = ref(1);
 const customer_unsure_delivery_date = ref(false);
 const hold_release_date = ref(null);
@@ -2267,6 +2269,14 @@ const goToPreviousWizardStep = () => {
 
 const createSplitGroup = (label) => {
 	if (!invoice_doc.value) {
+		return;
+	}
+	if (splitOrderGroups.value.length >= MAX_SPLIT_GROUPS) {
+		frappe.msgprint({
+			title: __("Limit Reached"),
+			message: __("You can create a maximum of {0} groups.", [MAX_SPLIT_GROUPS]),
+			indicator: "red",
+		});
 		return;
 	}
 	const nextIndex = splitOrderGroups.value.length + 1;

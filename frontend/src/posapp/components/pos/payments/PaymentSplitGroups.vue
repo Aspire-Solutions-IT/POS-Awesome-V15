@@ -1,9 +1,12 @@
 <template>
 	<div class="split-groups">
 		<div class="split-groups__toolbar">
-			<v-btn color="primary" variant="tonal" @click="createGroup">
+			<v-btn color="primary" variant="tonal" :disabled="atMaxGroups" @click="createGroup">
 				{{ $frappe._("Add Group") }}
 			</v-btn>
+		</div>
+		<div v-if="atMaxGroups" class="split-groups__limit-note">
+			{{ $frappe._("Maximum of {0} groups reached.", [maxGroups]) }}
 		</div>
 
 		<v-row class="split-groups__summary" dense>
@@ -96,6 +99,10 @@ const props = defineProps({
 		type: String,
 		required: true,
 	},
+	maxGroups: {
+		type: Number,
+		default: 4,
+	},
 	formatCurrency: {
 		type: Function,
 		required: true,
@@ -143,7 +150,12 @@ const groupItemCounts = computed(() => {
 	return counts;
 });
 
+const atMaxGroups = computed(() => (props.groups || []).length >= props.maxGroups);
+
 const createGroup = () => {
+	if (atMaxGroups.value) {
+		return;
+	}
 	emit("create-group");
 };
 </script>
@@ -158,6 +170,12 @@ const createGroup = () => {
 .split-groups__toolbar {
 	display: flex;
 	justify-content: flex-end;
+}
+
+.split-groups__limit-note {
+	text-align: right;
+	color: var(--pos-text-secondary);
+	font-size: 0.84rem;
 }
 
 .split-groups__summary {
