@@ -28,8 +28,11 @@ const isCollectionChargeSelected = (context: any): boolean => {
 	return flag === 1 || flag === "1" || flag === true;
 };
 
+const isPeterboroughProfile = (context: any): boolean =>
+	String(context?.pos_profile?.name || "").trim() === "Peterborough";
+
 const hasOnlyNsItemsForCollection = (context: any): boolean => {
-	if (!isCollectionChargeSelected(context)) {
+	if (!isCollectionChargeSelected(context) || isPeterboroughProfile(context)) {
 		return true;
 	}
 	const lines = Array.isArray(context?.items) ? context.items : [];

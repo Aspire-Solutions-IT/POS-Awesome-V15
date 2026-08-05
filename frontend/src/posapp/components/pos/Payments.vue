@@ -878,8 +878,10 @@ const hasPreferredDeliverySelection = computed(() => {
 	);
 });
 
+const isPeterboroughProfile = computed(() => String(pos_profile.value?.name || "").trim() === "Peterborough");
+
 const hasOnlyNsItemsForCollection = computed(() => {
-	if (!isCollectionDeliveryChargeSelected()) {
+	if (!isCollectionDeliveryChargeSelected() || isPeterboroughProfile.value) {
 		return true;
 	}
 	const lines = Array.isArray(invoice_doc.value?.items) ? invoice_doc.value.items : [];
