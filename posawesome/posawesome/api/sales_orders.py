@@ -311,7 +311,7 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
             reference_name=so_doc.name,
         )
         if cc_emails:
-            send_kwargs["cc"] = cc_emails
+            send_kwargs["bcc"] = cc_emails
         frappe.sendmail(**send_kwargs)
         frappe.logger().info(
             "POSAwesome receipt email: after sendmail for Sales Order %s",

@@ -342,7 +342,7 @@ class TestSalesOrderReceiptEmail(TestCase):
             attachments=[attachment],
             reference_doctype="Sales Order",
             reference_name="SO-0005A",
-            cc=["cc1@example.com", "cc2@example.com"],
+            bcc=["cc1@example.com", "cc2@example.com"],
         )
 
     def test_send_receipt_email_job_falls_back_to_profile_cc_when_none_passed(self):
@@ -375,7 +375,7 @@ class TestSalesOrderReceiptEmail(TestCase):
             attachments=[attachment],
             reference_doctype="Sales Order",
             reference_name="SO-0005B",
-            cc=["profile-cc@example.com"],
+            bcc=["profile-cc@example.com"],
         )
 
     def test_build_receipt_attachment_uses_attach_print_without_override(self):
