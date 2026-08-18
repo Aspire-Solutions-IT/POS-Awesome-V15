@@ -433,13 +433,17 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
     if frappe.db.has_column("Item", "custom_tfw_price"):
         custom_tfw_price = flt(getattr(item_doc, "custom_tfw_price", 0))
 
-    rate = None
+    pos_on_sale_price = 0
+    if frappe.db.has_column("Item", "pos_on_sale_price"):
+        pos_on_sale_price = flt(getattr(item_doc, "pos_on_sale_price", 0))
+
+    base_rate = None
     if scale_price is not None:
-        rate = flt(scale_price)
+        base_rate = flt(scale_price)
     elif custom_tfw_price > 0:
-        rate = custom_tfw_price
+        base_rate = custom_tfw_price
     else:
-        rate = frappe.db.get_value(
+        base_rate = frappe.db.get_value(
             "Item Price",
             {
                 "item_code": item_code,
@@ -449,6 +453,9 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
             "price_list_rate",
         )
 
+    is_on_sale = scale_price is None and pos_on_sale_price > 0
+    rate = pos_on_sale_price if is_on_sale else base_rate
+
     return {
         "item_code": item_doc.name,
         "item_name": item_name,
@@ -456,6 +463,9 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
         "rate": rate or 0,
         "price_list_rate": rate or 0,
         "custom_tfw_price": custom_tfw_price or 0,
+        "pos_on_sale_price": pos_on_sale_price or 0,
+        "is_on_sale": is_on_sale,
+        "price_before_sale": base_rate if is_on_sale else None,
         "uom": item_uom or item_doc.stock_uom,
         "currency": currency,
         "price_list_currency": currency,

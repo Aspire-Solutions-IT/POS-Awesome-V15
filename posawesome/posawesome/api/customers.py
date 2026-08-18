@@ -626,7 +626,7 @@ def _get_existing_store_collection_copy(customer, source_address_name):
 def link_store_collection_address_to_customer(customer, address_name):
     """Link a customer to a store collection point without mutating the
     shared store Address record. A personal copy of the store address is
-    created (carrying the customer's own phone/email where available) and
+    created (carrying the customer's own name/phone/email where available) and
     that copy is linked to the customer instead."""
     customer = cstr(customer or "").strip()
     address_name = cstr(address_name or "").strip()
@@ -667,11 +667,14 @@ def link_store_collection_address_to_customer(customer, address_name):
     customer_phone, customer_email = _get_customer_contact_details(customer)
     phone = _first_value(customer_phone, source_address.get("phone"))
     email = _first_value(customer_email, source_address.get("email_id"))
+    customer_name = _first_value(
+        frappe.db.get_value("Customer", customer, "customer_name"), customer
+    )
 
     copy_doc = frappe.get_doc(
         {
             "doctype": "Address",
-            "address_title": source_address.get("address_title"),
+            "address_title": customer_name or source_address.get("address_title"),
             "address_line1": source_address.get("address_line1"),
             "address_line2": source_address.get("address_line2"),
             "city": source_address.get("city"),

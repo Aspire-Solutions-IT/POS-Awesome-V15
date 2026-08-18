@@ -19,7 +19,30 @@
 		>
 			<template v-slot:item.rate="{ item }">
 				<div v-if="context !== 'purchase'">
-					<div class="text-primary rate-cell-primary">
+					<div v-if="item.is_on_sale && item.price_before_sale != null" class="table-price-was">
+						{{
+							currencySymbol(
+								item.original_currency ||
+									item.currency ||
+									item.price_list_currency ||
+									posProfile.currency,
+							)
+						}}
+						{{
+							formatCurrency(
+								item.price_before_sale,
+								item.original_currency ||
+									item.currency ||
+									item.price_list_currency ||
+									posProfile.currency,
+								ratePrecision(item.price_before_sale),
+							)
+						}}
+					</div>
+					<div
+						class="text-primary rate-cell-primary"
+						:class="{ 'rate-cell-sale': item.is_on_sale && item.price_before_sale != null }"
+					>
 						<div>
 							{{
 								currencySymbol(
@@ -223,6 +246,18 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
+}
+
+.rate-cell-sale {
+	color: var(--pos-error) !important;
+}
+
+.table-price-was {
+	font-size: 0.76rem;
+	font-weight: 500;
+	color: var(--pos-text-secondary);
+	text-decoration: line-through;
+	text-decoration-thickness: 1px;
 }
 
 .sleek-data-table {
