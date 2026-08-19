@@ -4,6 +4,7 @@
 
 from __future__ import unicode_literals
 import json
+import re
 import frappe
 from frappe.utils import nowdate, flt, cstr, get_datetime
 from frappe import _
@@ -15,6 +16,18 @@ from .utils import fetch_sales_person_names
 from .stored_value import get_stored_value_summary
 
 EXCLUDED_POS_CUSTOMER_NAMES = {"13682"}
+
+
+def format_postcode(postcode):
+    """Normalise a UK postcode to the standard 'AA9 9AA' form (uppercase, single space before the inward code)."""
+    if not postcode:
+        return postcode
+
+    cleaned = re.sub(r"\s+", "", postcode).upper()
+    if len(cleaned) > 3:
+        cleaned = f"{cleaned[:-3]} {cleaned[-3:]}"
+
+    return cleaned
 
 
 def get_customer_groups(pos_profile):
@@ -394,7 +407,7 @@ def create_customer(
             address_doc.address_line1 = address_line1 or ""
             address_doc.address_line2 = address_line2 or ""
             address_doc.city = city or ""
-            address_doc.pincode = postcode or ""
+            address_doc.pincode = format_postcode(postcode) or ""
             address_doc.state = county or ""
             address_doc.email_id = email_id or ""
             address_doc.phone = mobile_no or ""
@@ -713,7 +726,7 @@ def make_address(args):
             "address_line2": args.get("address_line2"),
             "city": args.get("city"),
             "state": args.get("state"),
-            "pincode": args.get("pincode"),
+            "pincode": format_postcode(args.get("pincode")),
             "email_id": args.get("email_id"),
             "phone": args.get("phone"),
             "country": args.get("country"),
