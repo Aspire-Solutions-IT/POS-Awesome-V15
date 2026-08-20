@@ -1350,7 +1350,7 @@ def _validate_split_groups(payload):
     return groups, item_map
 
 
-def _copy_group_order_payload(order, group, item_map, customer_order_ref):
+def _copy_group_order_payload(order, group, item_map, customer_order_ref, carries_delivery_charge=True):
     group_payload = deepcopy(order)
     group_payload.pop("name", None)
     group_payload.pop("amended_from", None)
@@ -1359,6 +1359,24 @@ def _copy_group_order_payload(order, group, item_map, customer_order_ref):
     group_payload["must_be_fully_allocated"] = 1
     group_payload["posa_split_delivery"] = 0
     group_payload["customer_order_ref"] = customer_order_ref
+
+    if not carries_delivery_charge:
+        # Only the designated group should carry the order's delivery charge;
+        # the rest must not bill the customer for delivery again.
+        original_charge_name = order.get("posa_delivery_charges")
+        group_payload["posa_delivery_charges"] = ""
+        group_payload["posa_delivery_charges_rate"] = 0
+        if original_charge_name and group_payload.get("taxes"):
+            group_payload["taxes"] = [
+                row
+                for row in group_payload["taxes"]
+                if not (
+                    isinstance(row, dict)
+                    and row.get("charge_type") == "Actual"
+                    and row.get("description") == original_charge_name
+                )
+            ]
+
     return group_payload
 
 
@@ -1450,6 +1468,7 @@ def _build_split_group_documents(order):
             group,
             item_map,
             preferred_ref,
+            carries_delivery_charge=(index == 1),
         )
         _ensure_unique_customer_order_ref(payload)
         so_doc = _save_sales_order_doc_from_payload(payload)

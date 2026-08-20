@@ -46,6 +46,10 @@ def _install_stub_modules():
     frappe_utils.flt = lambda value=0, precision=None, *args, **kwargs: round(float(value or 0), precision) if precision is not None else float(value or 0)
     frappe_utils.getdate = lambda value: value
     frappe_utils.nowdate = lambda: "2026-06-15"
+    frappe_utils.validate_email_address = lambda email_str, throw=False: (email_str or "")
+    frappe_utils.split_emails = lambda txt: [
+        email.strip() for email in str(txt or "").replace("\n", ",").split(",") if email.strip()
+    ]
 
     erpnext_accounts_party = types.ModuleType("erpnext.accounts.party")
     erpnext_accounts_party.get_party_account = lambda *args, **kwargs: None
@@ -876,6 +880,49 @@ class TestSalesOrderSubmit(TestCase):
             order_name="SO-GROUP-2",
             payments=[{"mode_of_payment": "Cash", "amount": 200.0}],
         )
+
+    def test_copy_group_order_payload_only_first_group_carries_delivery_charge(self):
+        order = {
+            "doctype": "Sales Order",
+            "posa_delivery_charges": "Standard Delivery",
+            "posa_delivery_charges_rate": 5.0,
+            "taxes": [
+                {
+                    "charge_type": "Actual",
+                    "description": "Standard Delivery",
+                    "tax_amount": 5.0,
+                    "account_head": "Shipping - TC",
+                }
+            ],
+            "items": [
+                {"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 100},
+                {"item_code": "ITEM-2", "posa_row_id": "row-2", "qty": 1, "rate": 200},
+            ],
+        }
+        item_map = {item["posa_row_id"]: item for item in order["items"]}
+
+        first_payload = sales_orders._copy_group_order_payload(
+            order,
+            {"group_id": "living", "label": "Living", "row_ids": ["row-1"]},
+            item_map,
+            "ORBASE1234-01",
+            carries_delivery_charge=True,
+        )
+        second_payload = sales_orders._copy_group_order_payload(
+            order,
+            {"group_id": "bedroom", "label": "Bedroom", "row_ids": ["row-2"]},
+            item_map,
+            "ORBASE1234-02",
+            carries_delivery_charge=False,
+        )
+
+        self.assertEqual(first_payload["posa_delivery_charges"], "Standard Delivery")
+        self.assertEqual(first_payload["posa_delivery_charges_rate"], 5.0)
+        self.assertEqual(len(first_payload["taxes"]), 1)
+
+        self.assertEqual(second_payload["posa_delivery_charges"], "")
+        self.assertEqual(second_payload["posa_delivery_charges_rate"], 0)
+        self.assertEqual(second_payload["taxes"], [])
 
     def test_submit_sales_order_forces_full_allocation_for_pos_split_delivery(self):
         order = {
