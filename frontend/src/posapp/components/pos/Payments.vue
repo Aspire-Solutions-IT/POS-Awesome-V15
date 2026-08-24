@@ -125,6 +125,8 @@
 							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
 							:show-split-delivery="showDeliverySchedulingFields"
 							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
+							:show-collection-date="showCollectionDate"
+							:collection-date="collection_date"
 							:shipping-address-error="fulfillmentValidationErrors.shippingAddress"
 							:preferred-delivery-date-error="fulfillmentValidationErrors.preferredDeliveryDate"
 							:additional-notes-error="fulfillmentValidationErrors.additionalNotes"
@@ -156,6 +158,11 @@
 								}
 							"
 							@update:asap-delivery="handleAsapDeliveryToggle"
+							@update:collection-date="
+								(val) => {
+									update_collection_date(val);
+								}
+							"
 							@update:selected-shipping-address="handleShippingAddressSelection"
 							@update:split-delivery="
 								(val) => {
@@ -880,6 +887,10 @@ const hasPreferredDeliverySelection = computed(() => {
 
 const isPeterboroughProfile = computed(() => String(pos_profile.value?.name || "").trim() === "Peterborough");
 
+const showCollectionDate = computed(
+	() => isPeterboroughProfile.value && isCollectFromStoreSelected(),
+);
+
 const hasOnlyNsItemsForCollection = computed(() => {
 	if (!isCollectionDeliveryChargeSelected() || isPeterboroughProfile.value) {
 		return true;
@@ -1261,6 +1272,7 @@ const {
 	addresses,
 	new_delivery_date,
 	preferred_delivery_date,
+	collection_date,
 	new_po_date,
 	new_credit_due_date,
 	credit_due_days,
@@ -1274,6 +1286,7 @@ const {
 	normalizeAddress,
 	update_delivery_date,
 	update_preferred_delivery_date,
+	update_collection_date,
 	update_po_date,
 	update_credit_due_date,
 	applyDuePreset,
@@ -2950,6 +2963,28 @@ watch(
 		preferred_delivery_date.value = date || null;
 		if (date) {
 			customer_unsure_delivery_date.value = false;
+		}
+	},
+	{ immediate: true },
+);
+
+watch(
+	() => invoice_doc.value?.collection_date,
+	(date) => {
+		collection_date.value = date || null;
+	},
+	{ immediate: true },
+);
+
+watch(
+	showCollectionDate,
+	(enabled) => {
+		if (enabled) {
+			return;
+		}
+		collection_date.value = null;
+		if (invoice_doc.value) {
+			invoice_doc.value.collection_date = null;
 		}
 	},
 	{ immediate: true },

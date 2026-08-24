@@ -121,6 +121,19 @@
 					{{ holdHelpText }}
 				</div>
 			</v-col>
+			<v-col cols="12" md="6" v-if="showCollectionDate">
+				<VueDatePicker
+					:model-value="collectionDate"
+					model-type="yyyy-MM-dd"
+					format="dd-MM-yyyy"
+					:min-date="collectionMinDate"
+					:enable-time-picker="false"
+					auto-apply
+					class="sleek-field pos-themed-input"
+					:placeholder="collectionDatePlaceholder"
+					@update:model-value="$emit('update:collectionDate', $event)"
+				/>
+			</v-col>
 			<!-- Additional Notes (if enabled in POS profile) -->
 			<v-col cols="12" v-if="posProfile.posa_display_additional_notes">
 				<v-textarea
@@ -274,6 +287,18 @@ defineProps({
 		type: String,
 		default: "",
 	},
+	showCollectionDate: {
+		type: Boolean,
+		default: false,
+	},
+	collectionDate: {
+		type: String,
+		default: null,
+	},
+	collectionMinDate: {
+		type: Date,
+		default: () => new Date(),
+	},
 	additionalNotesError: {
 		type: String,
 		default: "",
@@ -290,6 +315,7 @@ defineEmits([
 	"update:asapDelivery",
 	"update:selectedShippingAddress",
 	"update:splitDelivery",
+	"update:collectionDate",
 	"new-address",
 ]);
 
@@ -304,6 +330,7 @@ const addressSubtitle = (address) =>
 		.join(", ");
 
 const preferredDeliveryPlaceholder = `${$frappe._("Earliest Delivery Date")} *`;
+const collectionDatePlaceholder = $frappe._("Collection Date");
 const additionalNotesLabel = `${$frappe._("Customer Service Notes")} *`;
 const driverNotesLabel = $frappe._("Driver Notes");
 </script>
