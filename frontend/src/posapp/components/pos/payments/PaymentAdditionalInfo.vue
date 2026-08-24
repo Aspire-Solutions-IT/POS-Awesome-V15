@@ -93,6 +93,15 @@
 				md="6"
 				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && showPreferredDeliveryDate"
 			>
+				<v-checkbox
+					:model-value="asapDelivery"
+					:label="$frappe._('As soon as Available')"
+					color="primary"
+					density="compact"
+					hide-details
+					class="mb-1"
+					@update:model-value="$emit('update:asapDelivery', $event)"
+				></v-checkbox>
 				<VueDatePicker
 					:model-value="preferredDeliveryDate"
 					model-type="yyyy-MM-dd"
@@ -105,15 +114,6 @@
 					:placeholder="preferredDeliveryPlaceholder"
 					@update:model-value="$emit('update:preferredDeliveryDate', $event)"
 				/>
-				<v-checkbox
-					:model-value="asapDelivery"
-					:label="$frappe._('ASAP')"
-					color="primary"
-					density="compact"
-					hide-details
-					class="mt-1"
-					@update:model-value="$emit('update:asapDelivery', $event)"
-				></v-checkbox>
 				<div v-if="preferredDeliveryDateError" class="text-error text-caption mt-1">
 					{{ preferredDeliveryDateError }}
 				</div>

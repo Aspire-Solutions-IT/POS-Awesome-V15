@@ -500,7 +500,7 @@ const selectedStoreCollectionAddressName = ref(null);
 const defaultSplitGroupId = "default";
 const MAX_SPLIT_GROUPS = 4;
 const currentStep = ref(1);
-const customer_unsure_delivery_date = ref(false);
+const customer_unsure_delivery_date = ref(true);
 const hold_release_date = ref(null);
 const giftCardDialogOpen = ref(false);
 const giftCardInlineExpanded = ref(false);
@@ -1110,11 +1110,14 @@ const getDefaultPreferredDeliveryDate = () => {
 	return formatDateOnly(addDays(baseDate, 4));
 };
 
-const applyDefaultPreferredDeliveryDate = ({ force = false } = {}) => {
+const applyDefaultPreferredDeliveryDate = () => {
 	if (!invoice_doc.value || invoiceType.value !== "Order") {
 		return;
 	}
 	if (!showDeliverySchedulingFields.value || !preferredDeliveryDateEnabled.value) {
+		return;
+	}
+	if (customer_unsure_delivery_date.value) {
 		return;
 	}
 	const existingDate = String(
@@ -1123,7 +1126,7 @@ const applyDefaultPreferredDeliveryDate = ({ force = false } = {}) => {
 			invoice_doc.value.preferred_earliest_delivery_date ||
 			"",
 	).trim();
-	if (existingDate && !force) {
+	if (existingDate) {
 		return;
 	}
 	const defaultDate = getDefaultPreferredDeliveryDate();
@@ -1143,8 +1146,6 @@ const handleAsapDeliveryToggle = (val) => {
 			invoice_doc.value.prefered_earliest_delivery_date = null;
 			invoice_doc.value.preferred_earliest_delivery_date = null;
 		}
-	} else {
-		applyDefaultPreferredDeliveryDate();
 	}
 };
 
@@ -2666,7 +2667,7 @@ watch(
 			invoice_doc.value.posa_split_delivery = 0;
 			invoice_doc.value.shipping_address_name = null;
 			selectedStoreCollectionAddressName.value = null;
-			customer_unsure_delivery_date.value = false;
+			customer_unsure_delivery_date.value = true;
 			hold_release_date.value = null;
 		} else if (invoice_doc.value && data === "Order") {
 			new_delivery_date.value = null;
@@ -3010,7 +3011,7 @@ watch(
 		}
 
 		preferred_delivery_date.value = null;
-		customer_unsure_delivery_date.value = false;
+		customer_unsure_delivery_date.value = true;
 		invoice_doc.value.posa_split_delivery = 0;
 		invoice_doc.value.prefered_earliest_delivery_date = null;
 		invoice_doc.value.preferred_earliest_delivery_date = null;
@@ -3055,7 +3056,13 @@ onMounted(() => {
 			const incomingDeliveryDate = String(
 				doc?.prefered_earliest_delivery_date || doc?.preferred_earliest_delivery_date || "",
 			).trim();
-			applyDefaultPreferredDeliveryDate({ force: !incomingDeliveryDate });
+			if (incomingDeliveryDate) {
+				customer_unsure_delivery_date.value = false;
+			} else {
+				customer_unsure_delivery_date.value = true;
+				preferred_delivery_date.value = null;
+			}
+			applyDefaultPreferredDeliveryDate();
 			paid_change.value = flt(doc.paid_change || 0, currency_precision.value);
 			credit_change.value = flt(doc.credit_change || 0, currency_precision.value);
 			last_payment_change_was_cash.value = null;
@@ -3127,7 +3134,7 @@ onMounted(() => {
 			pendingCollectedAddressSubmit.value = false;
 			storeCollectionAddresses.value = [];
 			selectedStoreCollectionAddressName.value = null;
-			customer_unsure_delivery_date.value = false;
+			customer_unsure_delivery_date.value = true;
 			hold_release_date.value = null;
 			is_return.value = false;
 			is_credit_return.value = false;
