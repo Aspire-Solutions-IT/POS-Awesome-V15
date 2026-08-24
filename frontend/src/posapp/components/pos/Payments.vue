@@ -2661,6 +2661,7 @@ watch(
 			invoice_doc.value.customer_order_ref = null;
 			invoice_doc.value.posa_split_groups = [];
 			invoice_doc.value.posa_notes = null;
+			invoice_doc.value.driver_notes = null;
 			invoice_doc.value.posa_authorization_code = null;
 			invoice_doc.value.posa_split_delivery = 0;
 			invoice_doc.value.shipping_address_name = null;

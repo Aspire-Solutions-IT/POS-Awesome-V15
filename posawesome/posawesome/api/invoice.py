@@ -130,6 +130,8 @@ def create_sales_order(doc):
             from customer_due_dates.utils.rfs_customer import apply_sales_order_naming_series
 
             sales_order_doc.posa_notes = getattr(doc, "posa_notes", None)
+            if hasattr(sales_order_doc, "driver_notes"):
+                sales_order_doc.driver_notes = getattr(doc, "driver_notes", None)
             if hasattr(sales_order_doc, "shopify_notes"):
                 sales_order_doc.shopify_notes = getattr(doc, "posa_notes", None) or ""
             apply_sales_order_naming_series(sales_order_doc, force=True)

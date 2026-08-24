@@ -138,6 +138,20 @@
 					v-model="invoiceDoc.posa_notes"
 				></v-textarea>
 			</v-col>
+			<v-col cols="12" v-if="posProfile.posa_display_additional_notes">
+				<v-textarea
+					class="pa-0 sleek-field"
+					variant="solo"
+					density="compact"
+					clearable
+					color="primary"
+					auto-grow
+					rows="2"
+					:label="driverNotesLabel"
+					hide-details="auto"
+					v-model="invoiceDoc.driver_notes"
+				></v-textarea>
+			</v-col>
 			<v-col cols="12" md="6" v-if="posProfile.posa_display_authorization_code">
 				<v-text-field
 					class="sleek-field pos-themed-input"
@@ -290,7 +304,8 @@ const addressSubtitle = (address) =>
 		.join(", ");
 
 const preferredDeliveryPlaceholder = `${$frappe._("Earliest Delivery Date")} *`;
-const additionalNotesLabel = `${$frappe._("Additional Notes")} *`;
+const additionalNotesLabel = `${$frappe._("Customer Service Notes")} *`;
+const driverNotesLabel = $frappe._("Driver Notes");
 </script>
 
 <style scoped>
