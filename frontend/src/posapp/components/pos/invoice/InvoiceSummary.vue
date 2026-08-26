@@ -49,6 +49,7 @@
 							@change="$emit('commit_discount_amount')"
 							@focus="handleAdditionalDiscountFocus"
 							@blur="handleAdditionalDiscountBlur"
+							:rules="[isNumber]"
 							:label="frappe._('Discount')"
 							prepend-inner-icon="mdi-cash-minus"
 							variant="solo"
