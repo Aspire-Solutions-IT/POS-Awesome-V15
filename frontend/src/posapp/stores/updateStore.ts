@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { fetchBuildInfo } from "../utils/buildInfo";
 
 const VERSION_STORAGE_KEY = "posawesome_version";
 const DISMISSED_VERSION_KEY = "posawesome_update_dismissed";
@@ -450,8 +451,9 @@ export const useUpdateStore = defineStore("update", {
 							sample.commit_date || null;
 						this.availableCommits =
 							r?.message?.remote_commits || [];
-						this.availableVersion =
-							this.availableCommit || buildVersion;
+						// Deliberately leave availableVersion on the build version
+						// set above: commits sitting on the remote are not deployed
+						// here yet, so reloading the tab cannot apply them.
 						return;
 					}
 				}
@@ -464,6 +466,22 @@ export const useUpdateStore = defineStore("update", {
 			} catch (err) {
 				console.warn("Failed to check for updates", err);
 			}
+		},
+		/**
+		 * Re-read the deployed build descriptor and adopt it as the available
+		 * version. This hits a static asset rather than the git-aware endpoint,
+		 * so it is cheap enough for tabs to poll while they are left open.
+		 *
+		 * Returns true when a build newer than the one already known shows up.
+		 */
+		async checkBuildVersion(force = false): Promise<boolean> {
+			if (!hasBrowserContext) return false;
+			const info = await fetchBuildInfo(force);
+			if (!info?.version) return false;
+			const normalized = String(info.version);
+			const isNewBuild = normalized !== this.availableVersion;
+			this.setAvailableVersion(normalized, info.timestamp ?? null);
+			return isNewBuild;
 		},
 		setReloadAction(action: () => void) {
 			if (this.reloadAction === action) return;

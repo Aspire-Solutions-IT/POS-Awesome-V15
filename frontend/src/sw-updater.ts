@@ -1,16 +1,8 @@
 import { setActivePinia } from "pinia";
 import { pinia, useUpdateStore } from "./posapp/stores/index.js";
+import { fetchBuildInfo, primeBuildInfoCache } from "./posapp/utils/buildInfo";
 
-const VERSION_ENDPOINT = "/assets/posawesome/dist/js/version.json";
 const SERVICE_WORKER_SCOPE = "/sw.js";
-const VERSION_CACHE_TTL = 30 * 1000;
-
-let cachedVersionInfo: {
-	version: string | null;
-	timestamp: number | null;
-} | null = null;
-let cachedVersionTimestamp = 0;
-let pendingVersionRequest: Promise<any> | null = null;
 
 export interface ActiveVersionTransitionInput {
 	version: string;
@@ -287,61 +279,9 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 		lastKnownActiveVersion = lastKnownActiveVersion || info.version;
 	}
 
-	async function fetchBuildInfo(force = false) {
-		if (pendingVersionRequest) {
-			return pendingVersionRequest;
-		}
-		const now = Date.now();
-		if (
-			!force &&
-			cachedVersionInfo &&
-			now - cachedVersionTimestamp < VERSION_CACHE_TTL
-		) {
-			return cachedVersionInfo;
-		}
-		pendingVersionRequest = (async () => {
-			try {
-				const response = await fetch(VERSION_ENDPOINT, {
-					cache: "no-store",
-					headers: {
-						"Cache-Control": "no-cache",
-						Pragma: "no-cache",
-						Expires: "0",
-					},
-				});
-
-				if (!response.ok) {
-					return null;
-				}
-				const data: any = await response.json();
-				const version = data.version || data.buildVersion || null;
-				const timestamp = Number(data.timestamp || data.buildTimestamp);
-				const parsed = {
-					version,
-					timestamp: Number.isNaN(timestamp) ? null : timestamp,
-				};
-				cachedVersionInfo = parsed;
-				cachedVersionTimestamp = Date.now();
-				return parsed;
-			} catch (err) {
-				console.warn("Failed to fetch build info", err);
-				return null;
-			} finally {
-				pendingVersionRequest = null;
-			}
-		})();
-		return pendingVersionRequest;
-	}
-
 	function handleActiveVersion(version: string, timestamp: number | null) {
 		if (!version) return;
-		if (timestamp) {
-			cachedVersionInfo = {
-				version,
-				timestamp,
-			};
-			cachedVersionTimestamp = Date.now();
-		}
+		primeBuildInfoCache(version, timestamp);
 		const decision = resolveActiveVersionTransition({
 			version,
 			runtimeVersion: updateStore.currentVersion || null,

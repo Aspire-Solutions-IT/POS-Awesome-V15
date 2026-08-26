@@ -88,13 +88,13 @@ import AppLoadingOverlay from "../components/ui/LoadingOverlay.vue";
 import UpdatePrompt from "../components/ui/UpdatePrompt.vue";
 import { useLoading } from "../composables/core/useLoading.js";
 import { useInactivityLock } from "../composables/core/useInactivityLock";
+import { useUpdatePolling } from "../composables/core/useUpdatePolling";
 import { usePosShift } from "../composables/pos/shared/usePosShift";
 import { loadingState, initLoadingSources, setSourceProgress, markSourceLoaded } from "../utils/loading.js";
 import { useCustomersStore } from "../stores/customersStore.js";
 import { useSyncStore } from "../stores/syncStore.js";
 import { useToastStore } from "../stores/toastStore.js";
 import { useUIStore } from "../stores/uiStore.js";
-import { useUpdateStore } from "../stores/updateStore.js";
 import { useItemsStore } from "../stores/itemsStore.js";
 import { useOfflineSyncStore } from "../stores/offlineSyncStore";
 import { storeToRefs } from "pinia";
@@ -193,7 +193,9 @@ const itemsStore = useItemsStore();
 const offlineSyncStore = useOfflineSyncStore();
 const toastStore = useToastStore();
 const uiStore = useUIStore();
-const updateStore = useUpdateStore();
+// Registers its own lifecycle hooks: seeds the running build version, then keeps
+// polling for newly deployed builds while this tab stays open.
+useUpdatePolling(BUILD_VERSION);
 
 // UI Store State
 const { posProfile, lastInvoiceId, posOpeningShift } = storeToRefs(uiStore);
@@ -242,7 +244,6 @@ const confirmedBootstrapDecisionKey = ref("");
 const initialBootstrapSyncSettled = ref(false);
 const startupBootstrapWarningsReady = ref(false);
 let _sidebarObserver = null;
-let updateInterval = null;
 let removeBootstrapSnapshotListener = null;
 
 // Event Bus
@@ -666,20 +667,9 @@ onMounted(() => {
 	setupNetworkListeners(); // Local function wrapper
 	setupEventListeners();
 	handleRefreshCacheUsage();
-
-	updateStore.initializeFromStorage();
-	if (BUILD_VERSION) {
-		updateStore.setCurrentVersion(BUILD_VERSION);
-	}
-	updateStore.checkForUpdates(true);
-	updateInterval = setInterval(() => updateStore.checkForUpdates(), 24 * 60 * 60 * 1000);
 });
 
 onBeforeUnmount(() => {
-	if (updateInterval) {
-		clearInterval(updateInterval);
-		updateInterval = null;
-	}
 	if (removeBootstrapSnapshotListener) {
 		removeBootstrapSnapshotListener();
 		removeBootstrapSnapshotListener = null;

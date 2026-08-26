@@ -24,6 +24,9 @@ def _install_stub_modules():
     frappe_module.enqueue = lambda *args, **kwargs: None
     frappe_module.get_cached_doc = lambda *args, **kwargs: SimpleNamespace()
     frappe_module.get_doc = lambda *args, **kwargs: None
+    frappe_module.get_meta = lambda *args, **kwargs: SimpleNamespace(
+        get_field=lambda fieldname: SimpleNamespace(options="")
+    )
     frappe_module.get_all = lambda *args, **kwargs: []
     frappe_module.get_list = lambda *args, **kwargs: []
     frappe_module.attach_print = lambda *args, **kwargs: None
@@ -36,6 +39,7 @@ def _install_stub_modules():
         exists=lambda *args, **kwargs: False,
         get_value=lambda *args, **kwargs: None,
         has_column=lambda *args, **kwargs: True,
+        sql=lambda *args, **kwargs: [],
     )
     frappe_module.conf = {}
     frappe_module.local = SimpleNamespace(conf={}, site="")
@@ -157,6 +161,154 @@ class TestSalesOrderSubmit(TestCase):
         self.assertEqual(captured["kwargs"]["filters"]["rfs_order"], 1)
         self.assertEqual(captured["kwargs"]["filters"]["customer"], ["not in", ["13682"]])
         self.assertEqual(captured["kwargs"]["filters"]["name"], ["like", "%SO-TEST%"])
+
+    def test_get_managed_sales_orders_sort_by_options(self):
+        def capture(sort_by):
+            captured = {}
+
+            def fake_get_list(*args, **kwargs):
+                captured.update(kwargs)
+                return []
+
+            with patch.object(sales_orders.frappe, "get_list", side_effect=fake_get_list):
+                sales_orders.get_managed_sales_orders("Test Company", "GBP", sort_by=sort_by)
+            return captured["order_by"]
+
+        self.assertEqual(capture(None), "transaction_date desc, name desc")
+        self.assertEqual(capture("transaction_date"), "transaction_date desc, name desc")
+        self.assertEqual(capture("modified"), "modified desc")
+        # Unknown / hostile values fall back to the default rather than reaching the query.
+        self.assertEqual(capture("name asc; DROP TABLE"), "transaction_date desc, name desc")
+
+    def test_get_managed_sales_orders_status_filter(self):
+        def capture(status):
+            captured = {}
+
+            def fake_get_list(*args, **kwargs):
+                captured.update(kwargs)
+                return []
+
+            with patch.object(sales_orders.frappe, "get_list", side_effect=fake_get_list):
+                sales_orders.get_managed_sales_orders("Test Company", "GBP", status=status)
+            return captured["filters"]
+
+        # No status selected leaves the listing unfiltered on status.
+        self.assertNotIn("status", capture(None))
+        self.assertNotIn("status", capture(""))
+        self.assertNotIn("status", capture("   "))
+        self.assertEqual(capture("To Deliver and Bill")["status"], "To Deliver and Bill")
+
+    def test_managed_sales_order_statuses_exclude_non_submitted(self):
+        meta = SimpleNamespace(
+            get_field=lambda fieldname: SimpleNamespace(
+                options="\nDraft\nOn Hold\nTo Pay\nTo Deliver and Bill\nCompleted\nCancelled\nClosed"
+            )
+        )
+        with patch.object(sales_orders.frappe, "get_meta", return_value=meta):
+            statuses = sales_orders.get_managed_sales_order_statuses()
+
+        # Draft and Cancelled can never appear in a docstatus=1 listing.
+        self.assertEqual(statuses, ["On Hold", "To Pay", "To Deliver and Bill", "Completed", "Closed"])
+
+    def test_delivery_charge_prefers_field_then_falls_back_to_tax_row(self):
+        # Field present: used directly, along with its stored rate.
+        doc = SimpleNamespace(
+            posa_delivery_charges="Standard Delivery",
+            posa_delivery_charges_rate=25,
+            taxes=[],
+        )
+        self.assertEqual(sales_orders._get_managed_sales_order_delivery_charge(doc), ("Standard Delivery", 25))
+
+        # Field missing on this site: recovered from the Actual tax row it wrote.
+        doc = SimpleNamespace(
+            taxes=[
+                SimpleNamespace(charge_type="On Net Total", description="VAT", tax_amount=40),
+                SimpleNamespace(charge_type="Actual", description="Collect From Store", tax_amount=15),
+            ]
+        )
+        with patch.object(sales_orders.frappe.db, "exists", side_effect=lambda dt, name: name == "Collect From Store"):
+            self.assertEqual(
+                sales_orders._get_managed_sales_order_delivery_charge(doc), ("Collect From Store", 15)
+            )
+
+        # An Actual row that is not a Delivery Charges record is not mistaken for one.
+        doc = SimpleNamespace(taxes=[SimpleNamespace(charge_type="Actual", description="Handling", tax_amount=5)])
+        with patch.object(sales_orders.frappe.db, "exists", return_value=False):
+            self.assertEqual(sales_orders._get_managed_sales_order_delivery_charge(doc), ("", 0))
+
+    def test_payment_types_net_refunds_and_drop_blank_modes(self):
+        rows = [
+            {"mode_of_payment": "Cash", "amount": 100},
+            {"mode_of_payment": "", "amount": 20},
+            {"mode_of_payment": "Card", "amount": -10},
+        ]
+        with patch.object(sales_orders.frappe.db, "sql", return_value=rows):
+            payments = sales_orders._get_managed_sales_order_payment_types("SO-1")
+
+        self.assertEqual(
+            payments,
+            [{"mode_of_payment": "Cash", "amount": 100.0}, {"mode_of_payment": "Card", "amount": -10.0}],
+        )
+
+    def test_stream_pick_list_links_require_a_safe_openable_url(self):
+        status_rows = [
+            {"name": "PICK-3", "status": "Completed", "stream_id": "C3", "stream_status": "Delivered",
+             "tracking_link": "https://stream.example/track/C3"},
+            {"name": "PICK-1", "status": "Open", "stream_id": "C1", "stream_status": "In Transit",
+             "tracking_link": "http://stream.example/track/C1"},
+            # In Stream but nothing to open.
+            {"name": "PICK-2", "status": "Open", "stream_id": "C2", "stream_status": "Booked",
+             "tracking_link": ""},
+            # Never linked to Stream at all.
+            {"name": "PICK-4", "status": "Open"},
+            # Third-party data, so a non-http scheme must not become a clickable link.
+            {"name": "PICK-5", "status": "Open", "stream_id": "C5",
+             "tracking_link": "javascript:alert(1)"},
+        ]
+
+        links = sales_orders._build_stream_pick_list_links(status_rows)
+
+        self.assertEqual([entry["name"] for entry in links], ["PICK-1", "PICK-3"])
+        self.assertEqual(links[0]["tracking_link"], "http://stream.example/track/C1")
+        self.assertEqual(links[0]["stream_status"], "In Transit")
+
+    def test_pick_list_stream_fields_skip_columns_the_site_lacks(self):
+        with patch.object(sales_orders.frappe.db, "has_column", side_effect=lambda dt, f: f == "stream_id"):
+            self.assertEqual(sales_orders._pick_list_stream_fields(), ["stream_id"])
+
+    def test_shipping_address_surfaces_phone_as_the_mobile_number(self):
+        doc = SimpleNamespace(shipping_address_name="ADDR-SHIP", shipping_address="1 High St<br>Leeds")
+        values = {
+            "address_title": " Jane Smith ",
+            "address_type": "Shipping",
+            "address_line1": "1 High St",
+            "address_line2": "",
+            "city": "Leeds",
+            "county": "West Yorkshire",
+            "state": "",
+            "pincode": "LS1 1AA",
+            "country": "United Kingdom",
+            "email_id": "jane@example.com",
+            # POS Awesome writes the customer's mobile into the Address phone field.
+            "phone": "07123456789",
+        }
+        with patch.object(sales_orders.frappe.db, "get_value", return_value=values):
+            address = sales_orders._get_managed_sales_order_shipping_address(doc)
+
+        self.assertEqual(address["name"], "ADDR-SHIP")
+        self.assertEqual(address["phone"], "07123456789")
+        self.assertEqual(address["address_title"], "Jane Smith")
+        self.assertEqual(address["display"], "1 High St<br>Leeds")
+
+    def test_shipping_address_absent_returns_none(self):
+        self.assertIsNone(
+            sales_orders._get_managed_sales_order_shipping_address(SimpleNamespace(shipping_address_name=""))
+        )
+
+        # Link set but the Address record is gone.
+        doc = SimpleNamespace(shipping_address_name="ADDR-GONE")
+        with patch.object(sales_orders.frappe.db, "get_value", return_value=None):
+            self.assertIsNone(sales_orders._get_managed_sales_order_shipping_address(doc))
 
     def test_get_managed_sales_order_returns_component_due_date_context(self):
         so_doc = SimpleNamespace(

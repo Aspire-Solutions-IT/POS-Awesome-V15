@@ -348,7 +348,28 @@ def search_orders(company, currency, order_name=None):
     return data
 
 
-def _managed_sales_order_filters(company, currency, pos_profile=None):
+MANAGED_SALES_ORDER_SORT_OPTIONS = {
+    "transaction_date": "transaction_date desc, name desc",
+    "modified": "modified desc",
+}
+DEFAULT_MANAGED_SALES_ORDER_SORT = "transaction_date"
+
+# The listing is restricted to docstatus 1, so these can never appear in it.
+MANAGED_SALES_ORDER_EXCLUDED_STATUSES = {"Draft", "Cancelled"}
+
+
+def _managed_sales_order_order_by(sort_by=None):
+    """Resolve the list sort key to a safe ORDER BY clause.
+
+    Only keys in MANAGED_SALES_ORDER_SORT_OPTIONS are accepted so the value can never
+    reach the query builder unvalidated; anything else falls back to the default.
+    """
+    key = cstr(sort_by or "").strip() or DEFAULT_MANAGED_SALES_ORDER_SORT
+    default_clause = MANAGED_SALES_ORDER_SORT_OPTIONS[DEFAULT_MANAGED_SALES_ORDER_SORT]
+    return MANAGED_SALES_ORDER_SORT_OPTIONS.get(key, default_clause)
+
+
+def _managed_sales_order_filters(company, currency, pos_profile=None, status=None):
     filters = {
         "docstatus": 1,
         "company": company,
@@ -359,6 +380,9 @@ def _managed_sales_order_filters(company, currency, pos_profile=None):
     }
     if pos_profile:
         filters["pos_profile"] = pos_profile
+    status = cstr(status or "").strip()
+    if status:
+        filters["status"] = status
     return filters
 
 
@@ -427,6 +451,50 @@ def _validate_managed_sales_order_doc(doc):
         frappe.throw(_("Sales Order is not available in POS management."))
 
 
+PICK_LIST_STREAM_FIELDS = ("stream_id", "stream_status", "tracking_link")
+
+
+def _pick_list_stream_fields():
+    """Stream fields that actually exist on this site's Pick List.
+
+    They come from customer_due_dates' Pick List customization, so guard against a
+    site where that has not been applied rather than letting get_all raise.
+    """
+    return [field for field in PICK_LIST_STREAM_FIELDS if frappe.db.has_column("Pick List", field)]
+
+
+def _safe_external_url(value):
+    """Return value only if it is an http(s) URL.
+
+    tracking_link is third-party data from the Stream API, and the frontend turns it
+    into a link the user opens, so anything else (javascript:, data:) is dropped.
+    """
+    url = cstr(value or "").strip()
+    if url.lower().startswith(("http://", "https://")):
+        return url
+    return ""
+
+
+def _build_stream_pick_list_links(status_rows):
+    """Pick Lists on this order that are in Stream and have an openable tracking link."""
+    stream_links = []
+    for row in status_rows or []:
+        row = row if isinstance(row, dict) else row.__dict__
+        tracking_link = _safe_external_url(row.get("tracking_link"))
+        if not tracking_link:
+            continue
+        stream_links.append(
+            {
+                "name": cstr(row.get("name") or "").strip(),
+                "status": cstr(row.get("status") or "").strip(),
+                "stream_id": cstr(row.get("stream_id") or "").strip(),
+                "stream_status": cstr(row.get("stream_status") or "").strip(),
+                "tracking_link": tracking_link,
+            }
+        )
+    return sorted(stream_links, key=lambda entry: entry["name"])
+
+
 def _get_sales_order_pick_list_links(doc):
     row_links = defaultdict(list)
     order_level_links = []
@@ -438,12 +506,12 @@ def _get_sales_order_pick_list_links(doc):
     )
     pick_list_names = sorted({cstr(row.get("parent") or "").strip() for row in rows if row.get("parent")})
     if not pick_list_names:
-        return row_links, order_level_links
+        return row_links, order_level_links, []
 
     status_rows = frappe.get_all(
         "Pick List",
         filters={"name": ("in", pick_list_names)},
-        fields=["name", "status", "docstatus", "per_delivered"],
+        fields=["name", "status", "docstatus", "per_delivered"] + _pick_list_stream_fields(),
         limit_page_length=0,
     )
     statuses = {
@@ -479,7 +547,8 @@ def _get_sales_order_pick_list_links(doc):
         row_links[sales_order_item] = sorted(links, key=lambda entry: (entry["name"], entry["status"] or ""))
 
     order_level_links = sorted(order_level_links, key=lambda entry: (entry["name"], entry["status"] or ""))
-    return row_links, order_level_links
+    stream_links = _build_stream_pick_list_links(status_rows)
+    return row_links, order_level_links, stream_links
 
 
 def _is_active_pick_list(link):
@@ -527,10 +596,107 @@ def _build_managed_sales_order_item_lock(item, linked_pick_lists):
     }
 
 
+def _get_managed_sales_order_delivery_charge(doc):
+    """Delivery charge selected on the order, as (label, rate).
+
+    `posa_delivery_charges` is in the fixtures for Sales Invoice / POS Invoice / Address
+    but not for Sales Order, so it is not guaranteed to be a persisted column on every
+    site. _apply_delivery_charges_tax_row always mirrors the selection into an "Actual"
+    Sales Taxes and Charges row keyed on the Delivery Charges name, so fall back to that
+    row when the field is missing.
+    """
+    label = cstr(getattr(doc, "posa_delivery_charges", "") or "").strip()
+    if label:
+        return label, flt(getattr(doc, "posa_delivery_charges_rate", 0) or 0)
+
+    for row in getattr(doc, "taxes", []) or []:
+        if getattr(row, "charge_type", None) != "Actual":
+            continue
+        description = cstr(getattr(row, "description", "") or "").strip()
+        if description and frappe.db.exists("Delivery Charges", description):
+            return description, flt(getattr(row, "tax_amount", 0) or 0)
+
+    return "", 0
+
+
+MANAGED_SALES_ORDER_ADDRESS_FIELDS = (
+    "address_title",
+    "address_type",
+    "address_line1",
+    "address_line2",
+    "city",
+    "county",
+    "state",
+    "pincode",
+    "country",
+    "email_id",
+    "phone",
+)
+
+
+def _get_managed_sales_order_shipping_address(doc):
+    """Shipping Address on the order, as a flat dict.
+
+    POS Awesome stores the customer's mobile number in the Address `phone` field when it
+    creates the shipping address (see customers.py), so `phone` is what the UI shows as
+    the mobile number. Address has no separate mobile field.
+    """
+    address_name = cstr(getattr(doc, "shipping_address_name", "") or "").strip()
+    if not address_name:
+        return None
+
+    values = frappe.db.get_value(
+        "Address", address_name, MANAGED_SALES_ORDER_ADDRESS_FIELDS, as_dict=True
+    )
+    if not values:
+        return None
+
+    address = {field: cstr(values.get(field) or "").strip() for field in MANAGED_SALES_ORDER_ADDRESS_FIELDS}
+    address["name"] = address_name
+    address["display"] = cstr(getattr(doc, "shipping_address", "") or "").strip()
+    return address
+
+
+def _get_managed_sales_order_payment_types(sales_order):
+    """Modes of payment actually used against the order.
+
+    Sales Order has no payments table; POS payments are submitted Payment Entries that
+    reference the order, so read them back from there. Refunds ("Pay" entries) count
+    against the mode rather than inflating it.
+    """
+    rows = frappe.db.sql(
+        """
+        select
+            pe.mode_of_payment as mode_of_payment,
+            sum(
+                case
+                    when pe.payment_type = 'Pay' then -abs(coalesce(ref.allocated_amount, 0))
+                    else abs(coalesce(ref.allocated_amount, 0))
+                end
+            ) as amount
+        from `tabPayment Entry Reference` ref
+        inner join `tabPayment Entry` pe on pe.name = ref.parent
+        where ref.reference_doctype = 'Sales Order'
+          and ref.reference_name = %s
+          and pe.docstatus = 1
+        group by pe.mode_of_payment
+        order by amount desc
+        """,
+        sales_order,
+        as_dict=True,
+    )
+    payments = []
+    for row in rows or []:
+        mode = cstr(row.get("mode_of_payment") or "").strip()
+        if mode:
+            payments.append({"mode_of_payment": mode, "amount": flt(row.get("amount") or 0)})
+    return payments
+
+
 def _serialize_managed_sales_order(doc):
     items = []
     latest_component_due_date = None
-    row_pick_lists, order_level_pick_lists = _get_sales_order_pick_list_links(doc)
+    row_pick_lists, order_level_pick_lists, stream_pick_lists = _get_sales_order_pick_list_links(doc)
 
     for item in getattr(doc, "items", []) or []:
         component_due_date = getattr(item, "component_due_date", None)
@@ -578,6 +744,13 @@ def _serialize_managed_sales_order(doc):
     advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
     outstanding_balance = max(flt(order_total - advance_paid), 0)
 
+    shipping_address = _get_managed_sales_order_shipping_address(doc)
+    delivery_charge, delivery_charge_rate = _get_managed_sales_order_delivery_charge(doc)
+    pos_sales_person = cstr(getattr(doc, "pos_sales_person", "") or "").strip()
+    pos_sales_person_name = (
+        cstr(frappe.db.get_value("User", pos_sales_person, "full_name") or "") if pos_sales_person else ""
+    )
+
     return {
         "name": doc.name,
         "customer": doc.customer,
@@ -601,6 +774,14 @@ def _serialize_managed_sales_order(doc):
         "modified": getattr(doc, "modified", None),
         "owner": getattr(doc, "owner", None),
         "latest_component_due_date": latest_component_due_date,
+        "delivery_charge": delivery_charge,
+        "delivery_charge_rate": delivery_charge_rate,
+        "pos_sales_person": pos_sales_person,
+        "pos_sales_person_name": pos_sales_person_name or pos_sales_person,
+        "payment_types": _get_managed_sales_order_payment_types(doc.name),
+        "stream_pick_lists": stream_pick_lists,
+        "shipping_address": shipping_address,
+        "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "items": items,
     }
 
@@ -684,7 +865,7 @@ def _normalize_existing_managed_sales_order_item_row(row):
 
 
 def _validate_managed_sales_order_item_mutations(doc, normalized_items):
-    row_pick_lists, order_level_pick_lists = _get_sales_order_pick_list_links(doc)
+    row_pick_lists, order_level_pick_lists, _stream_pick_lists = _get_sales_order_pick_list_links(doc)
     order_level_active = [link for link in order_level_pick_lists if _is_active_pick_list(link)]
     if order_level_active:
         label = ", ".join(
@@ -761,8 +942,10 @@ def update_managed_sales_order_items(data):
 
 
 @frappe.whitelist()
-def get_managed_sales_orders(company, currency, order_name=None, pos_profile=None, limit_page_length=50):
-    filters = _managed_sales_order_filters(company, currency, pos_profile)
+def get_managed_sales_orders(
+    company, currency, order_name=None, pos_profile=None, limit_page_length=50, sort_by=None, status=None
+):
+    filters = _managed_sales_order_filters(company, currency, pos_profile, status)
 
     search_term = cstr(order_name or "").strip()
     if search_term:
@@ -791,13 +974,28 @@ def get_managed_sales_orders(company, currency, order_name=None, pos_profile=Non
             "modified",
         ],
         limit_page_length=cint(limit_page_length) or 50,
-        order_by="modified desc",
+        order_by=_managed_sales_order_order_by(sort_by),
     )
     for row in records:
         order_total = flt(row.get("grand_total") or 0)
         advance_paid = flt(row.get("advance_paid") or 0)
         row["outstanding_balance"] = max(flt(order_total - advance_paid), 0)
     return records
+
+
+@frappe.whitelist()
+def get_managed_sales_order_statuses():
+    """Selectable statuses for the Sales Orders filter.
+
+    Read from the DocType meta rather than hardcoded so a site that customises the
+    Select options keeps a filter list that matches its own data.
+    """
+    options = frappe.get_meta("Sales Order").get_field("status").options or ""
+    return [
+        status
+        for status in (cstr(option).strip() for option in options.split("\n"))
+        if status and status not in MANAGED_SALES_ORDER_EXCLUDED_STATUSES
+    ]
 
 
 @frappe.whitelist()

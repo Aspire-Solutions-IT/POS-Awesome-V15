@@ -59,17 +59,41 @@
 								{{ __("Search") }}
 							</v-btn>
 						</div>
-						<v-select
-							v-model="selectedPosProfile"
-							:items="posProfileFilterItems"
-							item-title="title"
-							item-value="value"
-							:label="__('POS Profile')"
-							density="compact"
-							hide-details
-							class="pos-themed-input mt-4"
-							@update:model-value="loadOrders"
-						/>
+						<div class="filter-row mt-4">
+							<v-select
+								v-model="selectedPosProfile"
+								:items="posProfileFilterItems"
+								item-title="title"
+								item-value="value"
+								:label="__('POS Profile')"
+								density="compact"
+								hide-details
+								class="pos-themed-input"
+								@update:model-value="loadOrders"
+							/>
+							<v-select
+								v-model="selectedStatus"
+								:items="statusFilterItems"
+								item-title="title"
+								item-value="value"
+								:label="__('Status')"
+								density="compact"
+								hide-details
+								class="pos-themed-input"
+								@update:model-value="loadOrders"
+							/>
+							<v-select
+								v-model="selectedSortBy"
+								:items="sortByItems"
+								item-title="title"
+								item-value="value"
+								:label="__('Sort By')"
+								density="compact"
+								hide-details
+								class="pos-themed-input"
+								@update:model-value="loadOrders"
+							/>
+						</div>
 						<v-alert
 							v-if="listError"
 							type="error"
@@ -96,11 +120,11 @@
 								@click="selectOrder(order.name)"
 							>
 								<div class="order-list-item__top">
-									<strong>{{ order.name }}</strong>
+									<strong>{{ order.customer_name || order.customer }}</strong>
 									<span>{{ order.status || __("Unknown") }}</span>
 								</div>
 								<div class="order-list-item__meta">
-									<span>{{ order.customer_name || order.customer }}</span>
+									<span>{{ order.name }}</span>
 									<span>{{ formatDate(order.transaction_date) }}</span>
 								</div>
 								<div class="order-list-item__meta">
@@ -116,8 +140,32 @@
 			<v-col cols="12" lg="8" class="right-panel-col">
 				<v-card class="pos-themed-card right-panel">
 					<v-card-title class="panel-title">
-						<span>{{ selectedOrder?.name || __("Sales Order Details") }}</span>
+						<span>{{
+							selectedOrder
+								? selectedOrder.customer_name || selectedOrder.customer
+								: __("Sales Order Details")
+						}}</span>
 						<div class="panel-actions">
+							<template v-if="streamPickLists.length">
+								<v-select
+									v-model="selectedStreamPickList"
+									:items="streamPickListItems"
+									item-title="title"
+									item-value="value"
+									:label="__('Stream Pick List')"
+									density="compact"
+									hide-details
+									class="pos-themed-input stream-select"
+								/>
+								<v-btn
+									color="primary"
+									variant="tonal"
+									:disabled="!selectedStreamPickListLink"
+									@click="openStreamLink"
+								>
+									{{ __("Open Stream") }}
+								</v-btn>
+							</template>
 							<v-btn
 								v-if="canPayRemainingBalance"
 								color="success"
@@ -158,8 +206,8 @@
 						<div v-else class="detail-grid">
 							<div class="detail-summary">
 								<div class="summary-chip">
-									<span class="summary-chip__label">{{ __("Customer") }}</span>
-									<strong>{{ selectedOrder.customer_name || selectedOrder.customer }}</strong>
+									<span class="summary-chip__label">{{ __("Sales Order") }}</span>
+									<strong>{{ selectedOrder.name }}</strong>
 								</div>
 								<div class="summary-chip">
 									<span class="summary-chip__label">{{ __("Status") }}</span>
@@ -183,11 +231,18 @@
 								</div>
 							</div>
 
+							<v-tabs v-model="detailTab" color="primary" class="detail-tabs">
+								<v-tab value="details">{{ __("Details") }}</v-tab>
+								<v-tab value="address">{{ __("Address") }}</v-tab>
+							</v-tabs>
+
+							<v-window v-model="detailTab" class="detail-window">
+							<v-window-item value="details">
 							<v-row dense>
 								<v-col cols="12" md="6">
 									<v-text-field
-										:model-value="selectedOrder.name"
-										:label="__('Sales Order')"
+										:model-value="selectedOrder.customer_name || selectedOrder.customer"
+										:label="__('Customer')"
 										density="compact"
 										readonly
 										hide-details
@@ -243,6 +298,42 @@
 										hide-details
 									/>
 								</v-col>
+								<v-col v-if="selectedOrder.shipping_address_mobile" cols="12" md="6">
+									<v-text-field
+										:model-value="selectedOrder.shipping_address_mobile"
+										:label="__('Shipping Address Mobile')"
+										density="compact"
+										readonly
+										hide-details
+									/>
+								</v-col>
+								<v-col cols="12" md="6">
+									<v-text-field
+										:model-value="deliveryChargeDisplay"
+										:label="__('Delivery Charge')"
+										density="compact"
+										readonly
+										hide-details
+									/>
+								</v-col>
+								<v-col cols="12" md="6">
+									<v-text-field
+										:model-value="salesPersonDisplay"
+										:label="__('POS Sales Person')"
+										density="compact"
+										readonly
+										hide-details
+									/>
+								</v-col>
+								<v-col cols="12" md="6">
+									<v-text-field
+										:model-value="paymentTypesDisplay"
+										:label="__('Payment Type')"
+										density="compact"
+										readonly
+										hide-details
+									/>
+								</v-col>
 								<v-col cols="12">
 									<v-textarea
 										v-model="form.posa_notes"
@@ -278,10 +369,9 @@
 											<tr v-for="item in editableItems" :key="item.name">
 												<td>
 													<div class="item-cell">
-														<strong>{{ item.item_code }}</strong>
-														<span>{{ item.item_name }}</span>
+														<strong>{{ item.item_name }}</strong>
+														<span>{{ item.item_code }}</span>
 														<span>{{ item.description || __("No description") }}</span>
-														<span>{{ __("UOM") }}: {{ item.uom || __("N/A") }}</span>
 														<span v-if="item.lock_reason" class="item-lock-reason">
 															{{ item.lock_reason }}
 														</span>
@@ -335,6 +425,59 @@
 									</v-table>
 								</div>
 							</div>
+							</v-window-item>
+
+							<v-window-item value="address">
+								<div v-if="!shippingAddress" class="panel-placeholder">
+									{{ __("No shipping address is set on this Sales Order.") }}
+								</div>
+								<div v-else class="address-panel">
+									<div class="address-panel__block">
+										<h4>{{ __("Shipping Address") }}</h4>
+										<strong>{{ shippingAddress.address_title || shippingAddress.name }}</strong>
+										<span v-for="line in shippingAddressLines" :key="line">{{ line }}</span>
+									</div>
+									<v-row dense>
+										<v-col cols="12" md="6">
+											<v-text-field
+												:model-value="shippingAddress.phone || __('N/A')"
+												:label="__('Mobile')"
+												density="compact"
+												readonly
+												hide-details
+											/>
+										</v-col>
+										<v-col cols="12" md="6">
+											<v-text-field
+												:model-value="shippingAddress.email_id || __('N/A')"
+												:label="__('Email')"
+												density="compact"
+												readonly
+												hide-details
+											/>
+										</v-col>
+										<v-col cols="12" md="6">
+											<v-text-field
+												:model-value="shippingAddress.address_type || __('N/A')"
+												:label="__('Address Type')"
+												density="compact"
+												readonly
+												hide-details
+											/>
+										</v-col>
+										<v-col cols="12" md="6">
+											<v-text-field
+												:model-value="shippingAddress.name"
+												:label="__('Address Record')"
+												density="compact"
+												readonly
+												hide-details
+											/>
+										</v-col>
+									</v-row>
+								</div>
+							</v-window-item>
+							</v-window>
 						</div>
 					</v-card-text>
 				</v-card>
@@ -436,6 +579,8 @@ type ManagedSalesOrderListRow = {
 	modified?: string | null;
 };
 
+type ManagedSalesOrderSortKey = "transaction_date" | "modified";
+
 type ManagedSalesOrderPosProfile = {
 	name: string;
 	company?: string | null;
@@ -470,7 +615,44 @@ type ManagedSalesOrderItem = {
 	linked_pick_lists?: PickListSummary[];
 };
 
+type ManagedSalesOrderAddress = {
+	name: string;
+	address_title?: string | null;
+	address_type?: string | null;
+	address_line1?: string | null;
+	address_line2?: string | null;
+	city?: string | null;
+	county?: string | null;
+	state?: string | null;
+	pincode?: string | null;
+	country?: string | null;
+	email_id?: string | null;
+	phone?: string | null;
+	display?: string | null;
+};
+
+type ManagedSalesOrderStreamPickList = {
+	name: string;
+	status?: string | null;
+	stream_id?: string | null;
+	stream_status?: string | null;
+	tracking_link: string;
+};
+
+type ManagedSalesOrderPaymentType = {
+	mode_of_payment: string;
+	amount?: number | null;
+};
+
 type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
+	delivery_charge?: string | null;
+	delivery_charge_rate?: number | null;
+	pos_sales_person?: string | null;
+	pos_sales_person_name?: string | null;
+	payment_types?: ManagedSalesOrderPaymentType[] | null;
+	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
+	shipping_address?: ManagedSalesOrderAddress | null;
+	shipping_address_mobile?: string | null;
 	auto_release_date?: string | null;
 	shipping_address_name?: string | null;
 	customer_address?: string | null;
@@ -495,6 +677,11 @@ const selectedOrderName = ref("");
 const searchTerm = ref("");
 const posProfileOptions = ref<ManagedSalesOrderPosProfile[]>([]);
 const selectedPosProfile = ref("");
+const selectedSortBy = ref<ManagedSalesOrderSortKey>("transaction_date");
+const statusOptions = ref<string[]>([]);
+const selectedStatus = ref("");
+const selectedStreamPickList = ref("");
+const detailTab = ref("details");
 const editableItems = ref<ManagedSalesOrderItem[]>([]);
 const listLoading = ref(false);
 const detailLoading = ref(false);
@@ -546,6 +733,9 @@ const resetForm = (order: ManagedSalesOrderDetail | null) => {
 	form.prefered_earliest_delivery_date = String(order?.prefered_earliest_delivery_date || "");
 	form.posa_notes = String(order?.posa_notes || "");
 	editableItems.value = cloneEditableItems(order?.items);
+	const streamLists = Array.isArray(order?.stream_pick_lists) ? order.stream_pick_lists : [];
+	selectedStreamPickList.value = streamLists[0]?.name || "";
+	detailTab.value = "details";
 };
 
 const isHeaderDirty = computed(() => {
@@ -595,6 +785,85 @@ const paymentModeOptions = computed(() =>
 const canPayRemainingBalance = computed(
 	() => Number(selectedOrder.value?.outstanding_balance || 0) > 0.001 && paymentModeOptions.value.length > 0,
 );
+
+const sortByItems = computed(() => [
+	{ title: __("Order Date (newest first)"), value: "transaction_date" },
+	{ title: __("Last Modified (newest first)"), value: "modified" },
+]);
+
+const statusFilterItems = computed(() => [
+	{ title: __("All Statuses"), value: "" },
+	...statusOptions.value.map((status) => ({ title: __(status), value: status })),
+]);
+
+const shippingAddress = computed(() => selectedOrder.value?.shipping_address || null);
+
+const shippingAddressLines = computed(() => {
+	const address = shippingAddress.value;
+	if (!address) return [];
+	return [
+		address.address_line1,
+		address.address_line2,
+		address.city,
+		address.county,
+		address.state,
+		address.pincode,
+		address.country,
+	]
+		.map((part) => String(part || "").trim())
+		.filter(Boolean);
+});
+
+const streamPickLists = computed(() =>
+	Array.isArray(selectedOrder.value?.stream_pick_lists) ? selectedOrder.value.stream_pick_lists : [],
+);
+
+const streamPickListItems = computed(() =>
+	streamPickLists.value.map((pickList) => {
+		const context = [pickList.stream_status, pickList.stream_id].filter(Boolean).join(" · ");
+		return {
+			title: context ? `${pickList.name} (${context})` : pickList.name,
+			value: pickList.name,
+		};
+	}),
+);
+
+const selectedStreamPickListLink = computed(
+	() =>
+		streamPickLists.value.find((pickList) => pickList.name === selectedStreamPickList.value)?.tracking_link ||
+		"",
+);
+
+const openStreamLink = () => {
+	const link = selectedStreamPickListLink.value;
+	if (!link) return;
+	window.open(link, "_blank", "noopener,noreferrer");
+};
+
+const deliveryChargeDisplay = computed(() => {
+	const label = String(selectedOrder.value?.delivery_charge || "").trim();
+	if (!label) return __("None");
+	const rate = Number(selectedOrder.value?.delivery_charge_rate || 0);
+	return rate ? `${label} (${formatCurrency(rate, selectedOrder.value?.currency)})` : label;
+});
+
+const salesPersonDisplay = computed(
+	() =>
+		String(selectedOrder.value?.pos_sales_person_name || selectedOrder.value?.pos_sales_person || "").trim() ||
+		__("N/A"),
+);
+
+const paymentTypesDisplay = computed(() => {
+	const payments = selectedOrder.value?.payment_types;
+	if (!Array.isArray(payments) || !payments.length) return __("No payments recorded");
+	return payments
+		.map((payment) =>
+			payment.amount
+				? `${payment.mode_of_payment} (${formatCurrency(payment.amount, selectedOrder.value?.currency)})`
+				: payment.mode_of_payment,
+		)
+		.join(", ");
+});
 
 const posProfileFilterItems = computed(() => [
 	{ title: __("All Profiles"), value: "" },
@@ -691,6 +960,17 @@ const loadPosProfileOptions = async () => {
 	}
 };
 
+const loadStatusOptions = async () => {
+	try {
+		const message = await api.call<string[]>(
+			"posawesome.posawesome.api.sales_orders.get_managed_sales_order_statuses",
+		);
+		statusOptions.value = Array.isArray(message) ? message : [];
+	} catch (error) {
+		console.error("Failed to load Sales Order statuses for the filter", error);
+	}
+};
+
 const loadOrders = async () => {
 	if (!canAccess.value || !posProfile.value?.company || !posProfile.value?.currency) {
 		return;
@@ -707,6 +987,8 @@ const loadOrders = async () => {
 				currency: posProfile.value.currency,
 				order_name: searchTerm.value || null,
 				pos_profile: selectedPosProfile.value || null,
+				sort_by: selectedSortBy.value,
+				status: selectedStatus.value || null,
 			},
 		);
 		orders.value = Array.isArray(message) ? message : [];
@@ -881,7 +1163,7 @@ watch(
 	() => [profileReady.value, canAccess.value, posProfile.value?.company, posProfile.value?.currency],
 	async ([ready, access]) => {
 		if (ready && access) {
-			await loadPosProfileOptions();
+			await Promise.all([loadPosProfileOptions(), loadStatusOptions()]);
 			void loadOrders();
 		}
 	},
@@ -993,6 +1275,46 @@ watch(
 .search-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 12px;
+	align-items: end;
+}
+
+.detail-tabs {
+	border-bottom: 1px solid var(--pos-border);
+}
+
+.detail-window {
+	padding-top: 16px;
+}
+
+.address-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.address-panel__block {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.address-panel__block h4 {
+	margin-bottom: 6px;
+	font-size: 0.8rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--pos-text-muted);
+}
+
+.stream-select {
+	min-width: 200px;
+	max-width: 260px;
+}
+
+.filter-row {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 	gap: 12px;
 	align-items: end;
 }
