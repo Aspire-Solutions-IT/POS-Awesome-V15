@@ -1221,11 +1221,33 @@ export const useItemsStore = defineStore("items", () => {
 
 		clearSearchCache();
 		if (searchTerm.value) {
-			filteredItems.value = performLocalSearch(
-				searchTerm.value,
-				items.value,
-				itemGroup.value,
-			);
+			// Do NOT re-run the search over `items.value` here. Search results can come
+			// from IndexedDB or the server (see searchItems / searchServerItems), so they
+			// are not guaranteed to exist in the in-memory page — re-searching would drop
+			// the operator's visible results mid-typing on every background sync tick.
+			// Patch the rows that actually changed and leave the result set alone.
+			const updatesByCode = new Map<string, Item>();
+			updates.forEach((update) => {
+				if (update?.item_code) {
+					updatesByCode.set(update.item_code, update);
+				}
+			});
+
+			let patched = false;
+			filteredItems.value.forEach((item) => {
+				const update = item?.item_code
+					? updatesByCode.get(item.item_code)
+					: undefined;
+				if (update && update !== item) {
+					Object.assign(item, update);
+					patched = true;
+				}
+			});
+
+			if (patched) {
+				// Shallow refresh so virtualized lists re-render the patched rows.
+				filteredItems.value = [...filteredItems.value];
+			}
 		} else {
 			filteredItems.value = filterItemsByGroup(
 				items.value,

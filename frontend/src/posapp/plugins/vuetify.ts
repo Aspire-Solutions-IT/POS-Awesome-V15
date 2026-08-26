@@ -144,6 +144,14 @@ const darkTheme = {
 export default createVuetify({
 	components,
 	directives,
+	defaults: {
+		VAutocomplete: { autocomplete: "off" },
+		VCombobox: { autocomplete: "off" },
+		VFileInput: { autocomplete: "off" },
+		VSelect: { autocomplete: "off" },
+		VTextarea: { autocomplete: "off" },
+		VTextField: { autocomplete: "off" },
+	},
 	locale: {
 		rtl: typeof frappe !== "undefined" && frappe.utils ? frappe.utils.is_rtl() : false,
 	},

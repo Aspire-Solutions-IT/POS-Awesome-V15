@@ -212,9 +212,17 @@ def _is_dev_or_local_environment():
     return False
 
 
-def on_submit(doc, method):
+def _queue_receipt_email(doc, revised=False):
+    """Queue the customer receipt for this order, if the POS Profile enables it.
+
+    Shared by submit and by a paid-for revision so both honour the same POS Profile
+    setting, print format, cc list and dev-site skip. Enqueued after commit, so a
+    rolled back change never emails a receipt for items that were not saved.
+    """
+    label = "revised receipt" if revised else "receipt"
     frappe.logger().info(
-        "POSAwesome receipt email: on_submit start for Sales Order %s",
+        "POSAwesome %s email: start for Sales Order %s",
+        label,
         getattr(doc, "name", "Unknown"),
     )
     should_send, print_format, cc_emails = _should_auto_email_receipt(doc, log_skip=True)
@@ -256,10 +264,17 @@ def on_submit(doc, method):
         pos_profile=doc.pos_profile,
         print_format=print_format,
         cc=cc_emails,
+        revised=revised,
     )
 
 
-def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print_format=None, cc=None):
+def on_submit(doc, method):
+    _queue_receipt_email(doc, revised=False)
+
+
+def _send_receipt_email_job(
+    sales_order_name, recipient, pos_profile=None, print_format=None, cc=None, revised=False
+):
     try:
         frappe.logger().info(
             "POSAwesome receipt email: job start for Sales Order %s",
@@ -302,10 +317,16 @@ def _send_receipt_email_job(sales_order_name, recipient, pos_profile=None, print
         send_kwargs = dict(
             recipients=[recipient],
             sender=_get_receipt_sender(),
-            subject=_("Your Receipt for Order - {0} - The Furniture Warehouse").format(
-                so_doc.name
+            subject=(
+                _("Your Updated Receipt for Order - {0} - The Furniture Warehouse")
+                if revised
+                else _("Your Receipt for Order - {0} - The Furniture Warehouse")
+            ).format(so_doc.name),
+            message=(
+                _("Your order has been updated. Please find your revised receipt attached.")
+                if revised
+                else _("Please find your receipt attached.")
             ),
-            message=_("Please find your receipt attached."),
             attachments=[attachment],
             reference_doctype=so_doc.doctype,
             reference_name=so_doc.name,
@@ -555,6 +576,27 @@ def _is_active_pick_list(link):
     return cstr(link.get("status") or "").strip() not in {"Cancelled", "Completed"}
 
 
+def _build_managed_sales_order_order_level_lock(order_level_pick_lists):
+    """Whole-order edit lock, from Pick Lists linked to the order rather than a row.
+
+    Same condition _validate_managed_sales_order_item_mutations throws on, exposed on
+    the serialized order so POS can disable editing up front instead of only finding
+    out when a save fails.
+    """
+    active_pick_lists = [link for link in (order_level_pick_lists or []) if _is_active_pick_list(link)]
+    if not active_pick_lists:
+        return {"is_locked": False, "reason": None}
+
+    label = ", ".join(
+        f"{link['name']} ({cstr(link.get('status') or '').strip() or _('Unknown')})"
+        for link in active_pick_lists
+    )
+    return {
+        "is_locked": True,
+        "reason": _("Linked Pick Lists block editing: {0}").format(label),
+    }
+
+
 def _build_managed_sales_order_item_lock(item, linked_pick_lists):
     picked_qty = flt(getattr(item, "picked_qty", 0) or 0)
     delivered_qty = flt(getattr(item, "delivered_qty", 0) or 0)
@@ -780,6 +822,7 @@ def _serialize_managed_sales_order(doc):
         "pos_sales_person_name": pos_sales_person_name or pos_sales_person,
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
         "stream_pick_lists": stream_pick_lists,
+        "order_level_lock": _build_managed_sales_order_order_level_lock(order_level_pick_lists),
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "items": items,
@@ -834,6 +877,7 @@ def _normalize_managed_sales_order_item_row(row):
 
     qty = flt(row.get("qty"))
     conversion_factor = flt(row.get("conversion_factor") or 1)
+    requested_rate = row.get("rate")
     normalized = {
         "docname": cstr(row.get("docname") or row.get("name") or "").strip() or None,
         "item_code": cstr(row.get("item_code") or "").strip(),
@@ -842,6 +886,9 @@ def _normalize_managed_sales_order_item_row(row):
         "bom_no": cstr(row.get("bom_no") or "").strip() or None,
         "qty": qty,
         "conversion_factor": conversion_factor,
+        # None means "not supplied", which is distinct from a deliberate 0. Only
+        # honoured for new rows; existing rows always keep their stored rate.
+        "rate": flt(requested_rate) if requested_rate not in (None, "") else None,
     }
     if normalized["qty"] <= 0:
         frappe.throw(_("Item {0}: Qty must be greater than 0.").format(normalized["item_code"] or _("Row")))
@@ -850,6 +897,27 @@ def _normalize_managed_sales_order_item_row(row):
     if not normalized["uom"]:
         frappe.throw(_("Item {0}: UOM is required.").format(normalized["item_code"]))
     return normalized
+
+
+MANAGED_SALES_ORDER_ITEM_COMPARE_FIELDS = (
+    "docname",
+    "item_code",
+    "uom",
+    "description",
+    "bom_no",
+    "qty",
+    "conversion_factor",
+)
+
+
+def _managed_sales_order_item_compare_shape(row):
+    """Project an incoming row onto the fields a locked row is compared on.
+
+    By the time the mutation check runs, incoming rows have been enriched with rate,
+    warehouse and delivery_date, none of which the client can influence on an existing
+    row. Comparing the raw dicts would make an untouched locked row look modified.
+    """
+    return {field: row.get(field) for field in MANAGED_SALES_ORDER_ITEM_COMPARE_FIELDS}
 
 
 def _normalize_existing_managed_sales_order_item_row(row):
@@ -866,13 +934,9 @@ def _normalize_existing_managed_sales_order_item_row(row):
 
 def _validate_managed_sales_order_item_mutations(doc, normalized_items):
     row_pick_lists, order_level_pick_lists, _stream_pick_lists = _get_sales_order_pick_list_links(doc)
-    order_level_active = [link for link in order_level_pick_lists if _is_active_pick_list(link)]
-    if order_level_active:
-        label = ", ".join(
-            f"{link['name']} ({cstr(link.get('status') or '').strip() or _('Unknown')})"
-            for link in order_level_active
-        )
-        frappe.throw(_("Linked Pick Lists block editing: {0}").format(label))
+    order_level_lock = _build_managed_sales_order_order_level_lock(order_level_pick_lists)
+    if order_level_lock["is_locked"]:
+        frappe.throw(order_level_lock["reason"])
 
     existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
     incoming_by_docname = {row["docname"]: row for row in normalized_items if row.get("docname")}
@@ -890,10 +954,278 @@ def _validate_managed_sales_order_item_mutations(doc, normalized_items):
         if not lock_meta["is_locked"]:
             continue
 
-        if incoming_row != _normalize_existing_managed_sales_order_item_row(row):
+        if _managed_sales_order_item_compare_shape(
+            incoming_row
+        ) != _normalize_existing_managed_sales_order_item_row(row):
             frappe.throw(
                 _("Item {0} cannot be updated from POS. {1}").format(row.item_code, lock_meta["lock_reason"])
             )
+
+
+def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items):
+    """Write the prepared rows through the shared Sales Order update path."""
+    from customer_due_dates.api.update_child_qty_rate import update_child_qty_rate as update_sales_order_items
+
+    update_sales_order_items(
+        parent_doctype="Sales Order",
+        trans_items=json.dumps(normalized_items),
+        parent_doctype_name=sales_order_name,
+        child_docname="items",
+    )
+
+
+def _prepare_managed_sales_order_item_rows(doc, incoming_items):
+    """Normalise and price the incoming rows against the stored order.
+
+    Shared by the preview and the real update so the amount a customer is asked to
+    pay is derived from exactly the rows that will be saved.
+    """
+    if not isinstance(incoming_items, list):
+        frappe.throw(_("Sales Order items payload must be a list."))
+
+    existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
+    normalized_items = []
+    for row in incoming_items:
+        normalized = _normalize_managed_sales_order_item_row(row)
+        docname = normalized.get("docname")
+        if docname:
+            existing_row = existing_rows.get(docname)
+            if not existing_row:
+                # A docname the order no longer has means the client is working from a
+                # stale copy. Falling through would silently add a duplicate line.
+                frappe.throw(
+                    _("Sales Order item {0} no longer exists. Please reload the order.").format(docname)
+                )
+            # Existing rows keep their stored price: POS may change qty, never rate.
+            normalized["rate"] = flt(getattr(existing_row, "rate", 0))
+            normalized["warehouse"] = cstr(getattr(existing_row, "warehouse", "") or "").strip() or None
+            delivery_date = getattr(existing_row, "delivery_date", None)
+            normalized["delivery_date"] = str(getdate(delivery_date)) if delivery_date else None
+        else:
+            requested_rate = normalized.get("rate")
+            if requested_rate is None or flt(requested_rate) < 0:
+                pricing = _resolve_managed_sales_order_item_pricing(
+                    doc, normalized["item_code"], normalized.get("uom")
+                )
+                normalized["rate"] = flt(pricing.get("rate"))
+            else:
+                normalized["rate"] = flt(requested_rate)
+            # set_order_defaults resolves the warehouse from the Item and falls back to
+            # the parent delivery_date, with clearer errors than we could raise here.
+            normalized["warehouse"] = None
+            normalized["delivery_date"] = None
+        normalized_items.append(normalized)
+    return normalized_items
+
+
+def _resolve_managed_sales_order_item_pricing(doc, item_code, uom=None):
+    """Item defaults and price for a row being added to a managed Sales Order.
+
+    Prices through ItemDetailAggregator rather than erpnext's get_item_details so a
+    line added from POS follows the same rules as the POS item grid: merge_item_row
+    puts pos_on_sale_price ahead of custom_tfw_price, and both ahead of the plain
+    price list rate. The order's own POS profile, price list and customer are used so
+    the added line stays consistent with the rest of the order.
+    """
+    from posawesome.posawesome.api.item_fetchers import ItemDetailAggregator
+    from posawesome.posawesome.api.utils import _ensure_pos_profile
+
+    item_code = cstr(item_code or "").strip()
+    if not item_code:
+        frappe.throw(_("Item code is required."))
+
+    item_meta = frappe.db.get_value(
+        "Item",
+        item_code,
+        ["item_name", "description", "stock_uom", "has_variants"],
+        as_dict=True,
+    )
+    if not item_meta:
+        frappe.throw(_("Item {0} does not exist.").format(item_code))
+    if cint(item_meta.get("has_variants")):
+        frappe.throw(_("Item {0} is a template. Please select a variant.").format(item_code))
+
+    stock_uom = cstr(item_meta.get("stock_uom") or "").strip()
+    uom = cstr(uom or "").strip() or stock_uom
+    if not uom:
+        frappe.throw(_("Item {0}: UOM is required.").format(item_code))
+
+    profile, _profile_json = _ensure_pos_profile(getattr(doc, "pos_profile", None))
+    price_list = (
+        cstr(getattr(doc, "selling_price_list", "") or "").strip()
+        or cstr(profile.get("selling_price_list") or "").strip()
+        or None
+    )
+    aggregator = ItemDetailAggregator(
+        profile, price_list=price_list, customer=getattr(doc, "customer", None)
+    )
+    rows = aggregator.build_details([{"item_code": item_code, "uom": uom}]) or []
+    row = rows[0] if rows else {}
+
+    item_uoms = row.get("item_uoms") or []
+    conversion_factor = 0.0
+    for entry in item_uoms:
+        if cstr(entry.get("uom") or "").strip() == uom:
+            conversion_factor = flt(entry.get("conversion_factor"))
+            break
+
+    delivery_date = getattr(doc, "delivery_date", None)
+
+    return {
+        "item_code": item_code,
+        "item_name": cstr(row.get("item_name") or item_meta.get("item_name") or item_code),
+        # Never leave this empty: update_child_qty_rate assigns child_item.description
+        # unconditionally, so a missing description would blank the saved line.
+        "description": cstr(item_meta.get("description") or "")
+        or cstr(item_meta.get("item_name") or item_code),
+        "uom": uom,
+        "stock_uom": stock_uom,
+        "conversion_factor": conversion_factor or 1.0,
+        "rate": flt(row.get("rate")),
+        "currency": cstr(row.get("currency") or getattr(doc, "currency", "") or ""),
+        "item_uoms": item_uoms,
+        "delivery_date": str(getdate(delivery_date)) if delivery_date else None,
+    }
+
+
+def _managed_sales_order_projected_grand_total(doc, normalized_items):
+    """Grand total the order would have if these rows were applied.
+
+    Runs the doc's own calculate_taxes_and_totals on an in-memory copy, so taxes and
+    charges are projected exactly as a real save would compute them. Nothing is
+    written: the copy is discarded. The client must not compute this itself, because
+    the amount we take payment for has to be tax accurate.
+    """
+    preview = frappe.get_doc("Sales Order", doc.name)
+    existing_rows = {row.name: row for row in getattr(preview, "items", []) or [] if getattr(row, "name", None)}
+
+    rows = []
+    for item in normalized_items:
+        docname = item.get("docname")
+        if docname and docname in existing_rows:
+            row = existing_rows[docname]
+        else:
+            row = frappe.new_doc("Sales Order Item")
+            row.item_code = item.get("item_code")
+            row.item_name = item.get("item_code")
+            row.description = item.get("description") or item.get("item_code")
+            row.delivery_date = item.get("delivery_date") or getattr(preview, "delivery_date", None)
+            row.warehouse = item.get("warehouse") or getattr(preview, "set_warehouse", None)
+
+        qty = flt(item.get("qty"))
+        rate = flt(item.get("rate"))
+        conversion_factor = flt(item.get("conversion_factor") or 1) or 1
+        row.qty = qty
+        row.rate = rate
+        row.price_list_rate = rate
+        row.uom = item.get("uom") or getattr(row, "uom", None)
+        row.conversion_factor = conversion_factor
+        row.stock_qty = qty * conversion_factor
+        row.amount = qty * rate
+        rows.append(row)
+
+    preview.items = rows
+    preview.calculate_taxes_and_totals()
+    return flt(getattr(preview, "grand_total", 0))
+
+
+def _get_managed_sales_order_customer_credit(doc):
+    """Money the customer already holds that this order's advance_paid cannot see.
+
+    advance_paid comes from the ledger and counts only what is allocated to *this*
+    order, so a customer can be sitting on an unallocated payment or a credit note
+    and still be asked to pay again. This is reported to the cashier, never used to
+    reduce the amount due: consuming it needs a proper allocation, and silently
+    offsetting would leave the order underpaid.
+    """
+    customer = cstr(getattr(doc, "customer", "") or "").strip()
+    company = cstr(getattr(doc, "company", "") or "").strip()
+    if not customer or not company:
+        return {"unallocated_payments": 0.0, "stored_value": 0.0, "total": 0.0}
+
+    # pluck + sum rather than a SQL aggregate: newer Frappe rejects function strings
+    # in get_value, and a customer only ever has a handful of these rows.
+    unallocated = sum(
+        flt(amount)
+        for amount in frappe.get_all(
+            "Payment Entry",
+            filters={
+                "docstatus": 1,
+                "payment_type": "Receive",
+                "party_type": "Customer",
+                "party": customer,
+                "company": company,
+                "unallocated_amount": [">", 0],
+            },
+            pluck="unallocated_amount",
+        )
+    )
+
+    stored_value = 0.0
+    try:
+        from posawesome.posawesome.api.stored_value import get_stored_value_summary
+
+        summary = get_stored_value_summary(customer=customer, company=company) or {}
+        stored_value = flt(summary.get("available_amount") or 0)
+    except Exception:
+        # Stored value is advisory only - never block an edit because it failed.
+        frappe.log_error(frappe.get_traceback(), "POS managed Sales Order stored value")
+
+    return {
+        "unallocated_payments": max(unallocated, 0.0),
+        "stored_value": max(stored_value, 0.0),
+        "total": max(unallocated, 0.0) + max(stored_value, 0.0),
+    }
+
+
+@frappe.whitelist()
+def preview_managed_sales_order_items(data):
+    """What the order would total, and what is owed, if these rows were applied.
+
+    Called before the payment dialog so the cashier is shown a tax accurate figure.
+    Read only - it never writes.
+    """
+    payload = _unwrap_managed_sales_order_payload(data)
+    sales_order_name = cstr(payload.get("name") or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
+    _validate_managed_sales_order_item_mutations(doc, normalized_items)
+
+    current_total = flt(getattr(doc, "grand_total", 0))
+    projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
+    advance_paid = flt(getattr(doc, "advance_paid", 0))
+
+    return {
+        "current_grand_total": current_total,
+        "projected_grand_total": projected_total,
+        "difference": flt(projected_total - current_total),
+        "advance_paid": advance_paid,
+        # Full increase, locked: the order must not be left underpaid.
+        "amount_due": max(flt(projected_total - advance_paid), 0.0),
+        "credit_after_change": max(flt(advance_paid - projected_total), 0.0),
+        "currency": getattr(doc, "currency", None),
+        "customer_credit": _get_managed_sales_order_customer_credit(doc),
+    }
+
+
+@frappe.whitelist()
+def get_managed_sales_order_new_item_details(sales_order, item_code, uom=None, qty=1):
+    """Defaults for an item the user is about to add from POS, priced like the POS grid."""
+    sales_order = cstr(sales_order or "").strip()
+    if not sales_order:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order)
+    _validate_managed_sales_order_doc(doc)
+
+    details = _resolve_managed_sales_order_item_pricing(doc, item_code, uom)
+    details["qty"] = flt(qty) or 1
+    return details
 
 
 @frappe.whitelist()
@@ -906,39 +1238,97 @@ def update_managed_sales_order_items(data):
     doc = frappe.get_doc("Sales Order", sales_order_name)
     _validate_managed_sales_order_doc(doc)
 
-    incoming_items = payload.get("items") or []
-    if not isinstance(incoming_items, list):
-        frappe.throw(_("Sales Order items payload must be a list."))
-
-    existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
-    normalized_items = []
-    for row in incoming_items:
-        normalized = _normalize_managed_sales_order_item_row(row)
-        docname = normalized.get("docname")
-        if docname and docname in existing_rows:
-            existing_row = existing_rows[docname]
-            normalized["rate"] = flt(getattr(existing_row, "rate", 0))
-            normalized["warehouse"] = cstr(getattr(existing_row, "warehouse", "") or "").strip() or None
-            delivery_date = getattr(existing_row, "delivery_date", None)
-            normalized["delivery_date"] = str(getdate(delivery_date)) if delivery_date else None
-        else:
-            normalized["rate"] = 0
-            normalized["warehouse"] = None
-            normalized["delivery_date"] = None
-        normalized_items.append(normalized)
+    normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
     _validate_managed_sales_order_item_mutations(doc, normalized_items)
 
-    from customer_due_dates.api.update_child_qty_rate import update_child_qty_rate as update_sales_order_items
-
-    update_sales_order_items(
-        parent_doctype="Sales Order",
-        trans_items=json.dumps(normalized_items),
-        parent_doctype_name=sales_order_name,
-        child_docname="items",
-    )
+    _apply_managed_sales_order_items(doc, sales_order_name, normalized_items)
 
     doc.reload()
     return _serialize_managed_sales_order(doc)
+
+
+@frappe.whitelist()
+def update_managed_sales_order_items_with_payment(data):
+    """Apply item changes and take the resulting balance in one transaction.
+
+    The extra money does not exist as an outstanding balance until the rows are on
+    the order, so payment cannot be taken first. Doing both in one request instead
+    means any failure - a rejected payment, a posting error - rolls the whole thing
+    back, so the customer can never end up paying for items that failed to save, and
+    items are never saved (or stock allocated) without the payment succeeding.
+    """
+    payload = _unwrap_managed_sales_order_payload(data)
+    payment = payload.get("payment") or {}
+    if not isinstance(payment, dict):
+        frappe.throw(_("Payment details must be an object."))
+
+    mode_of_payment = cstr(payment.get("mode_of_payment") or "").strip()
+    if not mode_of_payment:
+        frappe.throw(_("Mode of Payment is required."))
+
+    sales_order_name = cstr(payload.get("name") or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    # Re-derive the amount owed server side from the rows about to be written. A
+    # client supplied figure must never decide what the customer is charged.
+    normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
+    _validate_managed_sales_order_item_mutations(doc, normalized_items)
+    projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
+    amount_due = max(flt(projected_total - flt(getattr(doc, "advance_paid", 0))), 0.0)
+
+    expected = payment.get("expected_amount")
+    if expected is not None and abs(flt(expected) - amount_due) > 0.01:
+        frappe.throw(
+            _("The amount due changed while you were paying ({0} instead of {1}). Please review the order.").format(
+                amount_due, flt(expected)
+            )
+        )
+
+    if amount_due <= 0.001:
+        frappe.throw(_("This Sales Order has nothing further to pay."))
+
+    _apply_managed_sales_order_items(doc, sales_order_name, normalized_items)
+
+    doc.reload()
+    payment_entry = create_payment_entry(
+        company=doc.company,
+        customer=doc.customer,
+        amount=amount_due,
+        currency=doc.currency,
+        mode_of_payment=mode_of_payment,
+        reference_no=cstr(payment.get("reference_no") or "").strip() or doc.name,
+        reference_date=payment.get("reference_date") or nowdate(),
+        posting_date=nowdate(),
+        submit=0,
+    )
+    payment_entry.append(
+        "references",
+        {
+            "allocated_amount": amount_due,
+            "reference_doctype": "Sales Order",
+            "reference_name": doc.name,
+        },
+    )
+    payment_entry.flags.ignore_permissions = True
+    frappe.flags.ignore_account_permission = True
+    payment_entry.save()
+    payment_entry.submit()
+
+    doc.reload()
+
+    # Queued after commit, so the customer is only sent a revised receipt if the
+    # items and the payment both actually landed.
+    _queue_receipt_email(doc, revised=True)
+
+    return {
+        "sales_order": _serialize_managed_sales_order(doc),
+        "payment_entry": payment_entry.name,
+        "amount_paid": amount_due,
+    }
 
 
 @frappe.whitelist()

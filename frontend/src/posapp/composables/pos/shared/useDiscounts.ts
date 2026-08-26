@@ -298,11 +298,165 @@ export function useDiscounts() {
 	 *   - `isReturnInvoice` (boolean).
 	 *   - `pos_profile` — object with `posa_use_percentage_discount` and `posa_max_discount_allowed`.
 	 */
+	/**
+	 * Writes `additional_discount` from an already validated `percentage`.
+	 *
+	 * **Mutates `context` in-place.** Shared by every percentage -> amount path so that
+	 * the live (keystroke) sync and the committed (blur/change) sync agree exactly.
+	 */
+	const computeDiscountAmountFromPercentage = (
+		context: any,
+		percentage: number,
+	) => {
+		if (!context.Total || context.Total === 0) return 0;
+
+		if (context.pos_profile?.posa_use_percentage_discount) {
+			const baseTotal = context.isReturnInvoice
+				? Math.abs(context.Total)
+				: context.Total;
+			const discountAmount = (baseTotal * Math.abs(percentage)) / 100;
+
+			return percentage < 0 || context.isReturnInvoice
+				? -Math.abs(discountAmount)
+				: Math.abs(discountAmount);
+		}
+
+		const signedTotal = context.isReturnInvoice
+			? -Math.abs(context.Total)
+			: context.Total;
+		return (signedTotal * percentage) / 100;
+	};
+
+	const applyPercentageToDiscountAmount = (context: any, percentage: number) => {
+		let value = percentage;
+
+		if (!context.Total || context.Total === 0) {
+			context.additional_discount = 0;
+			return;
+		}
+
+		if (
+			context.pos_profile?.posa_use_percentage_discount &&
+			context.isReturnInvoice &&
+			value > 0
+		) {
+			value = -Math.abs(value);
+			context.additional_discount_percentage = value;
+		}
+
+		context.additional_discount = computeDiscountAmountFromPercentage(
+			context,
+			value,
+		);
+	};
+
+	/** Base the percentage is measured against, sign-normalised for returns. */
+	const getPercentageBase = (context: any) => {
+		if (!context.Total || context.Total === 0) return 0;
+		return context.isReturnInvoice ? Math.abs(context.Total) : context.Total;
+	};
+
+	const getPercentagePrecision = (context: any) => {
+		const precision = Number(context?.float_precision);
+		return Number.isFinite(precision) && precision > 0 ? precision : 2;
+	};
+
+	/**
+	 * Recomputes `additional_discount` from `additional_discount_percentage` for the
+	 * live (per-keystroke) sync between the two discount boxes.
+	 *
+	 * Unlike {@link updateDiscountAmount} this never clamps, never toasts and never
+	 * resets the operator's input - an out-of-range percentage simply leaves the amount
+	 * untouched until the entry is committed on blur/change.
+	 *
+	 * **Mutates `context` in-place.** No return value.
+	 */
+	const syncDiscountAmountFromPercentage = (context: any) => {
+		const value = flt(context.additional_discount_percentage);
+		if (!Number.isFinite(value) || value < -100 || value > 100) return;
+		applyPercentageToDiscountAmount(context, value);
+	};
+
+	/**
+	 * Recomputes `additional_discount_percentage` from `additional_discount`, the reverse
+	 * of {@link syncDiscountAmountFromPercentage}, so an amount typed by the operator is
+	 * mirrored into the percentage box.
+	 *
+	 * The percentage is rounded to the float precision for display; the amount stays
+	 * exactly as typed. When the current percentage already explains the current amount
+	 * the value is left alone, which keeps a percentage-driven edit (and the operator's
+	 * own extra decimals) from being rewritten by the rounded round-trip.
+	 *
+	 * **Mutates `context` in-place.** No return value.
+	 *
+	 * @param options.force - Recompute even when the current percentage already matches.
+	 */
+	const syncDiscountPercentageFromAmount = (
+		context: any,
+		options: { force?: boolean } = {},
+	) => {
+		const amount = flt(context.additional_discount);
+		const baseTotal = getPercentageBase(context);
+
+		if (!amount || !baseTotal) {
+			context.additional_discount_percentage = 0;
+			return;
+		}
+
+		let percentage = (amount / baseTotal) * 100;
+		if (context.isReturnInvoice) {
+			percentage = -Math.abs(percentage);
+		}
+
+		const precision = getPercentagePrecision(context);
+
+		if (!options.force) {
+			const currentPercentage = flt(context.additional_discount_percentage);
+			// Half a display step: the shown percentage already rounds to this amount, so
+			// leave it (and any extra decimals the operator typed) alone.
+			const tolerance = Math.pow(10, -precision) / 2 + 1e-9;
+			if (
+				currentPercentage &&
+				Math.abs(percentage - currentPercentage) <= tolerance
+			) {
+				return;
+			}
+		}
+
+		context.additional_discount_percentage = flt(percentage, precision);
+	};
+
+	/**
+	 * Commits an amount typed into the discount amount box: mirrors it into the
+	 * percentage box and enforces `posa_max_discount_allowed`, which would otherwise
+	 * only be enforced on percentage entry.
+	 *
+	 * **Mutates `context` in-place.** No return value.
+	 */
+	const commitDiscountAmount = (context: any) => {
+		syncDiscountPercentageFromAmount(context, { force: true });
+
+		const maxDiscount = flt(context.pos_profile?.posa_max_discount_allowed);
+		const percentage = flt(context.additional_discount_percentage);
+
+		if (maxDiscount > 0 && Math.abs(percentage) > maxDiscount) {
+			const clamped = percentage < 0 ? -maxDiscount : maxDiscount;
+			context.additional_discount_percentage = clamped;
+			toastStore.show({
+				title: __("Discount limited by POS Profile"),
+				detail:
+					__("The maximum discount allowed is") +
+					" " +
+					maxDiscount +
+					"%",
+				color: "warning",
+			});
+			applyPercentageToDiscountAmount(context, clamped);
+		}
+	};
+
 	const updateDiscountAmount = (context: any) => {
 		let value = flt(context.additional_discount_percentage);
-		const usePercentage = Boolean(
-			context.pos_profile?.posa_use_percentage_discount,
-		);
 		const maxDiscount = flt(context.pos_profile?.posa_max_discount_allowed);
 
 		// If value is too large, reset to 0
@@ -327,36 +481,7 @@ export function useDiscounts() {
 		}
 
 		// Calculate discount amount based on percentage
-		if (context.Total && context.Total !== 0) {
-			if (usePercentage && context.isReturnInvoice && value > 0) {
-				value = -Math.abs(value);
-				context.additional_discount_percentage = value;
-			}
-
-			if (usePercentage) {
-				const baseTotal = context.isReturnInvoice
-					? Math.abs(context.Total)
-					: context.Total;
-
-				const percentMagnitude = Math.abs(value);
-				let discountAmount = (baseTotal * percentMagnitude) / 100;
-
-				if (value < 0 || context.isReturnInvoice) {
-					discountAmount = -Math.abs(discountAmount);
-				} else {
-					discountAmount = Math.abs(discountAmount);
-				}
-
-				context.additional_discount = discountAmount;
-			} else {
-				const signedTotal = context.isReturnInvoice
-					? -Math.abs(context.Total)
-					: context.Total;
-				context.additional_discount = (signedTotal * value) / 100;
-			}
-		} else {
-			context.additional_discount = 0;
-		}
+		applyPercentageToDiscountAmount(context, value);
 	};
 
 	/**
@@ -683,6 +808,9 @@ export function useDiscounts() {
 
 	return {
 		updateDiscountAmount,
+		syncDiscountAmountFromPercentage,
+		syncDiscountPercentageFromAmount,
+		commitDiscountAmount,
 		calcPrices,
 		calcItemPrice,
 	};

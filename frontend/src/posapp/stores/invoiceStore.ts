@@ -196,6 +196,16 @@ export const useInvoiceStore = defineStore("invoice", () => {
 	const discountAmount = ref(0);
 	const additionalDiscount = ref(0);
 	const additionalDiscountPercentage = ref(0);
+	/**
+	 * Which of the two additional-discount boxes the operator entered last.
+	 *
+	 * Both boxes are always editable and mirror each other; this records which one is
+	 * authoritative so the saved invoice carries the value that was actually typed
+	 * (`"percentage"` sends `additional_discount_percentage`, `"amount"` sends the
+	 * discount amount with a zero percentage, as ERPNext recalculates the amount from a
+	 * non-zero percentage server-side).
+	 */
+	const discountInputMode = ref<"amount" | "percentage">("amount");
 	const deliveryCharges = ref<DeliveryCharge[]>([]);
 	const deliveryChargesRate = ref(0);
 	const selectedDeliveryCharge = ref("");
@@ -254,6 +264,11 @@ export const useInvoiceStore = defineStore("invoice", () => {
 	/** Sets the transaction-level discount percentage. Non-numeric values are coerced to `0`. */
 	const setAdditionalDiscountPercentage = (val: any) => {
 		additionalDiscountPercentage.value = toNumber(val);
+	};
+
+	/** Records which additional-discount box is authoritative. Unknown values fall back to `"amount"`. */
+	const setDiscountInputMode = (val: any) => {
+		discountInputMode.value = val === "percentage" ? "percentage" : "amount";
 	};
 
 	/** Replaces the delivery-charge list. Non-array values are coerced to `[]`. */
@@ -529,6 +544,7 @@ export const useInvoiceStore = defineStore("invoice", () => {
 			discountAmount.value = 0;
 			additionalDiscount.value = 0;
 			additionalDiscountPercentage.value = 0;
+			discountInputMode.value = "amount";
 			resetDeliveryCharges();
 		}
 
@@ -634,6 +650,7 @@ export const useInvoiceStore = defineStore("invoice", () => {
 		discountAmount,
 		additionalDiscount,
 		additionalDiscountPercentage,
+		discountInputMode,
 		deliveryCharges,
 		deliveryChargesRate,
 		selectedDeliveryCharge,
@@ -641,6 +658,7 @@ export const useInvoiceStore = defineStore("invoice", () => {
 		setDiscountAmount,
 		setAdditionalDiscount,
 		setAdditionalDiscountPercentage,
+		setDiscountInputMode,
 		setDeliveryCharges,
 		setDeliveryChargesRate,
 		setSelectedDeliveryCharge,

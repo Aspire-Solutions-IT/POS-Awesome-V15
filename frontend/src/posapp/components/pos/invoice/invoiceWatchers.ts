@@ -1,5 +1,6 @@
 import { clearPriceListCache } from "../../../../offline/index";
 import { useCustomersStore } from "../../../stores/customersStore.js";
+import { sync_discount_percentage_from_amount } from "../invoice_utils/discounts";
 
 interface WatcherItem {
 	posa_row_id?: string | number;
@@ -20,6 +21,7 @@ interface InvoiceWatchersVm {
 	additional_discount_percentage?: number;
 	return_doc?: Record<string, unknown> | string | null;
 	update_discount_umount?: () => void;
+	discount_input_mode?: "amount" | "percentage";
 	pos_profile: {
 		posa_use_percentage_discount?: boolean;
 		selling_price_list?: string;
@@ -95,6 +97,7 @@ const applyReturnDiscountProration = (context: InvoiceWatchersVm) => {
 		context.additional_discount = prorated;
 		context.discount_amount = prorated;
 		context.additional_discount_percentage = 0;
+		context.discount_input_mode = "amount";
 	}
 };
 
@@ -171,8 +174,13 @@ const invoiceWatchers: Record<string, unknown> & ThisType<InvoiceWatchersVm> = {
 		},
 	},
 	Total(this: InvoiceWatchersVm) {
-		if (
-			this.pos_profile?.posa_use_percentage_discount &&
+		// Whichever box was typed into keeps its value when the cart total moves; the
+		// other one is recalculated against the new total.
+		if (this.discount_input_mode === "amount") {
+			if (Number(this.additional_discount || 0) !== 0) {
+				sync_discount_percentage_from_amount(this, { force: true });
+			}
+		} else if (
 			Number(this.additional_discount_percentage || 0) !== 0 &&
 			typeof this.update_discount_umount === "function"
 		) {
@@ -200,32 +208,9 @@ const invoiceWatchers: Record<string, unknown> & ThisType<InvoiceWatchersVm> = {
 			return;
 		}
 
-		if (!this.additional_discount || this.additional_discount == 0) {
-			this.additional_discount_percentage = 0;
-		} else if (this.pos_profile.posa_use_percentage_discount) {
-			// Prevent division by zero which causes NaN
-			const baseTotal =
-				this.Total && this.Total !== 0
-					? this.isReturnInvoice
-						? Math.abs(this.Total)
-						: this.Total
-					: 0;
-
-			if (baseTotal) {
-				let computedPercentage =
-					(this.additional_discount / baseTotal) * 100;
-
-				if (this.isReturnInvoice) {
-					computedPercentage = -Math.abs(computedPercentage);
-				}
-
-				this.additional_discount_percentage = computedPercentage;
-			} else {
-				this.additional_discount_percentage = 0;
-			}
-		} else {
-			this.additional_discount_percentage = 0;
-		}
+		// Mirror the amount into the % box. No-op when the current percentage already
+		// explains the amount, so a percentage-driven edit is never rewritten.
+		sync_discount_percentage_from_amount(this);
 	},
 	// Keep display date in sync with posting_date
 	posting_date: {

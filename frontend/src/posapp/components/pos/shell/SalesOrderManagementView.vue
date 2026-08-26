@@ -188,6 +188,16 @@
 					</v-card-title>
 					<v-card-text class="right-panel-body">
 						<v-alert
+							v-if="creditNotice"
+							type="info"
+							variant="tonal"
+							density="compact"
+							border="start"
+							class="mb-4"
+						>
+							{{ creditNotice }}
+						</v-alert>
+						<v-alert
 							v-if="detailError"
 							type="error"
 							variant="tonal"
@@ -218,16 +228,16 @@
 									<strong>{{ formatDate(selectedOrder.latest_component_due_date) }}</strong>
 								</div>
 								<div class="summary-chip">
-									<span class="summary-chip__label">{{ __("Auto Release") }}</span>
-									<strong>{{ formatDate(selectedOrder.auto_release_date) }}</strong>
-								</div>
-								<div class="summary-chip">
 									<span class="summary-chip__label">{{ __("Paid") }}</span>
 									<strong>{{ formatCurrency(selectedOrder.advance_paid, selectedOrder.currency) }}</strong>
 								</div>
 								<div class="summary-chip">
 									<span class="summary-chip__label">{{ __("Outstanding") }}</span>
 									<strong>{{ formatCurrency(selectedOrder.outstanding_balance, selectedOrder.currency) }}</strong>
+								</div>
+								<div class="summary-chip">
+									<span class="summary-chip__label">{{ __("Auto Release") }}</span>
+									<strong>{{ formatDate(selectedOrder.auto_release_date) }}</strong>
 								</div>
 							</div>
 
@@ -348,9 +358,31 @@
 
 							<div class="items-section">
 								<div class="items-section__header">
-									<h3>{{ __("Items") }}</h3>
-									<span>{{ __("Unlocked rows can be updated here. Picked, delivered, or linked pick-list rows are read only.") }}</span>
+									<div class="items-section__heading">
+										<h3>{{ __("Items") }}</h3>
+										<span>{{ __("Unlocked rows can be updated here. Picked, delivered, or linked pick-list rows are read only.") }}</span>
+									</div>
+									<v-btn
+										color="primary"
+										variant="tonal"
+										prepend-icon="mdi-plus"
+										:loading="addItemLoading"
+										:disabled="!canEditItems || saveLoading"
+										@click="itemSelectorOpen = true"
+									>
+										{{ __("Add Items") }}
+									</v-btn>
 								</div>
+								<v-alert
+									v-if="orderLevelLock?.is_locked"
+									type="warning"
+									variant="tonal"
+									density="compact"
+									border="start"
+									class="mb-3"
+								>
+									{{ orderLevelLock.reason }}
+								</v-alert>
 								<div class="items-table-wrapper">
 									<v-table density="compact">
 										<thead>
@@ -366,7 +398,7 @@
 											</tr>
 										</thead>
 										<tbody>
-											<tr v-for="item in editableItems" :key="item.name">
+											<tr v-for="item in editableItems" :key="item.rowKey">
 												<td>
 													<div class="item-cell">
 														<strong>{{ item.item_name }}</strong>
@@ -382,22 +414,62 @@
 														v-model.number="item.qty"
 														class="items-input"
 														type="number"
+														autocomplete="off"
 														min="0.01"
 														step="0.01"
 														:readonly="item.is_locked || saveLoading"
+														@blur="normalizeQty(item)"
 													/>
 												</td>
 												<td>{{ item.picked_qty ?? 0 }}</td>
 												<td>{{ item.delivered_qty }}</td>
-												<td>{{ formatCurrency(item.rate, selectedOrder.currency) }}</td>
+												<td>
+													<!-- Only a row being added is priceable here. Rows already on the
+													     order keep their price, which the server enforces as well. -->
+													<template v-if="item.is_new">
+														<input
+															v-model.number="item.rate"
+															class="items-input"
+															type="number"
+															autocomplete="off"
+															min="0"
+															step="0.01"
+															:readonly="saveLoading"
+															@blur="normalizeRate(item)"
+														/>
+														<span class="item-line-amount">
+															{{
+																formatCurrency(
+																	Number(item.qty || 0) * Number(item.rate || 0),
+																	selectedOrder.currency,
+																)
+															}}
+														</span>
+													</template>
+													<template v-else>
+														{{ formatCurrency(item.rate, selectedOrder.currency) }}
+													</template>
+												</td>
 												<td>{{ formatDate(item.component_due_date) }}</td>
 												<td>
 													<div class="item-status">
 														<span
 															class="lock-pill"
-															:class="item.is_locked ? 'lock-pill--locked' : 'lock-pill--open'"
+															:class="
+																item.is_new
+																	? 'lock-pill--new'
+																	: item.is_locked
+																		? 'lock-pill--locked'
+																		: 'lock-pill--open'
+															"
 														>
-															{{ item.is_locked ? __("Locked") : __("Editable") }}
+															{{
+																item.is_new
+																	? __("New")
+																	: item.is_locked
+																		? __("Locked")
+																		: __("Editable")
+															}}
 														</span>
 														<span v-if="item.linked_pick_lists?.length" class="item-status__meta">
 															{{ formatPickLists(item.linked_pick_lists) }}
@@ -410,7 +482,7 @@
 														color="error"
 														size="small"
 														:disabled="item.is_locked || saveLoading"
-														@click="removeItem(item.name)"
+														@click="removeItem(item.rowKey)"
 													>
 														{{ __("Remove") }}
 													</v-btn>
@@ -549,12 +621,108 @@
 				</v-card-actions>
 			</v-card>
 		</v-dialog>
+
+		<!-- Kept out of the two column layout: the selector needs real width, and the
+		     detail panel is already tight. -->
+		<v-navigation-drawer
+			v-model="itemSelectorOpen"
+			location="right"
+			temporary
+			width="520"
+			class="item-selector-drawer"
+		>
+			<div class="item-selector-drawer__header">
+				<h3>{{ __("Add Items") }}</h3>
+				<v-btn
+					icon="mdi-close"
+					variant="text"
+					density="comfortable"
+					:aria-label="__('Close item selector')"
+					@click="itemSelectorOpen = false"
+				/>
+			</div>
+			<div class="item-selector-drawer__body">
+				<ItemsSelector v-if="itemSelectorOpen" context="sales-order" @add-item="onAddItem" />
+			</div>
+		</v-navigation-drawer>
+
+		<!-- Payment before save: the rows are only written once this succeeds, so
+		     cancelling leaves the edits staged and the order untouched. -->
+		<v-dialog v-model="itemPaymentDialogOpen" max-width="480" persistent>
+			<v-card class="pos-themed-card">
+				<v-card-title>{{ __("Payment Required") }}</v-card-title>
+				<v-card-text class="pt-2">
+					<v-alert v-if="itemPaymentError" type="error" variant="tonal" density="compact" border="start" class="mb-4">
+						{{ itemPaymentError }}
+					</v-alert>
+					<p class="mb-4">
+						{{ __("These changes increase the order total. Payment is needed before the items are saved.") }}
+					</p>
+					<div class="payment-balance-copy mb-2">
+						<span class="payment-balance-copy__label">{{ __("New Order Total") }}</span>
+						<strong>{{ formatCurrency(itemPaymentPreview?.projected_grand_total, selectedOrder?.currency) }}</strong>
+					</div>
+					<div class="payment-balance-copy mb-2">
+						<span class="payment-balance-copy__label">{{ __("Already Paid") }}</span>
+						<strong>{{ formatCurrency(itemPaymentPreview?.advance_paid, selectedOrder?.currency) }}</strong>
+					</div>
+					<div class="payment-balance-copy mb-4">
+						<span class="payment-balance-copy__label">{{ __("Amount Due Now") }}</span>
+						<strong class="payment-balance-copy__amount">
+							{{ formatCurrency(itemPaymentPreview?.amount_due, selectedOrder?.currency) }}
+						</strong>
+					</div>
+					<!-- advance_paid only sees money allocated to THIS order, so surface any
+					     balance the customer already holds instead of double charging. -->
+					<v-alert
+						v-if="Number(itemPaymentPreview?.customer_credit?.total || 0) > 0.001"
+						type="warning"
+						variant="tonal"
+						density="compact"
+						border="start"
+						class="mb-4"
+					>
+						{{
+							__("Customer already holds {0} on account. Consider allocating it instead of taking payment.", [
+								formatCurrency(itemPaymentPreview?.customer_credit?.total, selectedOrder?.currency),
+							])
+						}}
+					</v-alert>
+					<v-select
+						v-model="itemPaymentMode"
+						:items="paymentModeOptions"
+						item-title="label"
+						item-value="value"
+						:label="__('Mode of Payment')"
+						density="compact"
+						hide-details
+						class="pos-themed-input"
+					/>
+				</v-card-text>
+				<v-card-actions>
+					<v-spacer />
+					<v-btn variant="text" :disabled="itemPaymentLoading" @click="closeItemPaymentDialog">
+						{{ __("Cancel") }}
+					</v-btn>
+					<v-btn
+						color="success"
+						variant="flat"
+						:loading="itemPaymentLoading"
+						:disabled="!itemPaymentMode || itemPaymentLoading"
+						@click="confirmItemPayment"
+					>
+						{{ __("Take Payment and Save") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
 	</v-container>
 </template>
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import api from "../../../services/api";
+import ItemsSelector from "../items/ItemsSelector.vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { storeToRefs } from "pinia";
@@ -615,6 +783,14 @@ type ManagedSalesOrderItem = {
 	linked_pick_lists?: PickListSummary[];
 };
 
+/** A row in the local edit buffer. */
+type EditableSalesOrderItem = ManagedSalesOrderItem & {
+	/** Stable key for v-for and dirty tracking: the docname, or a local id for a row not yet saved. */
+	rowKey: string;
+	/** True while the row is staged locally and has no Sales Order Item behind it yet. */
+	is_new: boolean;
+};
+
 type ManagedSalesOrderAddress = {
 	name: string;
 	address_title?: string | null;
@@ -629,6 +805,11 @@ type ManagedSalesOrderAddress = {
 	email_id?: string | null;
 	phone?: string | null;
 	display?: string | null;
+};
+
+type ManagedSalesOrderOrderLevelLock = {
+	is_locked?: boolean;
+	reason?: string | null;
 };
 
 type ManagedSalesOrderStreamPickList = {
@@ -651,6 +832,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	pos_sales_person_name?: string | null;
 	payment_types?: ManagedSalesOrderPaymentType[] | null;
 	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
+	order_level_lock?: ManagedSalesOrderOrderLevelLock | null;
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
 	auto_release_date?: string | null;
@@ -682,7 +864,11 @@ const statusOptions = ref<string[]>([]);
 const selectedStatus = ref("");
 const selectedStreamPickList = ref("");
 const detailTab = ref("details");
-const editableItems = ref<ManagedSalesOrderItem[]>([]);
+const editableItems = ref<EditableSalesOrderItem[]>([]);
+const itemSelectorOpen = ref(false);
+const addItemLoading = ref(false);
+let localRowCounter = 0;
+const nextLocalRowKey = () => `local-${++localRowCounter}`;
 const listLoading = ref(false);
 const detailLoading = ref(false);
 const saveLoading = ref(false);
@@ -691,6 +877,15 @@ const listError = ref("");
 const detailError = ref("");
 const paymentDialogOpen = ref(false);
 const paymentError = ref("");
+
+// Payment-before-save flow: an edit that raises the order total must be paid for
+// before the rows are written, so a cancelled payment leaves nothing saved.
+const itemPaymentDialogOpen = ref(false);
+const itemPaymentPreview = ref<any>(null);
+const itemPaymentMode = ref("");
+const itemPaymentError = ref("");
+const itemPaymentLoading = ref(false);
+const creditNotice = ref("");
 
 const paymentForm = reactive({
 	amount: "",
@@ -704,9 +899,11 @@ const form = reactive({
 	posa_notes: "",
 });
 
-const cloneEditableItems = (items?: ManagedSalesOrderItem[] | null): ManagedSalesOrderItem[] =>
+const cloneEditableItems = (items?: ManagedSalesOrderItem[] | null): EditableSalesOrderItem[] =>
 	(Array.isArray(items) ? items : []).map((item) => ({
 		name: item.name,
+		rowKey: item.name,
+		is_new: false,
 		item_code: item.item_code,
 		item_name: item.item_name ?? "",
 		description: item.description ?? "",
@@ -748,8 +945,8 @@ const isHeaderDirty = computed(() => {
 	);
 });
 
-const normalizeItemForCompare = (item: ManagedSalesOrderItem) => ({
-	name: item.name,
+const normalizeItemForCompare = (item: EditableSalesOrderItem) => ({
+	rowKey: String(item.rowKey || item.name || ""),
 	item_code: String(item.item_code || ""),
 	uom: String(item.uom || ""),
 	qty: Number(item.qty || 0),
@@ -758,16 +955,37 @@ const normalizeItemForCompare = (item: ManagedSalesOrderItem) => ({
 });
 
 const isItemDirty = computed(() => {
-	const baseline = cloneEditableItems(selectedOrder.value?.items);
-	if (baseline.length !== editableItems.value.length) return true;
-	return editableItems.value.some((item, index) => {
-		const original = baseline[index];
-		if (!original) return true;
-		return JSON.stringify(normalizeItemForCompare(item)) !== JSON.stringify(normalizeItemForCompare(original));
-	});
+	// Keyed by rowKey rather than compared positionally: adding or removing a row
+	// shifts every later index, which would otherwise report unrelated rows as dirty.
+	const baseline = new Map(
+		cloneEditableItems(selectedOrder.value?.items).map((item) => [
+			String(item.rowKey),
+			JSON.stringify(normalizeItemForCompare(item)),
+		]),
+	);
+
+	for (const item of editableItems.value) {
+		if (item.is_new) return true;
+		const before = baseline.get(String(item.rowKey));
+		if (before === undefined) return true;
+		if (before !== JSON.stringify(normalizeItemForCompare(item))) return true;
+		baseline.delete(String(item.rowKey));
+	}
+
+	// Anything still in the baseline was removed.
+	return baseline.size > 0;
 });
 
 const isDirty = computed(() => isHeaderDirty.value || isItemDirty.value);
+
+const orderLevelLock = computed(() => selectedOrder.value?.order_level_lock || null);
+
+// Adding or changing items is refused server side while a Pick List is active on the
+// whole order, so disable it here rather than letting the save fail.
+const canEditItems = computed(
+	() => Boolean(selectedOrder.value) && !orderLevelLock.value?.is_locked,
+);
+
 
 const paymentModeOptions = computed(() =>
 	(Array.isArray(posProfile.value?.payments) ? posProfile.value.payments : [])
@@ -919,8 +1137,82 @@ const syncSelectedListRow = (detail: ManagedSalesOrderDetail) => {
 	});
 };
 
-const removeItem = (itemName: string) => {
-	editableItems.value = editableItems.value.filter((item) => item.name !== itemName);
+const removeItem = (rowKey: string) => {
+	editableItems.value = editableItems.value.filter((item) => item.rowKey !== rowKey);
+};
+
+const onAddItem = async (item: any) => {
+	if (!item?.item_code || !selectedOrder.value || saveLoading.value || !canEditItems.value) return;
+
+	const uom = String(item.uom || item.stock_uom || "");
+	// Only merge into rows still staged locally. Bumping the qty of a row already on
+	// the order would be a silent edit of an existing line.
+	const pending = editableItems.value.find(
+		(row) => row.is_new && row.item_code === item.item_code && String(row.uom || "") === uom,
+	);
+	if (pending) {
+		pending.qty = Number(pending.qty || 0) + 1;
+		return;
+	}
+
+	addItemLoading.value = true;
+	detailError.value = "";
+
+	try {
+		const details = await api.call<any>(
+			"posawesome.posawesome.api.sales_orders.get_managed_sales_order_new_item_details",
+			{
+				sales_order: selectedOrder.value.name,
+				item_code: item.item_code,
+				uom: uom || null,
+			},
+		);
+		if (!details) return;
+
+		editableItems.value.push({
+			name: "",
+			rowKey: nextLocalRowKey(),
+			is_new: true,
+			item_code: details.item_code,
+			item_name: details.item_name ?? "",
+			// Sent back on save: update_child_qty_rate assigns description
+			// unconditionally, so dropping it would blank the saved line.
+			description: details.description ?? "",
+			warehouse: "",
+			uom: details.uom ?? "",
+			qty: 1,
+			picked_qty: 0,
+			delivered_qty: 0,
+			rate: Number(details.rate || 0),
+			amount: Number(details.rate || 0),
+			conversion_factor: Number(details.conversion_factor || 1),
+			delivery_date: details.delivery_date ?? "",
+			component_due_date: "",
+			quoted_date: "",
+			is_locked: false,
+			lock_reason: "",
+			linked_pick_lists: [],
+		});
+	} catch (error: any) {
+		console.error("Failed to price the item being added", error);
+		detailError.value = getErrorMessage(error, __("Unable to add the selected item"));
+	} finally {
+		addItemLoading.value = false;
+	}
+};
+
+const normalizeQty = (item: EditableSalesOrderItem) => {
+	const qty = Number(item.qty);
+	if (!Number.isFinite(qty) || qty <= 0) {
+		item.qty = 1;
+	}
+};
+
+const normalizeRate = (item: EditableSalesOrderItem) => {
+	const rate = Number(item.rate);
+	if (!Number.isFinite(rate) || rate < 0) {
+		item.rate = 0;
+	}
 };
 
 const closePaymentDialog = () => {
@@ -1043,11 +1335,140 @@ const selectOrder = async (name: string) => {
 	}
 };
 
+/** The rows exactly as the server will receive them - shared by preview and save. */
+const buildItemPayload = () =>
+	editableItems.value.map((item) => ({
+		docname: item.is_new ? null : item.name,
+		item_code: item.item_code,
+		uom: item.uom || null,
+		description: item.description || null,
+		qty: Number(item.qty || 0),
+		conversion_factor: Number(item.conversion_factor || 1),
+		...(item.is_new ? { rate: Number(item.rate || 0) } : {}),
+	}));
+
+const previewItemChanges = async () => {
+	if (!selectedOrder.value) return null;
+	const itemError = validateEditableItems();
+	if (itemError) {
+		detailError.value = itemError;
+		return null;
+	}
+	try {
+		return await api.call<any>(
+			"posawesome.posawesome.api.sales_orders.preview_managed_sales_order_items",
+			{ data: { name: selectedOrder.value.name, items: buildItemPayload() } },
+			{ freeze: true, freeze_message: __("Checking the order total...") },
+		);
+	} catch (error: any) {
+		console.error("Failed to preview Sales Order changes", error);
+		detailError.value = getErrorMessage(error, __("Unable to check the order total"));
+		return null;
+	}
+};
+
+const closeItemPaymentDialog = () => {
+	// Cancelled: nothing was sent, so the edits stay staged and unsaved.
+	itemPaymentDialogOpen.value = false;
+	itemPaymentPreview.value = null;
+	itemPaymentError.value = "";
+};
+
+const confirmItemPayment = async () => {
+	if (!selectedOrder.value || !itemPaymentMode.value || itemPaymentLoading.value) return;
+	itemPaymentLoading.value = true;
+	itemPaymentError.value = "";
+	try {
+		const message = await api.call<any>(
+			"posawesome.posawesome.api.sales_orders.update_managed_sales_order_items_with_payment",
+			{
+				data: {
+					name: selectedOrder.value.name,
+					items: buildItemPayload(),
+					payment: {
+						mode_of_payment: itemPaymentMode.value,
+						reference_no: selectedOrder.value.customer_order_ref || selectedOrder.value.name,
+						// Guards against the total moving while the dialog was open.
+						expected_amount: Number(itemPaymentPreview.value?.amount_due || 0),
+					},
+				},
+			},
+			{ freeze: true, freeze_message: __("Taking payment and updating the order...") },
+		);
+		selectedOrder.value = message?.sales_order || selectedOrder.value;
+		resetForm(selectedOrder.value);
+		itemPaymentDialogOpen.value = false;
+		itemPaymentPreview.value = null;
+		toastStore.show({
+			title: __("Payment taken and Sales Order updated"),
+			color: "success",
+		});
+		await loadOrders();
+	} catch (error: any) {
+		console.error("Failed to take payment for Sales Order changes", error);
+		// Server rolls back on failure, so the items are not saved either.
+		itemPaymentError.value = getErrorMessage(error, __("Unable to take payment"));
+	} finally {
+		itemPaymentLoading.value = false;
+	}
+};
+
+const validateEditableItems = (): string => {
+	for (const item of editableItems.value) {
+		const label = item.item_name || item.item_code || __("Row");
+		if (!item.item_code || !item.uom) {
+			return __("Item {0}: item code and UOM are required.", [label]);
+		}
+		if (!Number.isFinite(Number(item.qty)) || Number(item.qty) <= 0) {
+			return __("Item {0}: Qty must be greater than 0.", [label]);
+		}
+		if (item.is_new && (!Number.isFinite(Number(item.rate)) || Number(item.rate) < 0)) {
+			return __("Item {0}: Rate cannot be negative.", [label]);
+		}
+	}
+	return "";
+};
+
 const saveOrder = async () => {
 	if (!selectedOrder.value || saveLoading.value || !isDirty.value) return;
 
+	if (isItemDirty.value) {
+		const itemError = validateEditableItems();
+		if (itemError) {
+			detailError.value = itemError;
+			return;
+		}
+	}
+
+	// An increase has to be paid for before the rows land. Ask the server what the
+	// order would total, rather than trusting a client-side sum: the figure the
+	// customer is charged must include tax exactly as the real save computes it.
+	if (isItemDirty.value) {
+		const preview = await previewItemChanges();
+		if (!preview) return;
+		if (Number(preview.amount_due || 0) > 0.001) {
+			itemPaymentPreview.value = preview;
+			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
+			itemPaymentError.value = "";
+			itemPaymentDialogOpen.value = true;
+			return;
+		}
+		// A reduction leaves the customer in credit. POS takes no refund, so make it
+		// visible rather than letting it disappear into the order total.
+		const credit = Number(preview.credit_after_change || 0);
+		creditNotice.value =
+			credit > 0.001
+				? __("Customer is now in credit by {0}. Arrange a refund outside POS.", [
+						formatCurrency(credit, selectedOrder.value?.currency),
+					])
+				: "";
+	} else {
+		creditNotice.value = "";
+	}
+
 	saveLoading.value = true;
 	detailError.value = "";
+	let itemsChanged = false;
 
 	try {
 		const pendingHeader = {
@@ -1062,14 +1483,7 @@ const saveOrder = async () => {
 				{
 					data: {
 						name: selectedOrder.value.name,
-						items: editableItems.value.map((item) => ({
-							docname: item.name,
-							item_code: item.item_code,
-							uom: item.uom || null,
-							description: item.description || null,
-							qty: Number(item.qty || 0),
-							conversion_factor: Number(item.conversion_factor || 1),
-						})),
+						items: buildItemPayload(),
 					},
 				},
 				{
@@ -1085,6 +1499,7 @@ const saveOrder = async () => {
 			form.customer_ref = pendingHeader.customer_ref;
 			form.prefered_earliest_delivery_date = String(pendingHeader.prefered_earliest_delivery_date || "");
 			form.posa_notes = pendingHeader.posa_notes;
+			itemsChanged = true;
 		}
 
 		if (isHeaderDirty.value) {
@@ -1110,6 +1525,11 @@ const saveOrder = async () => {
 			title: __("Sales Order updated"),
 			color: "success",
 		});
+		if (itemsChanged) {
+			// Item changes move grand_total and the outstanding balance, both of which
+			// the order list and the payment dialog read.
+			await loadOrders();
+		}
 	} catch (error: any) {
 		console.error("Failed to update managed Sales Order", error);
 		detailError.value = getErrorMessage(error, __("Unable to update the Sales Order"));
@@ -1404,8 +1824,14 @@ watch(
 .items-section__header {
 	display: flex;
 	justify-content: space-between;
-	align-items: baseline;
+	align-items: center;
 	gap: 12px;
+}
+
+.items-section__heading {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
 }
 
 .items-section__header h3 {
@@ -1482,6 +1908,39 @@ watch(
 .lock-pill--open {
 	background: color-mix(in srgb, var(--v-theme-success) 14%, transparent);
 	color: var(--v-theme-success);
+}
+
+.lock-pill--new {
+	background: color-mix(in srgb, var(--v-theme-primary) 16%, transparent);
+	color: var(--v-theme-primary);
+}
+
+.item-line-amount {
+	display: block;
+	margin-top: 4px;
+	font-size: 0.78rem;
+	color: var(--pos-text-muted);
+}
+
+.item-selector-drawer__header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--pos-border);
+}
+
+.item-selector-drawer__header h3 {
+	margin: 0;
+	font-size: 1rem;
+	color: var(--pos-text-primary);
+}
+
+/* The selector sizes itself to its container, so give it the remaining height. */
+.item-selector-drawer__body {
+	height: calc(100% - 57px);
+	overflow: hidden;
 }
 
 .items-empty-state {

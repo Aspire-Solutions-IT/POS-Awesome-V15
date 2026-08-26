@@ -67,6 +67,15 @@ describe("sw updater runtime safety", () => {
 		vi.useFakeTimers();
 	});
 
+	function stubWindowReload() {
+		const reload = vi.fn();
+		Object.defineProperty(window, "location", {
+			configurable: true,
+			value: { ...window.location, reload },
+		});
+		return reload;
+	}
+
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.doUnmock("pinia");
@@ -76,9 +85,11 @@ describe("sw updater runtime safety", () => {
 	async function loadUpdaterHarness({
 		registrationOverrides = {},
 		controllerResponses = [],
+		hasRegistration = true,
 	}: {
 		registrationOverrides?: Record<string, any>;
 		controllerResponses?: any[];
+		hasRegistration?: boolean;
 	} = {}) {
 		const updateStore: any = {
 			currentVersion: "build-1000",
@@ -140,7 +151,9 @@ describe("sw updater runtime safety", () => {
 		};
 		serviceWorker.controller = controller;
 		serviceWorker.ready = Promise.resolve(registration);
-		serviceWorker.getRegistration = vi.fn().mockResolvedValue(registration);
+		serviceWorker.getRegistration = vi
+			.fn()
+			.mockResolvedValue(hasRegistration ? registration : undefined);
 
 		Object.defineProperty(navigator, "serviceWorker", {
 			configurable: true,
@@ -203,6 +216,38 @@ describe("sw updater runtime safety", () => {
 		await vi.runAllTimersAsync();
 
 		expect(registration.update).toHaveBeenCalledTimes(1);
+	});
+
+	it("reloads anyway when no service worker owns this origin", async () => {
+		const reload = stubWindowReload();
+		const { updateStore } = await loadUpdaterHarness({
+			hasRegistration: false,
+		});
+
+		await updateStore.reloadAction();
+
+		// Silently clearing the flag here used to reopen the prompt instead of
+		// applying anything, leaving "Reload Now" looking dead.
+		expect(reload).toHaveBeenCalledTimes(1);
+	});
+
+	it("reloads when a waiting worker never takes over", async () => {
+		const reload = stubWindowReload();
+		const waitingWorker = { postMessage: vi.fn() };
+		const { updateStore } = await loadUpdaterHarness({
+			registrationOverrides: { waiting: waitingWorker },
+		});
+
+		await updateStore.reloadAction();
+		expect(waitingWorker.postMessage).toHaveBeenCalledWith({
+			type: "SKIP_WAITING",
+		});
+		expect(reload).not.toHaveBeenCalled();
+
+		// No controllerchange ever arrives.
+		await vi.advanceTimersByTimeAsync(6000);
+
+		expect(reload).toHaveBeenCalledTimes(1);
 	});
 
 	it("ignores malformed unsolicited service worker version messages", async () => {

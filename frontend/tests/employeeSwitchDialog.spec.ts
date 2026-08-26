@@ -68,6 +68,10 @@ const VTextFieldStub = defineComponent({
 			type: String,
 			default: "",
 		},
+		readonly: {
+			type: Boolean,
+			default: false,
+		},
 	},
 	emits: ["update:modelValue", "click:append-inner"],
 	setup(props, { attrs, emit }) {
@@ -76,7 +80,16 @@ const VTextFieldStub = defineComponent({
 				h("input", {
 					value: props.modelValue,
 					type: props.type,
+					readonly: props.readonly,
+					autocomplete: attrs.autocomplete,
+					name: attrs.name,
+					"data-lpignore": attrs["data-lpignore"],
+					"data-1p-ignore": attrs["data-1p-ignore"],
+					"data-bwignore": attrs["data-bwignore"],
 					"data-test": attrs["data-test"],
+					onPointerdown: attrs.onPointerdown as any,
+					onKeydown: attrs.onKeydown as any,
+					onPaste: attrs.onPaste as any,
 					onInput: (event: Event) =>
 						emit("update:modelValue", (event.target as HTMLInputElement).value),
 				}),
@@ -155,6 +168,53 @@ describe("EmployeeSwitchDialog", () => {
 		});
 		expect(store.currentCashier?.user).toBe("backup@example.com");
 		expect(store.switchDialogOpen).toBe(false);
+	});
+
+	it("blocks password-manager autofill until the cashier interacts with the PIN field", async () => {
+		const store = useEmployeeStore();
+		store.setTerminalEmployees([
+			{ user: "cashier@example.com", full_name: "Main Cashier" },
+		]);
+		store.openEmployeeSwitch();
+
+		const wrapper = mount(EmployeeSwitchDialog, {
+			global: {
+				components: {
+					VDialog: VDialogStub,
+					VCard: BoxStub,
+					VCardTitle: BoxStub,
+					VCardText: BoxStub,
+					VCardActions: BoxStub,
+					VBtn: VBtnStub,
+					VIcon: BoxStub,
+					VAlert: BoxStub,
+					VTextField: VTextFieldStub,
+				},
+			},
+		});
+
+		const pinInput = wrapper.get('input[data-test="cashier-pin-input"]');
+		expect(pinInput.attributes("autocomplete")).toBe("new-password");
+		expect(pinInput.attributes("name")).toBe("posa-terminal-access-code");
+		expect(pinInput.attributes("data-lpignore")).toBe("true");
+		expect(pinInput.attributes("data-1p-ignore")).toBeDefined();
+		expect(pinInput.attributes("data-bwignore")).toBeDefined();
+		expect(pinInput.attributes("readonly")).toBeDefined();
+
+		await pinInput.trigger("pointerdown");
+		expect(pinInput.attributes("readonly")).toBeUndefined();
+
+		store.lockTerminal();
+		await wrapper.vm.$nextTick();
+		await wrapper.get('[data-test="unlock-employee-option-cashier@example.com"]').trigger("click");
+		const unlockPinInput = wrapper.get('input[data-test="cashier-unlock-pin-input"]');
+		expect(unlockPinInput.attributes("autocomplete")).toBe("new-password");
+		expect(unlockPinInput.attributes("name")).toBe("posa-terminal-unlock-code");
+		expect(unlockPinInput.attributes("data-lpignore")).toBe("true");
+		expect(unlockPinInput.attributes("readonly")).toBeDefined();
+
+		await unlockPinInput.trigger("pointerdown");
+		expect(unlockPinInput.attributes("readonly")).toBeUndefined();
 	});
 
 	it("shows an actionable error state and allows revealing the PIN", async () => {

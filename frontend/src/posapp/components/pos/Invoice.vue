@@ -246,8 +246,9 @@
 			:discount_percentage_offer_name="discount_percentage_offer_name"
 			:isNumber="isNumber"
 			:return_discount_meta="return_discount_meta"
-			@update:additional_discount="(val) => (additional_discount = val)"
-			@update:additional_discount_percentage="(val) => (additional_discount_percentage = val)"
+			@update:additional_discount="set_additional_discount_input"
+			@update:additional_discount_percentage="set_additional_discount_percentage_input"
+			@commit_discount_amount="commit_discount_amount"
 			@update_discount_umount="update_discount_umount"
 			@save-and-clear="save_and_clear_invoice"
 			@load-drafts="get_draft_invoices"
@@ -480,6 +481,14 @@ export default {
 				this.invoiceStore.setAdditionalDiscountPercentage(val);
 			},
 		},
+		discount_input_mode: {
+			get() {
+				return this.invoiceStore.discountInputMode;
+			},
+			set(val) {
+				this.invoiceStore.setDiscountInputMode(val);
+			},
+		},
 		posting_date: {
 			get() {
 				return this.invoiceStore.postingDate;
@@ -525,6 +534,19 @@ export default {
 		},
 		...shortcutMethods,
 		...invoiceItemMethods,
+
+		// The additional-discount amount and % boxes are both editable and mirror each
+		// other; whichever one is typed into becomes the authoritative value on save.
+		set_additional_discount_input(val) {
+			this.additional_discount = val;
+			this.sync_discount_percentage_from_amount();
+		},
+
+		set_additional_discount_percentage_input(val) {
+			this.additional_discount_percentage = val;
+			this.sync_discount_amount_from_percentage();
+		},
+
 		focusCustomerSearchField() {
 			const customerSection = this.$refs.customerSection;
 			if (customerSection && typeof customerSection.focusCustomerSearch === "function") {
@@ -609,6 +631,7 @@ export default {
 			this.discount_amount = prorated;
 			this.additional_discount = prorated;
 			this.additional_discount_percentage = 0;
+			this.discount_input_mode = "amount";
 		},
 
 		async set_delivery_charges(options = {}) {
@@ -843,17 +866,20 @@ export default {
 						this.additional_discount_percentage =
 							data.return_doc.additional_discount_percentage || 0;
 					}
+					this.discount_input_mode = "percentage";
 					this.update_discount_umount();
 				} else {
 					const prorated = this.calcProratedReturnDiscount(data.return_doc);
 					this.discount_amount = prorated;
 					this.additional_discount = prorated;
 					this.additional_discount_percentage = 0;
+					this.discount_input_mode = "amount";
 				}
 			} else {
 				this.discount_amount = 0;
 				this.additional_discount = 0;
 				this.additional_discount_percentage = 0;
+				this.discount_input_mode = "amount";
 			}
 		},
 		handleSetNewLine(data) {

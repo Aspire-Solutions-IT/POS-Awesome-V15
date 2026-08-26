@@ -316,6 +316,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-1",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             customer_name="RFS Customer",
             status="On Hold",
@@ -387,6 +388,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-LOCK-1",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             customer_name="RFS Customer",
             status="To Deliver",
@@ -438,6 +440,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-LOCK-2",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             customer_name="RFS Customer",
             status="To Deliver",
@@ -489,6 +492,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-LOCK-3",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             customer_name="RFS Customer",
             status="To Deliver",
@@ -550,6 +554,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-2",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-002",
             customer_ref=None,
             prefered_earliest_delivery_date=None,
@@ -587,6 +592,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-ITEMS-1",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             customer_name="RFS Customer",
             status="To Deliver",
@@ -661,12 +667,270 @@ class TestSalesOrderSubmit(TestCase):
         self.assertIn("\"warehouse\": \"Main - TC\"", call_kwargs["trans_items"])
         self.assertIn("\"delivery_date\": \"2026-07-30\"", call_kwargs["trans_items"])
 
+    def _managed_items_order(self, name, items):
+        return SimpleNamespace(
+            doctype="Sales Order",
+            name=name,
+            docstatus=1,
+            rfs_order=1,
+            is_pos=1,
+            customer="RFS-001",
+            pos_profile="Main POS",
+            selling_price_list="Retail",
+            currency="GBP",
+            delivery_date="2026-07-30",
+            reload=MagicMock(),
+            items=items,
+        )
+
+    def _existing_managed_item(self):
+        return SimpleNamespace(
+            name="SOI-EDITABLE",
+            item_code="ITEM-1",
+            item_name="Item 1",
+            description="Desc 1",
+            warehouse="Main - TC",
+            uom="Nos",
+            qty=1,
+            picked_qty=0,
+            delivered_qty=0,
+            rate=100,
+            amount=100,
+            delivery_date="2026-07-30",
+            bom_no=None,
+            conversion_factor=1,
+        )
+
+    def test_update_managed_sales_order_items_keeps_client_rate_on_new_rows(self):
+        so_doc = self._managed_items_order("SO-MANAGED-ITEMS-NEW", [self._existing_managed_item()])
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-NEW",
+            "items": [
+                {
+                    "docname": "SOI-EDITABLE",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 1,
+                    "conversion_factor": 1,
+                    # Ignored: existing rows always keep their stored price.
+                    "rate": 5,
+                },
+                {
+                    "item_code": "ITEM-NEW",
+                    "uom": "Box",
+                    "description": "Brand new line",
+                    "bom_no": None,
+                    "qty": 3,
+                    "conversion_factor": 2,
+                    "rate": 42.5,
+                },
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-MANAGED-ITEMS-NEW"}
+        ), patch.object(
+            sales_orders, "_resolve_managed_sales_order_item_pricing"
+        ) as resolve_pricing, patch(
+            "customer_due_dates.api.update_child_qty_rate.update_child_qty_rate"
+        ) as update_items:
+            sales_orders.update_managed_sales_order_items(payload)
+
+        # A rate the user typed on a new row is used as-is, so no pricing lookup.
+        resolve_pricing.assert_not_called()
+        rows = json.loads(update_items.call_args.kwargs["trans_items"])
+        existing_row, new_row = rows
+
+        self.assertEqual(existing_row["docname"], "SOI-EDITABLE")
+        self.assertEqual(existing_row["rate"], 100.0)
+        self.assertIsNone(new_row["docname"])
+        self.assertEqual(new_row["item_code"], "ITEM-NEW")
+        self.assertEqual(new_row["rate"], 42.5)
+        self.assertEqual(new_row["qty"], 3.0)
+        # Left for set_order_defaults to resolve from the Item and the parent.
+        self.assertIsNone(new_row["warehouse"])
+        self.assertIsNone(new_row["delivery_date"])
+
+    def test_update_managed_sales_order_items_prices_new_rows_without_a_rate(self):
+        so_doc = self._managed_items_order("SO-MANAGED-ITEMS-PRICED", [self._existing_managed_item()])
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-PRICED",
+            "items": [
+                {
+                    "item_code": "ITEM-NEW",
+                    "uom": "Nos",
+                    "description": "Brand new line",
+                    "bom_no": None,
+                    "qty": 1,
+                    "conversion_factor": 1,
+                },
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-MANAGED-ITEMS-PRICED"}
+        ), patch.object(
+            sales_orders, "_resolve_managed_sales_order_item_pricing", return_value={"rate": 17.5}
+        ) as resolve_pricing, patch(
+            "customer_due_dates.api.update_child_qty_rate.update_child_qty_rate"
+        ) as update_items:
+            sales_orders.update_managed_sales_order_items(payload)
+
+        resolve_pricing.assert_called_once_with(so_doc, "ITEM-NEW", "Nos")
+        rows = json.loads(update_items.call_args.kwargs["trans_items"])
+        self.assertEqual(rows[0]["rate"], 17.5)
+
+    def test_update_managed_sales_order_items_rejects_unknown_docname(self):
+        so_doc = self._managed_items_order("SO-MANAGED-ITEMS-STALE", [self._existing_managed_item()])
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-STALE",
+            "items": [
+                {
+                    "docname": "SOI-GONE",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 1,
+                    "conversion_factor": 1,
+                },
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc):
+            with self.assertRaisesRegex(RuntimeError, "no longer exists"):
+                sales_orders.update_managed_sales_order_items(payload)
+
+    def test_update_managed_sales_order_items_allows_untouched_locked_rows(self):
+        """A picked row that is sent back unchanged must not block the save.
+
+        The incoming row is enriched with rate/warehouse/delivery_date before the
+        mutation check runs, so it is only comparable against the stored row on the
+        fields the client can actually influence.
+        """
+        picked_row = self._existing_managed_item()
+        picked_row.name = "SOI-PICKED"
+        picked_row.picked_qty = 1
+
+        editable_row = self._existing_managed_item()
+        editable_row.name = "SOI-OPEN"
+
+        so_doc = self._managed_items_order("SO-MANAGED-ITEMS-MIXED", [picked_row, editable_row])
+
+        payload = {
+            "name": "SO-MANAGED-ITEMS-MIXED",
+            "items": [
+                {
+                    "docname": "SOI-PICKED",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 1,
+                    "conversion_factor": 1,
+                },
+                {
+                    "docname": "SOI-OPEN",
+                    "item_code": "ITEM-1",
+                    "uom": "Nos",
+                    "description": "Desc 1",
+                    "bom_no": None,
+                    "qty": 4,
+                    "conversion_factor": 1,
+                },
+            ],
+        }
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-MANAGED-ITEMS-MIXED"}
+        ), patch(
+            "customer_due_dates.api.update_child_qty_rate.update_child_qty_rate"
+        ) as update_items:
+            sales_orders.update_managed_sales_order_items(payload)
+
+        rows = json.loads(update_items.call_args.kwargs["trans_items"])
+        self.assertEqual([row["qty"] for row in rows], [1.0, 4.0])
+
+    def test_queue_receipt_email_flags_a_revision(self):
+        doc = SimpleNamespace(name="SO-RECEIPT-1", pos_profile="Main POS")
+        captured = {}
+
+        def fake_enqueue(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        with patch.object(
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt", ["ops@x.com"])
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="buyer@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=False
+        ), patch.object(
+            sales_orders.frappe, "enqueue", fake_enqueue
+        ):
+            sales_orders._queue_receipt_email(doc, revised=True)
+
+        kwargs = captured["kwargs"]
+        self.assertTrue(kwargs["revised"])
+        self.assertEqual(kwargs["sales_order_name"], "SO-RECEIPT-1")
+        self.assertEqual(kwargs["recipient"], "buyer@example.com")
+        # Must not email a receipt for a change that gets rolled back.
+        self.assertTrue(kwargs["enqueue_after_commit"])
+
+    def test_queue_receipt_email_defaults_to_original_wording(self):
+        doc = SimpleNamespace(name="SO-RECEIPT-2", pos_profile="Main POS")
+        captured = {}
+
+        with patch.object(
+            sales_orders, "_should_auto_email_receipt", return_value=(True, "POS Receipt", [])
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="buyer@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=False
+        ), patch.object(
+            sales_orders.frappe, "enqueue", lambda *a, **k: captured.update(k)
+        ):
+            sales_orders.on_submit(doc, "on_submit")
+
+        self.assertFalse(captured["revised"])
+
+    def test_receipt_job_subject_differs_for_a_revision(self):
+        so_doc = SimpleNamespace(name="SO-RECEIPT-3", doctype="Sales Order")
+        sent = []
+
+        def run(revised):
+            sent.clear()
+            with patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+                sales_orders, "_build_receipt_attachment", return_value={"fcontent": b"pdf"}
+            ), patch.object(
+                sales_orders, "_get_receipt_sender", return_value="pos@example.com"
+            ), patch.object(
+                sales_orders.frappe, "sendmail", lambda **kwargs: sent.append(kwargs)
+            ):
+                sales_orders._send_receipt_email_job(
+                    "SO-RECEIPT-3", "buyer@example.com", print_format="POS Receipt", revised=revised
+                )
+            return sent[0]
+
+        revised = run(True)
+        original = run(False)
+        self.assertIn("Updated Receipt", revised["subject"])
+        self.assertIn("revised receipt", revised["message"])
+        self.assertNotIn("Updated Receipt", original["subject"])
+        self.assertIn("SO-RECEIPT-3", revised["subject"])
+
     def test_update_managed_sales_order_items_blocks_picked_rows(self):
         so_doc = SimpleNamespace(
             doctype="Sales Order",
             name="SO-MANAGED-ITEMS-2",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             items=[
                 SimpleNamespace(
@@ -711,6 +975,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-ITEMS-3",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             items=[
                 SimpleNamespace(
@@ -755,6 +1020,7 @@ class TestSalesOrderSubmit(TestCase):
             name="SO-MANAGED-ITEMS-4",
             docstatus=1,
             rfs_order=1,
+            is_pos=1,
             customer="RFS-001",
             items=[
                 SimpleNamespace(

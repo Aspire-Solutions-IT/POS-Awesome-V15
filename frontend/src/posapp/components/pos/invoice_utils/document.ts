@@ -300,6 +300,17 @@ export function get_invoice_doc(context: any) {
 		discountPercentage = -Math.abs(discountPercentage);
 	}
 
+	// The amount and % boxes mirror each other, but only the box the operator actually
+	// typed into is sent as authoritative. ERPNext recalculates `discount_amount` from a
+	// non-zero `additional_discount_percentage` server-side (against `apply_discount_on`),
+	// so shipping a derived percentage would override the amount that was entered.
+	const percentageIsAuthoritative = context.discount_input_mode
+		? context.discount_input_mode === "percentage"
+		: Boolean(context.pos_profile?.posa_use_percentage_discount);
+	if (!percentageIsAuthoritative) {
+		discountPercentage = 0;
+	}
+
 	doc.additional_discount_percentage = discountPercentage;
 
 	// Calculate grand total with correct sign for returns

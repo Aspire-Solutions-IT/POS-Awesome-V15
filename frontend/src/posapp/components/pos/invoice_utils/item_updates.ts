@@ -196,6 +196,11 @@ export async function _performItemDetailUpdate(
 					: null,
 				item: {
 					item_code: item.item_code,
+					// ERPNext's get_item_details is called with overwrite_warehouse=False,
+					// so it only keeps the row's warehouse when the args carry one. Without
+					// this the response comes back with the profile/item default warehouse
+					// and clobbers the operator's choice for NS- items.
+					warehouse: item.warehouse || context.pos_profile.warehouse,
 					customer: context.customer,
 					doctype: currentDoc.doctype,
 					name: currentDoc.name || `New ${currentDoc.doctype} 1`,
@@ -255,10 +260,13 @@ export function _applyItemDetailPayload(
 	const { forceUpdate = false } = options;
 	const itemCode = String(item.item_code || "").trim().toLowerCase();
 	const isNsItem = itemCode.startsWith("ns");
+	// `_warehouse_selected_manually` only survives while the row object stays alive:
+	// `load_invoice` replaces `context.items` with the server's rows, which carry no
+	// underscore-prefixed flags, so a reopened draft/held order would lose the flag and
+	// snap back to the default warehouse on the next detail refresh. For NS- items an
+	// existing warehouse on the row is therefore authoritative on its own.
 	const preserveManualWarehouse =
-		isNsItem &&
-		item?._warehouse_selected_manually === true &&
-		String(item.warehouse || "").trim();
+		isNsItem && Boolean(String(item.warehouse || "").trim());
 	const selectedWarehouse = preserveManualWarehouse ? String(item.warehouse || "").trim() : "";
 	const preserveRateOnWarehouseChange = item?._preserve_rate_on_warehouse_change === true;
 	const currentDoc = context.get_invoice_doc

@@ -68,6 +68,15 @@
 					hide-details="auto"
 					:label="__('Cashier PIN')"
 					:data-test="'cashier-pin-input'"
+					autocomplete="new-password"
+					name="posa-terminal-access-code"
+					data-lpignore="true"
+					data-1p-ignore
+					data-bwignore
+					:readonly="!pinInputArmed"
+					@pointerdown="armPinInput"
+					@keydown="armPinInput"
+					@paste="armPinInput"
 					@click:append-inner="showPin = !showPin"
 					@keyup.enter="submitSwitch"
 				/>
@@ -116,6 +125,7 @@
 						v-for="employee in terminalEmployees"
 						:key="`unlock-${employee.user}`"
 						type="button"
+						:data-test="`unlock-employee-option-${employee.user}`"
 						class="employee-switch-dialog__option"
 						:class="{ 'employee-switch-dialog__option--active': selectedUser === employee.user }"
 						@click="openUnlockPinPrompt(employee.user)"
@@ -166,7 +176,17 @@
 					density="comfortable"
 					hide-details="auto"
 					:label="__('Cashier PIN')"
+					data-test="cashier-unlock-pin-input"
+					autocomplete="new-password"
+					name="posa-terminal-unlock-code"
+					data-lpignore="true"
+					data-1p-ignore
+					data-bwignore
+					:readonly="!pinInputArmed"
 					autofocus
+					@pointerdown="armPinInput"
+					@keydown="armPinInput"
+					@paste="armPinInput"
 					@click:append-inner="showPin = !showPin"
 					@keyup.enter="submitUnlock"
 				/>
@@ -207,6 +227,7 @@ const pinError = ref("");
 const isSubmitting = ref(false);
 const showPin = ref(false);
 const pinPromptOpen = ref(false);
+const pinInputArmed = ref(false);
 const posProfileName = computed(
 	() => uiStore.posProfile?.name || window.frappe?.boot?.pos_profile?.name || "",
 );
@@ -219,6 +240,7 @@ watch(
 			cashierPin.value = "";
 			pinError.value = "";
 			showPin.value = false;
+			pinInputArmed.value = false;
 		}
 		if (!lockOpen) {
 			pinPromptOpen.value = false;
@@ -240,13 +262,23 @@ const normalizeErrorMessage = (error) =>
 
 const selectEmployee = (user) => {
 	selectedUser.value = user;
+	cashierPin.value = "";
 	pinError.value = "";
+	pinInputArmed.value = false;
+};
+
+const armPinInput = (event) => {
+	pinInputArmed.value = true;
+	if (event?.currentTarget) {
+		event.currentTarget.readOnly = false;
+	}
 };
 
 const openUnlockPinPrompt = (user) => {
 	selectEmployee(user);
 	cashierPin.value = "";
 	showPin.value = false;
+	pinInputArmed.value = false;
 	pinPromptOpen.value = true;
 };
 
@@ -254,6 +286,7 @@ const closeUnlockPinPrompt = () => {
 	pinPromptOpen.value = false;
 	cashierPin.value = "";
 	pinError.value = "";
+	pinInputArmed.value = false;
 };
 
 const handleSwitchDialog = (value) => {

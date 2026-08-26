@@ -109,42 +109,35 @@
 				</div>
 				<div class="mobile-sale-dock__field">
 					<v-text-field
-						v-if="!posProfile?.posa_use_percentage_discount"
 						ref="additionalDiscountField"
 						v-model="additionalDiscountDisplay"
 						@update:model-value="handleAdditionalDiscountUpdate"
 						@focus="handleAdditionalDiscountFocus"
 						@blur="handleAdditionalDiscountBlur"
-						:label="__('Additional Discount')"
+						@change="commitAdditionalDiscount"
+						:label="__('Discount')"
 						prepend-inner-icon="mdi-cash-minus"
 						variant="solo"
 						density="compact"
 						color="warning"
 						:prefix="getCurrencySymbol(posProfile?.currency)"
-						:disabled="
-							!posProfile?.posa_allow_user_to_edit_additional_discount ||
-							!!discountPercentageOfferName
-						"
+						:disabled="discountFieldsDisabled"
 						hide-details
 					/>
 					<v-text-field
-						v-else
-						ref="additionalDiscountField"
+						ref="additionalDiscountPercentageField"
 						v-model="additionalDiscountPercentageDisplay"
 						@update:model-value="handleAdditionalDiscountPercentageUpdate"
 						@focus="handleAdditionalDiscountPercentageFocus"
 						@blur="handleAdditionalDiscountPercentageBlur"
 						@change="commitAdditionalDiscountPercentage"
-						:label="__('Additional Discount %')"
+						:label="__('Discount %')"
 						suffix="%"
 						prepend-inner-icon="mdi-percent"
 						variant="solo"
 						density="compact"
 						color="warning"
-						:disabled="
-							!posProfile?.posa_allow_user_to_edit_additional_discount ||
-							!!discountPercentageOfferName
-						"
+						:disabled="discountFieldsDisabled"
 						hide-details
 					/>
 				</div>
@@ -236,6 +229,7 @@ export default {
 		const dialog = ref(false);
 		const invoicePanel = ref(null);
 		const additionalDiscountField = ref(null);
+		const additionalDiscountPercentageField = ref(null);
 		const mobileDock = ref(null);
 		const responsive = useResponsive();
 		const rtl = useRtl();
@@ -310,6 +304,11 @@ export default {
 
 		const discountPercentageOfferName = computed(
 			() => invoicePanel.value?.discount_percentage_offer_name || null,
+		);
+		const discountFieldsDisabled = computed(
+			() =>
+				!posProfile.value?.posa_allow_user_to_edit_additional_discount ||
+				!!discountPercentageOfferName.value,
 		);
 		const normalizeDiscountDisplay = (value) => {
 			if (value === 0 || value === "0") {
@@ -419,15 +418,23 @@ export default {
 		});
 		const handleAdditionalDiscountUpdate = (value) => {
 			invoiceStore.setAdditionalDiscount(value);
+			// Mirror the typed amount into the % box.
+			invoicePanel.value?.sync_discount_percentage_from_amount?.();
 		};
 		const handleAdditionalDiscountFocus = () => {
 			isEditingAdditionalDiscount.value = true;
 		};
+		const commitAdditionalDiscount = () => {
+			invoicePanel.value?.commit_discount_amount?.();
+		};
 		const handleAdditionalDiscountBlur = () => {
 			isEditingAdditionalDiscount.value = false;
+			commitAdditionalDiscount();
 		};
 		const handleAdditionalDiscountPercentageUpdate = (value) => {
 			invoiceStore.setAdditionalDiscountPercentage(value);
+			// Mirror the typed percentage into the amount box.
+			invoicePanel.value?.sync_discount_amount_from_percentage?.();
 		};
 		const handleAdditionalDiscountPercentageFocus = () => {
 			isEditingAdditionalDiscountPercentage.value = true;
@@ -440,7 +447,11 @@ export default {
 			commitAdditionalDiscountPercentage();
 		};
 		const focusAdditionalDiscountField = () => {
-			const field = additionalDiscountField.value;
+			// Both boxes are always available; the shortcut lands on the one the profile
+			// treats as the primary way of entering a discount.
+			const field = posProfile.value?.posa_use_percentage_discount
+				? additionalDiscountPercentageField.value
+				: additionalDiscountField.value;
 			field?.focus?.();
 			field?.$el?.querySelector?.("input")?.focus?.();
 		};
@@ -551,6 +562,7 @@ export default {
 			cartMetaLabel,
 			posProfile,
 			additionalDiscountField,
+			additionalDiscountPercentageField,
 			additionalDiscountDisplay,
 			additionalDiscountPercentageDisplay,
 			activeView,
@@ -578,6 +590,8 @@ export default {
 			handlePaymentDialogUpdate,
 			handlePaymentDialogAfterLeave,
 			discountPercentageOfferName,
+			discountFieldsDisabled,
+			commitAdditionalDiscount,
 			getCurrencySymbol,
 			invoicePanel,
 			eventBus,
@@ -728,7 +742,7 @@ export default {
 
 .mobile-sale-dock {
 	display: grid;
-	grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+	grid-template-columns: minmax(0, 1.2fr) minmax(240px, 0.9fr);
 	gap: 12px;
 	align-items: center;
 }
@@ -760,6 +774,12 @@ export default {
 	gap: 6px 12px;
 	font-size: 0.82rem;
 	color: var(--pos-text-secondary);
+}
+
+.mobile-sale-dock__field {
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+	gap: 8px;
 }
 
 .mobile-sale-dock__field :deep(.v-field) {

@@ -74,12 +74,15 @@ from .stored_value import (
 )
 from .sales_orders import (
     get_managed_sales_order,
+    get_managed_sales_order_new_item_details,
     get_managed_sales_orders,
+    preview_managed_sales_order_items,
     get_unique_order_ref,
     search_orders,
     submit_sales_order,
     update_managed_sales_order,
     update_managed_sales_order_items,
+    update_managed_sales_order_items_with_payment,
     update_sales_order,
 )
 from .quotations import (

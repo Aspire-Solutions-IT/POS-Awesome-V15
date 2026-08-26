@@ -365,10 +365,15 @@ export async function load_invoice(
 			context.currency_precision,
 		);
 		context.discount_amount = context.additional_discount;
+		context.discount_input_mode = "percentage";
 	} else {
 		context.discount_amount = docDiscountAmount;
 		context.additional_discount_percentage = docDiscountPercentage;
 		context.additional_discount = docDiscountAmount;
+		// A stored percentage stays authoritative so the reloaded invoice round-trips.
+		context.discount_input_mode = docDiscountPercentage
+			? "percentage"
+			: "amount";
 	}
 
 	if (context.items.length > 0) {

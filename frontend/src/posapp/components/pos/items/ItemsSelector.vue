@@ -384,15 +384,19 @@ const isReturnInvoice = computed(() => {
 	return !!invoiceStore.invoiceDoc?.is_return;
 });
 
+// Contexts that stage items onto a document instead of selling them immediately, so
+// availability must not block the pick.
+const NON_SELLING_CONTEXTS = ["purchase", "sales-order"];
+
 const blockSaleBeyondAvailableQty = computed(() => {
-	if (props.context === "purchase" || invoiceTypeDefersStockValidation.value) {
+	if (NON_SELLING_CONTEXTS.includes(props.context) || invoiceTypeDefersStockValidation.value) {
 		return false;
 	}
 	return parseBooleanSetting(pos_profile.value?.posa_block_sale_beyond_available_qty);
 });
 
 const deferStockValidationToPayment = computed(
-	() => props.context === "purchase" || invoiceTypeDefersStockValidation.value,
+	() => NON_SELLING_CONTEXTS.includes(props.context) || invoiceTypeDefersStockValidation.value,
 );
 const forceCustomerPriceList = computed(() =>
 	parseBooleanSetting(pos_profile.value?.posa_force_price_from_customer_price_list),
