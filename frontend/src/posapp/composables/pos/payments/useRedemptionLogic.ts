@@ -27,6 +27,13 @@ export function useRedemptionLogic(options: RedemptionLogicOptions) {
 	const loyalty_amount = ref(0);
 	const redeemed_customer_credit = ref(0);
 	const customer_credit_dict = ref<any[]>([]);
+	/**
+	 * Credit the customer holds, looked up without committing to spend it.
+	 * Deliberately NOT customer_credit_dict: writing to that fires the watcher that
+	 * sets redeemed_customer_credit, which would quietly reduce what the till
+	 * collects before anyone has agreed to use the credit.
+	 */
+	const available_credit_preview = ref(0);
 	const available_customer_credit = computed(() => {
 		return customer_credit_dict.value.reduce(
 			(total, row) => total + normalizeFloat(row?.total_credit || 0),
@@ -199,6 +206,43 @@ export function useRedemptionLogic(options: RedemptionLogicOptions) {
 		normalizeCustomerCreditAllocations();
 	});
 
+	/**
+	 * Look up the customer's credit so the pay screen can offer it.
+	 * Read only: it never touches the redemption state.
+	 */
+	const probe_available_credit = async () => {
+		available_credit_preview.value = 0;
+
+		const customer = unref(invoiceDoc)?.customer;
+		const company = unref(posProfile)?.company;
+		if (!customer || !company) return 0;
+
+		const total = (rows: any[]) =>
+			(Array.isArray(rows) ? rows : []).reduce(
+				(sum: number, row: any) => sum + normalizeFloat(row?.total_credit || 0),
+				0,
+			);
+
+		if (isOffline()) {
+			const cached = getCachedStoredValueSnapshot(customer, company);
+			available_credit_preview.value = total(cached?.sources as any[]);
+			return available_credit_preview.value;
+		}
+
+		try {
+			const r: any = await frappe.call(
+				"posawesome.posawesome.api.payments.get_available_credit",
+				{ customer, company },
+			);
+			available_credit_preview.value = total(r?.message);
+		} catch (error) {
+			// Advisory only: never block taking payment because the lookup failed.
+			console.warn("Failed to look up customer credit", error);
+			available_credit_preview.value = 0;
+		}
+		return available_credit_preview.value;
+	};
+
 	// Kept for backward compatibility with previous interface.
 	const get_loyalty_points = () => {
 		return unref(available_points_amount);
@@ -209,6 +253,8 @@ export function useRedemptionLogic(options: RedemptionLogicOptions) {
 		redeemed_customer_credit,
 		customer_credit_dict,
 		available_customer_credit,
+		available_credit_preview,
+		probe_available_credit,
 		available_points_amount,
 		get_available_credit,
 		get_loyalty_points,

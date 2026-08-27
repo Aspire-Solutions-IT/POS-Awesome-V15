@@ -42,6 +42,34 @@ import SalesOrderManagementView from "../src/posapp/components/pos/shell/SalesOr
 import api from "../src/posapp/services/api";
 import { useUIStore } from "../src/posapp/stores/uiStore";
 
+/** Renders its slot only when open, like a real v-dialog. */
+const VDialogStub = defineComponent({
+	props: { modelValue: { type: Boolean, default: false } },
+	setup(props, { slots }) {
+		return () => (props.modelValue ? h("div", {}, slots.default?.()) : null);
+	},
+});
+
+const VCheckboxStub = defineComponent({
+	props: {
+		modelValue: { type: Boolean, default: false },
+		label: { type: String, default: "" },
+	},
+	emits: ["update:modelValue"],
+	setup(props, { emit }) {
+		return () =>
+			h("label", {}, [
+				h("input", {
+					type: "checkbox",
+					checked: props.modelValue,
+					onChange: (event: Event) =>
+						emit("update:modelValue", (event.target as HTMLInputElement).checked),
+				}),
+				props.label,
+			]);
+	},
+});
+
 const BoxStub = defineComponent({
 	setup(_, { slots }) {
 		return () => h("div", {}, slots.default?.());
@@ -209,6 +237,15 @@ const increasePreview = {
 	difference: 55,
 	amount_due: 55,
 	customer_credit: { unallocated_payments: 40, stored_value: 0, total: 40 },
+	credit_applicable: 40,
+};
+
+/** Customer holds more than the increase, so credit covers the whole thing. */
+const fullyCoveredPreview = {
+	...increasePreview,
+	amount_due: 30,
+	customer_credit: { unallocated_payments: 250, stored_value: 0, total: 250 },
+	credit_applicable: 30,
 };
 
 /** Mock the read calls the page makes on mount, plus anything the test adds. */
@@ -247,6 +284,9 @@ describe("SalesOrderManagementView", () => {
 			// A mode of payment must exist or the payment dialog cannot be confirmed.
 			payments: [{ mode_of_payment: "Cash" }],
 		} as any);
+		// clearAllMocks wipes calls but not implementations, so without this a test
+		// inherits whatever the previous one stubbed.
+		mockApi();
 	});
 
 	const mountView = () =>
@@ -268,7 +308,8 @@ describe("SalesOrderManagementView", () => {
 					VTextField: VTextFieldStub,
 					VTextarea: VTextareaStub,
 					VTable: BoxStub,
-					VDialog: BoxStub,
+					VDialog: VDialogStub,
+					VCheckbox: VCheckboxStub,
 					VSelect: BoxStub,
 					VueDatePicker: VueDatePickerStub,
 					VNavigationDrawer: BoxStub,
@@ -490,9 +531,72 @@ describe("SalesOrderManagementView", () => {
 		);
 		expect(saved).toBeFalsy();
 		expect(wrapper.text()).toContain("Payment Required");
-		expect(wrapper.text()).toContain("Amount Due Now");
-		// advance_paid cannot see money sitting on the customer's account.
-		expect(wrapper.text()).toContain("Customer already holds");
+		expect(wrapper.text()).toContain("To Take Now");
+		// advance_paid cannot see money on the customer's account, so it is offered here.
+		expect(wrapper.text()).toContain("of the customer");
+		expect(wrapper.text()).toContain("credit");
+	});
+
+	it("offers the customer's credit but does not apply it unasked", async () => {
+		mockApi((method) => {
+			if (method.endsWith("preview_managed_sales_order_items")) return increasePreview;
+			if (method.endsWith("update_managed_sales_order_items_with_payment")) {
+				return { sales_order: baseDetail, payment_entry: "PE-1", amount_paid: 55, credit_applied: 0 };
+			}
+			return undefined;
+		});
+
+		const wrapper = mountView();
+		await flushPromises();
+		await addItemThroughSelector(wrapper);
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+
+		expect(wrapper.text()).toContain("credit");
+		const confirm = wrapper
+			.findAll("button")
+			.find((b: any) => b.text().trim() === "Take Payment and Save");
+		await confirm!.trigger("click");
+		await flushPromises();
+
+		const call = (api.call as any).mock.calls.find((c: any[]) =>
+			c[0].endsWith("update_managed_sales_order_items_with_payment"),
+		);
+		// Unticked: the customer's money must not be spent without being chosen.
+		expect(call[1].data.payment.use_credit).toBe(0);
+	});
+
+	it("sends the credit flag once the cashier ticks it", async () => {
+		mockApi((method) => {
+			if (method.endsWith("preview_managed_sales_order_items")) return fullyCoveredPreview;
+			if (method.endsWith("update_managed_sales_order_items_with_payment")) {
+				return { sales_order: baseDetail, payment_entry: null, amount_paid: 0, credit_applied: 30 };
+			}
+			return undefined;
+		});
+
+		const wrapper = mountView();
+		await flushPromises();
+		await addItemThroughSelector(wrapper);
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+
+		const checkbox = wrapper.find('input[type="checkbox"]');
+		expect(checkbox.exists()).toBe(true);
+		await checkbox.setValue(true);
+
+		// Credit covers it all, so the till takes nothing and the wording changes.
+		const confirm = wrapper
+			.findAll("button")
+			.find((b: any) => b.text().trim() === "Apply Credit and Save");
+		expect(confirm).toBeTruthy();
+		await confirm!.trigger("click");
+		await flushPromises();
+
+		const call = (api.call as any).mock.calls.find((c: any[]) =>
+			c[0].endsWith("update_managed_sales_order_items_with_payment"),
+		);
+		expect(call[1].data.payment.use_credit).toBe(1);
 	});
 
 	it("saves nothing when the payment is cancelled", async () => {
@@ -556,6 +660,39 @@ describe("SalesOrderManagementView", () => {
 			(call: any[]) => call[0].endsWith("update_managed_sales_order_items"),
 		);
 		expect(plain).toHaveLength(0);
+	});
+
+	it("reports surplus that could not be moved automatically", async () => {
+		mockApi((method) => {
+			if (method.endsWith("get_managed_sales_order")) {
+				return {
+					...baseDetail,
+					surplus: {
+						amount: 739.99,
+						reason:
+							"This surplus is not linked to a payment on this order and needs manual reconciliation.",
+					},
+				};
+			}
+			return undefined;
+		});
+
+		const wrapper = mountView();
+		await flushPromises();
+
+		expect(wrapper.text()).toContain("could not be moved automatically");
+		expect(wrapper.text()).toContain("needs manual reconciliation");
+		// Settling is automatic now - there is nothing for the cashier to press.
+		const release = wrapper
+			.findAll("button")
+			.find((b: any) => b.text().trim() === "Release to account");
+		expect(release).toBeFalsy();
+	});
+
+	it("says nothing about surplus on an ordinary order", async () => {
+		const wrapper = mountView();
+		await flushPromises();
+		expect(wrapper.text()).not.toContain("could not be moved automatically");
 	});
 
 	it("locks every control once the order is fully picked", async () => {

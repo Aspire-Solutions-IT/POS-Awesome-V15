@@ -18,6 +18,9 @@ from posawesome.posawesome.api.payment_entry import create_payment_entry
 
 _ORDER_REF_ALPHABET = string.ascii_uppercase + string.digits
 MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS = {"13682"}
+# Surplus below this is rounding noise from tax and discount arithmetic, not money
+# anyone wants to move. Staff should not be prompted about a few pence.
+MANAGED_SALES_ORDER_MIN_SURPLUS = 1.0
 MANAGED_SALES_ORDER_UPDATE_FIELDS = {
     "customer_ref",
     "prefered_earliest_delivery_date",
@@ -870,6 +873,7 @@ def _serialize_managed_sales_order(doc):
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
         "stream_pick_lists": stream_pick_lists,
         "order_level_lock": _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists),
+        "surplus": _get_managed_sales_order_surplus(doc),
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "items": items,
@@ -1019,6 +1023,11 @@ def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items):
         parent_doctype_name=sales_order_name,
         child_docname="items",
     )
+
+    # A reduction can leave money stranded on the order. Settle it here so the order
+    # always ends up holding exactly its own value, whichever route made the change.
+    doc.reload()
+    _settle_managed_sales_order_surplus(doc)
 
 
 def _prepare_managed_sales_order_item_rows(doc, incoming_items):
@@ -1176,14 +1185,101 @@ def _managed_sales_order_projected_grand_total(doc, normalized_items):
     return flt(getattr(preview, "grand_total", 0))
 
 
+def _get_managed_sales_order_credit_payments(doc):
+    """Payments holding unallocated money for this customer, oldest first.
+
+    Oldest first so the longest-standing credit clears before newer money.
+    """
+    customer = cstr(getattr(doc, "customer", "") or "").strip()
+    company = cstr(getattr(doc, "company", "") or "").strip()
+    if not customer or not company:
+        return []
+
+    return frappe.get_all(
+        "Payment Entry",
+        filters={
+            "docstatus": 1,
+            "payment_type": "Receive",
+            "party_type": "Customer",
+            "party": customer,
+            "company": company,
+            "unallocated_amount": [">", 0],
+        },
+        fields=["name", "unallocated_amount"],
+        order_by="posting_date asc, creation asc",
+    )
+
+
+def _apply_managed_sales_order_credit(doc, max_amount):
+    """Move on-account credit onto this order, up to what it still needs.
+
+    The mirror of settling: settling shrinks an allocation and appends a positive
+    advance ledger entry; this grows one and appends a negative entry, so
+    advance_paid rises and unallocated_amount falls. Nothing is posted to the general
+    ledger - the money was already the customer's and already in the receivable, this
+    only records which order it is earmarked against.
+
+    Returns the amount applied.
+    """
+    max_amount = flt(max_amount)
+    if max_amount < 0.01:
+        return 0.0
+
+    remaining = max_amount
+    applied = 0.0
+    for row in _get_managed_sales_order_credit_payments(doc):
+        if remaining < 0.01:
+            break
+        take = min(flt(row.unallocated_amount), remaining)
+        if take < 0.01:
+            continue
+
+        payment_entry = frappe.get_doc("Payment Entry", row.name)
+        payment_entry.append(
+            "references",
+            {
+                "reference_doctype": "Sales Order",
+                "reference_name": doc.name,
+                "allocated_amount": take,
+            },
+        )
+        payment_entry.flags.ignore_validate_update_after_submit = True
+        payment_entry.set_amounts()
+        payment_entry.save(ignore_permissions=True)
+
+        frappe.get_doc(
+            {
+                "doctype": "Advance Payment Ledger Entry",
+                "company": payment_entry.company,
+                "voucher_type": "Payment Entry",
+                "voucher_no": payment_entry.name,
+                "against_voucher_type": "Sales Order",
+                "against_voucher_no": doc.name,
+                # Negative, matching an original allocation, so advance_paid rises.
+                "amount": -take,
+                "currency": payment_entry.paid_from_account_currency,
+                "event": "Adjustment",
+                "delinked": 0,
+            }
+        ).insert(ignore_permissions=True)
+
+        remaining = flt(remaining - take)
+        applied = flt(applied + take)
+
+    if applied:
+        doc.set_total_advance_paid()
+        doc.reload()
+    return applied
+
+
 def _get_managed_sales_order_customer_credit(doc):
     """Money the customer already holds that this order's advance_paid cannot see.
 
     advance_paid comes from the ledger and counts only what is allocated to *this*
     order, so a customer can be sitting on an unallocated payment or a credit note
-    and still be asked to pay again. This is reported to the cashier, never used to
-    reduce the amount due: consuming it needs a proper allocation, and silently
-    offsetting would leave the order underpaid.
+    and still be asked to pay again. Reported to the cashier so they can offer it;
+    never applied without them choosing to, because spending a customer's credit is
+    their decision, not a bookkeeping detail.
     """
     customer = cstr(getattr(doc, "customer", "") or "").strip()
     company = cstr(getattr(doc, "company", "") or "").strip()
@@ -1210,10 +1306,16 @@ def _get_managed_sales_order_customer_credit(doc):
 
     stored_value = 0.0
     try:
-        from posawesome.posawesome.api.stored_value import get_stored_value_summary
+        from posawesome.posawesome.api.payments import get_available_credit
 
-        summary = get_stored_value_summary(customer=customer, company=company) or {}
-        stored_value = flt(summary.get("available_amount") or 0)
+        # get_available_credit reports unallocated payments as "Advance" rows, which
+        # are the very rows counted above. Only the non-advance sources (credit notes
+        # and the like) are additional, so adding the whole figure would double count.
+        stored_value = sum(
+            flt(row.get("total_credit"))
+            for row in (get_available_credit(customer=customer, company=company) or [])
+            if cstr(row.get("type") or "").strip() != "Advance"
+        )
     except Exception:
         # Stored value is advisory only - never block an edit because it failed.
         frappe.log_error(frappe.get_traceback(), "POS managed Sales Order stored value")
@@ -1222,6 +1324,113 @@ def _get_managed_sales_order_customer_credit(doc):
         "unallocated_payments": max(unallocated, 0.0),
         "stored_value": max(stored_value, 0.0),
         "total": max(unallocated, 0.0) + max(stored_value, 0.0),
+    }
+
+
+def _managed_sales_order_surplus_amount(doc):
+    """Money allocated to this order beyond what it is now worth."""
+    try:
+        precision = doc.precision("grand_total") or 2
+    except Exception:
+        precision = 2
+    # Rounded: the raw subtraction carries float noise that would otherwise reach the
+    # cashier as "£0.029999999999972715".
+    return flt(flt(getattr(doc, "advance_paid", 0)) - flt(getattr(doc, "grand_total", 0)), precision)
+
+
+def _settle_managed_sales_order_surplus(doc):
+    """Leave the order holding exactly its own value; the excess becomes customer credit.
+
+    A reduction leaves advance_paid above grand_total, and ERPNext keeps that money
+    tied to the order - invisible to the customer's other orders. This trims the
+    payment allocations back to what the order is worth, so the difference falls into
+    unallocated_amount: money on the customer's account, usable anywhere.
+
+    Advance Payment Ledger rows are derived from GL entries, and trimming an
+    allocation posts none, so advance_paid would otherwise stay stale. That ledger is
+    append-only, so a compensating row is added per payment rather than editing
+    history - the same "Adjustment" shape ERPNext writes when reconciling.
+
+    Returns the amount moved. Nothing is posted to the general ledger.
+    """
+    surplus = _managed_sales_order_surplus_amount(doc)
+    if surplus < MANAGED_SALES_ORDER_MIN_SURPLUS:
+        return 0.0
+
+    rows = frappe.db.sql(
+        """
+        SELECT per.name AS row_name, per.parent AS payment_entry, per.allocated_amount
+        FROM `tabPayment Entry Reference` per
+        JOIN `tabPayment Entry` pe ON pe.name = per.parent
+        WHERE per.reference_doctype = 'Sales Order' AND per.reference_name = %s
+          AND pe.docstatus = 1 AND per.allocated_amount > 0
+        ORDER BY pe.posting_date DESC, pe.creation DESC
+        """,
+        doc.name,
+        as_dict=True,
+    )
+    if not rows:
+        # The advance reached the order some other way - an Adjustment ledger entry
+        # with no reference row. There is nothing to trim, so leave it for a person.
+        return 0.0
+
+    remaining = surplus
+    moved = 0.0
+    # Newest payment first: the most recent money is the likeliest to be the surplus.
+    for row in rows:
+        if remaining < 0.01:
+            break
+        take = min(flt(row.allocated_amount), remaining)
+        if take < 0.01:
+            continue
+
+        payment_entry = frappe.get_doc("Payment Entry", row.payment_entry)
+        reference = next((ref for ref in payment_entry.references if ref.name == row.row_name), None)
+        if not reference:
+            continue
+
+        reference.allocated_amount = flt(flt(reference.allocated_amount) - take)
+        payment_entry.flags.ignore_validate_update_after_submit = True
+        payment_entry.set_amounts()
+        payment_entry.save(ignore_permissions=True)
+
+        # Offset that much of the original negative allocation.
+        frappe.get_doc(
+            {
+                "doctype": "Advance Payment Ledger Entry",
+                "company": payment_entry.company,
+                "voucher_type": "Payment Entry",
+                "voucher_no": payment_entry.name,
+                "against_voucher_type": "Sales Order",
+                "against_voucher_no": doc.name,
+                "amount": take,
+                "currency": payment_entry.paid_from_account_currency,
+                "event": "Adjustment",
+                "delinked": 0,
+            }
+        ).insert(ignore_permissions=True)
+
+        remaining = flt(remaining - take)
+        moved = flt(moved + take)
+
+    if moved:
+        doc.set_total_advance_paid()
+        doc.reload()
+    return moved
+
+
+def _get_managed_sales_order_surplus(doc):
+    """Surplus still stuck on the order after settling, for the cashier to see.
+
+    Normally zero, because settling runs on save. What survives is money that reached
+    the order without a payment reference to trim, which needs a person.
+    """
+    surplus = _managed_sales_order_surplus_amount(doc)
+    if surplus < MANAGED_SALES_ORDER_MIN_SURPLUS:
+        return {"amount": 0.0, "reason": None}
+    return {
+        "amount": surplus,
+        "reason": _("This surplus is not linked to a payment on this order and needs manual reconciliation."),
     }
 
 
@@ -1246,6 +1455,8 @@ def preview_managed_sales_order_items(data):
     current_total = flt(getattr(doc, "grand_total", 0))
     projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
     advance_paid = flt(getattr(doc, "advance_paid", 0))
+    amount_due = max(flt(projected_total - advance_paid), 0.0)
+    customer_credit = _get_managed_sales_order_customer_credit(doc)
 
     return {
         "current_grand_total": current_total,
@@ -1253,10 +1464,14 @@ def preview_managed_sales_order_items(data):
         "difference": flt(projected_total - current_total),
         "advance_paid": advance_paid,
         # Full increase, locked: the order must not be left underpaid.
-        "amount_due": max(flt(projected_total - advance_paid), 0.0),
+        "amount_due": amount_due,
         "credit_after_change": max(flt(advance_paid - projected_total), 0.0),
         "currency": getattr(doc, "currency", None),
-        "customer_credit": _get_managed_sales_order_customer_credit(doc),
+        "customer_credit": customer_credit,
+        # What the cashier can offer: the customer's free credit, capped at what this
+        # order actually needs. Stored value is excluded - it lives on invoices and
+        # cannot be moved onto an order.
+        "credit_applicable": min(flt(customer_credit.get("unallocated_payments") or 0), amount_due),
     }
 
 
@@ -1310,9 +1525,7 @@ def update_managed_sales_order_items_with_payment(data):
         frappe.throw(_("Payment details must be an object."))
 
     mode_of_payment = cstr(payment.get("mode_of_payment") or "").strip()
-    if not mode_of_payment:
-        frappe.throw(_("Mode of Payment is required."))
-
+    use_credit = cint(payment.get("use_credit") or 0)
     sales_order_name = cstr(payload.get("name") or "").strip()
     if not sales_order_name:
         frappe.throw(_("Sales Order name is required."))
@@ -1339,8 +1552,26 @@ def update_managed_sales_order_items_with_payment(data):
         frappe.throw(_("This Sales Order has nothing further to pay."))
 
     _apply_managed_sales_order_items(doc, sales_order_name, normalized_items)
-
     doc.reload()
+
+    # Spend the customer's own money first, if the cashier offered it. How much is
+    # decided here, never by the client - it is capped at what the order still needs.
+    credit_applied = _apply_managed_sales_order_credit(doc, amount_due) if use_credit else 0.0
+    amount_due = flt(amount_due - credit_applied)
+
+    if amount_due <= 0.001:
+        # Credit covered the lot, so there is nothing to take at the till.
+        _queue_receipt_email(doc, revised=True)
+        return {
+            "sales_order": _serialize_managed_sales_order(doc),
+            "payment_entry": None,
+            "amount_paid": 0.0,
+            "credit_applied": credit_applied,
+        }
+
+    if not mode_of_payment:
+        frappe.throw(_("Mode of Payment is required."))
+
     payment_entry = create_payment_entry(
         company=doc.company,
         customer=doc.customer,
@@ -1375,6 +1606,7 @@ def update_managed_sales_order_items_with_payment(data):
         "sales_order": _serialize_managed_sales_order(doc),
         "payment_entry": payment_entry.name,
         "amount_paid": amount_due,
+        "credit_applied": credit_applied,
     }
 
 
@@ -1843,6 +2075,41 @@ def update_sales_order(data):
     return so_doc
 
 
+def _apply_new_sales_order_customer_credit(so_doc, order, data=None):
+    """Spend the customer's on-account credit on a newly submitted order.
+
+    The pay screen offers the credit and subtracts it from what the till collects
+    (netInvoiceSettlementAmount), but until now nothing consumed it on the Sales Order
+    side - only the Sales Invoice path redeemed credit, and this app does not use
+    invoices. Without this the order would be left short by the amount the cashier
+    thought had been covered.
+
+    The requested figure is treated as a ceiling, never an instruction: the amount
+    actually applied is capped at the order total and at the credit that genuinely
+    exists. Returns the amount applied.
+    """
+    requested = flt((order or {}).get("redeemed_customer_credit"))
+    if not requested and data:
+        requested = flt(data.get("redeemed_customer_credit"))
+    if requested < 0.01:
+        return 0.0
+
+    so_doc.reload()
+    outstanding = flt(flt(getattr(so_doc, "grand_total", 0)) - flt(getattr(so_doc, "advance_paid", 0)))
+    applied = _apply_managed_sales_order_credit(so_doc, min(requested, outstanding))
+
+    if applied < requested - 0.01:
+        # The customer had less than the pay screen believed, so the order will be
+        # short. Recorded rather than thrown: the sale has already happened.
+        frappe.log_error(
+            "Sales Order {0}: {1} of credit requested, {2} applied".format(
+                so_doc.name, requested, applied
+            ),
+            "POS customer credit shortfall",
+        )
+    return applied
+
+
 def _create_payment_entries(so_doc, payments):
     """Create payment entries referencing the sales order."""
     for pay in payments or []:
@@ -2278,6 +2545,11 @@ def submit_sales_order(order, data=None):
         frappe.throw(_("Deposits are not allowed when a collection delivery charge is selected"))
 
     so_doc.submit()
+
+    # Before any till payment is recorded, so the cap is the whole order and the
+    # customer's own money is spent first. The pay screen has already reduced what it
+    # collects by this amount, so credit plus takings should equal the order.
+    _apply_new_sales_order_customer_credit(so_doc, order, data)
 
     if _should_create_collection_full_payment_synchronously(so_doc, settlement_state, payments):
         _create_payment_entries(so_doc, payments)

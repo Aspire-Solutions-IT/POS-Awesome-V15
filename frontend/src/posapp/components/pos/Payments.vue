@@ -475,6 +475,31 @@ const is_return = ref(false);
 const is_credit_sale = ref(false);
 const is_write_off_change = ref(false);
 const redeem_customer_credit = ref(false);
+// Lets the cashier wave away the credit prompt for this sale.
+const creditOfferDismissed = ref(false);
+
+/** Ask about credit only when there is some, it is unused, and this is not a return. */
+const showCreditOffer = computed(
+	() =>
+		Number(available_credit_preview.value || 0) > 0.001 &&
+		!redeem_customer_credit.value &&
+		!creditOfferDismissed.value &&
+		!invoiceStore.invoiceDoc?.is_return,
+);
+
+/** What the credit would actually cover on this sale. */
+const creditOfferAmount = computed(() => {
+	const doc = invoiceStore.invoiceDoc;
+	const total = flt(doc?.rounded_total || doc?.grand_total || 0, currency_precision.value);
+	return Math.min(Number(available_credit_preview.value || 0), Math.max(total, 0));
+});
+
+/** Hand off to the existing, tested redemption path rather than a parallel one. */
+const acceptCreditOffer = () => {
+	redeem_customer_credit.value = true;
+	get_available_credit(true);
+	creditOfferDismissed.value = true;
+};
 const pos_profile = ref("");
 const stock_settings = ref("");
 const pos_settings = ref({});
@@ -1166,6 +1191,8 @@ const {
 	redeemed_customer_credit,
 	customer_credit_dict,
 	available_customer_credit,
+	available_credit_preview,
+	probe_available_credit,
 	available_points_amount,
 	get_available_credit,
 } = useRedemptionLogic({
@@ -3088,6 +3115,10 @@ onMounted(() => {
 		eventBus.on("send_invoice_doc_payment", (doc) => {
 			currentStep.value = isWizardFlow.value ? 1 : 2;
 			invoiceStore.setInvoiceDoc(doc);
+			// Look up any credit so it can be offered. Nothing is spent until the
+			// cashier says so; this only decides whether to raise the question.
+			creditOfferDismissed.value = false;
+			probe_available_credit();
 			const incomingDeliveryDate = String(
 				doc?.prefered_earliest_delivery_date || doc?.preferred_earliest_delivery_date || "",
 			).trim();

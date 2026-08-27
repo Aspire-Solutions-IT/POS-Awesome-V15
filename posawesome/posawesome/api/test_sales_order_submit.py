@@ -898,6 +898,152 @@ class TestSalesOrderSubmit(TestCase):
         self.assertFalse(completion["fully_picked"])
         self.assertFalse(completion["fully_delivered"])
 
+    def _settle_with(self, doc, rows):
+        """Run settling against fake payment rows; capture the writes it makes."""
+        trimmed, ledger = [], []
+
+        def fake_get_doc(arg, *args, **kwargs):
+            if isinstance(arg, dict):
+                ledger.append((arg["voucher_no"], arg["against_voucher_no"], arg["amount"]))
+                return SimpleNamespace(insert=lambda **kw: None)
+            row = next(r for r in rows if r.payment_entry == args[0])
+            ref = SimpleNamespace(name=row.row_name, allocated_amount=row.allocated_amount)
+            pe = SimpleNamespace(
+                name=args[0], company="Agile Imports", references=[ref],
+                paid_from_account_currency="GBP", flags=SimpleNamespace(),
+                set_amounts=lambda: None,
+                save=lambda **kw: trimmed.append((args[0], ref.allocated_amount)),
+            )
+            return pe
+
+        doc.set_total_advance_paid = lambda: None
+        doc.reload = lambda: None
+        with patch.object(sales_orders.frappe.db, "sql", return_value=rows), patch.object(
+            sales_orders.frappe, "get_doc", fake_get_doc
+        ):
+            sales_orders._settle_managed_sales_order_surplus(doc)
+        return trimmed, ledger
+
+    def _paid_order(self, grand_total, advance_paid):
+        return SimpleNamespace(
+            doctype="Sales Order", name="SO-PAID", docstatus=1, rfs_order=1, is_pos=1,
+            customer="RFS-001", company="Agile Imports",
+            grand_total=grand_total, advance_paid=advance_paid, items=[],
+        )
+
+    def test_new_order_applies_requested_customer_credit(self):
+        so_doc = SimpleNamespace(name="SO-NEW-1", grand_total=200.0, advance_paid=0.0,
+                                 reload=lambda: None)
+        captured = {}
+        with patch.object(
+            sales_orders, "_apply_managed_sales_order_credit",
+            lambda doc, amount: captured.setdefault("cap", amount) or 80.0,
+        ):
+            applied = sales_orders._apply_new_sales_order_customer_credit(
+                so_doc, {"redeemed_customer_credit": 80.0}
+            )
+        self.assertEqual(applied, 80.0)
+        self.assertEqual(captured["cap"], 80.0)
+
+    def test_new_order_credit_is_capped_at_the_order_total(self):
+        # A stale or inflated client figure must never over-apply.
+        so_doc = SimpleNamespace(name="SO-NEW-2", grand_total=50.0, advance_paid=0.0,
+                                 reload=lambda: None)
+        captured = {}
+        with patch.object(
+            sales_orders, "_apply_managed_sales_order_credit",
+            lambda doc, amount: captured.setdefault("cap", amount) or amount,
+        ):
+            sales_orders._apply_new_sales_order_customer_credit(
+                so_doc, {"redeemed_customer_credit": 500.0}
+            )
+        self.assertEqual(captured["cap"], 50.0)
+
+    def test_new_order_ignores_absent_credit_request(self):
+        so_doc = SimpleNamespace(name="SO-NEW-3", grand_total=200.0, advance_paid=0.0,
+                                 reload=lambda: None)
+        called = []
+        with patch.object(
+            sales_orders, "_apply_managed_sales_order_credit",
+            lambda doc, amount: called.append(amount),
+        ):
+            applied = sales_orders._apply_new_sales_order_customer_credit(so_doc, {})
+        self.assertEqual(applied, 0.0)
+        self.assertEqual(called, [])
+
+    def test_new_order_reads_credit_from_the_data_payload_too(self):
+        # The pay screen puts it in data, not the order body.
+        so_doc = SimpleNamespace(name="SO-NEW-4", grand_total=200.0, advance_paid=0.0,
+                                 reload=lambda: None)
+        with patch.object(
+            sales_orders, "_apply_managed_sales_order_credit", lambda doc, amount: amount
+        ):
+            applied = sales_orders._apply_new_sales_order_customer_credit(
+                so_doc, {}, {"redeemed_customer_credit": 25.0}
+            )
+        self.assertEqual(applied, 25.0)
+
+    def test_new_order_records_a_credit_shortfall(self):
+        so_doc = SimpleNamespace(name="SO-NEW-5", grand_total=200.0, advance_paid=0.0,
+                                 reload=lambda: None)
+        logged = []
+        with patch.object(
+            sales_orders, "_apply_managed_sales_order_credit", lambda doc, amount: 10.0
+        ), patch.object(sales_orders.frappe, "log_error", lambda *a, **k: logged.append(a)):
+            applied = sales_orders._apply_new_sales_order_customer_credit(
+                so_doc, {"redeemed_customer_credit": 100.0}
+            )
+        self.assertEqual(applied, 10.0)
+        self.assertTrue(logged, "a shortfall must be recorded, not silently swallowed")
+
+    def test_no_surplus_when_order_is_exactly_paid(self):
+        doc = self._paid_order(339.98, 339.98)
+        self.assertEqual(sales_orders._managed_sales_order_surplus_amount(doc), 0.0)
+        self.assertEqual(sales_orders._get_managed_sales_order_surplus(doc)["amount"], 0.0)
+
+    def test_pennies_of_surplus_are_ignored(self):
+        # Rounding noise, not money worth moving.
+        doc = self._paid_order(892.97, 893.00)
+        with patch.object(sales_orders.frappe.db, "sql", return_value=[]):
+            self.assertEqual(sales_orders._settle_managed_sales_order_surplus(doc), 0.0)
+        self.assertEqual(sales_orders._get_managed_sales_order_surplus(doc)["amount"], 0.0)
+
+    def test_surplus_amount_is_rounded(self):
+        # Raw subtraction here yields 0.029999999999972715.
+        doc = self._paid_order(892.97, 893.00)
+        self.assertEqual(sales_orders._managed_sales_order_surplus_amount(doc), 0.03)
+
+    def test_settling_trims_the_newest_allocation(self):
+        doc = self._paid_order(200.0, 300.0)
+        rows = [SimpleNamespace(row_name="REF-1", payment_entry="ACC-PAY-1", allocated_amount=300.0)]
+        trimmed, ledger = self._settle_with(doc, rows)
+        # Order keeps exactly its own value; the rest becomes customer credit.
+        self.assertEqual(trimmed, [("ACC-PAY-1", 200.0)])
+        self.assertEqual(ledger, [("ACC-PAY-1", "SO-PAID", 100.0)])
+
+    def test_settling_spreads_across_payments_newest_first(self):
+        doc = self._paid_order(200.0, 500.0)
+        rows = [
+            SimpleNamespace(row_name="REF-1", payment_entry="NEWEST", allocated_amount=100.0),
+            SimpleNamespace(row_name="REF-2", payment_entry="OLDER", allocated_amount=400.0),
+        ]
+        trimmed, ledger = self._settle_with(doc, rows)
+        # 300 surplus: all 100 of the newest, then 200 of the older.
+        self.assertEqual(trimmed, [("NEWEST", 0.0), ("OLDER", 200.0)])
+        self.assertEqual([entry[2] for entry in ledger], [100.0, 200.0])
+
+    def test_settling_does_nothing_without_a_payment_reference(self):
+        # Advance arrived as an Adjustment entry, so there is nothing to trim.
+        doc = self._paid_order(776.98, 1516.97)
+        with patch.object(sales_orders.frappe.db, "sql", return_value=[]):
+            self.assertEqual(sales_orders._settle_managed_sales_order_surplus(doc), 0.0)
+
+    def test_unsettleable_surplus_is_reported_for_a_person(self):
+        doc = self._paid_order(776.98, 1516.97)
+        surplus = sales_orders._get_managed_sales_order_surplus(doc)
+        self.assertAlmostEqual(surplus["amount"], 739.99, places=2)
+        self.assertIn("manual reconciliation", surplus["reason"])
+
     def test_returned_line_counts_as_delivered(self):
         # Delivered then returned: delivered_qty drops back and returned_qty holds the
         # amount, but the line is commercially finished.

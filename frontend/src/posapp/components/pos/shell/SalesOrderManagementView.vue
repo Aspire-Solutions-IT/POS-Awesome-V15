@@ -188,6 +188,21 @@
 					</v-card-title>
 					<v-card-text class="right-panel-body">
 						<v-alert
+							v-if="hasSurplus"
+							type="warning"
+							variant="tonal"
+							density="compact"
+							border="start"
+							class="mb-4"
+						>
+							{{
+								__("This order holds {0} that could not be moved automatically.", [
+									formatCurrency(surplus?.amount, selectedOrder?.currency),
+								])
+							}}
+							{{ surplus?.reason }}
+						</v-alert>
+						<v-alert
 							v-if="creditNotice"
 							type="info"
 							variant="tonal"
@@ -666,29 +681,44 @@
 						<span class="payment-balance-copy__label">{{ __("Already Paid") }}</span>
 						<strong>{{ formatCurrency(itemPaymentPreview?.advance_paid, selectedOrder?.currency) }}</strong>
 					</div>
+					<div v-if="useCustomerCredit" class="payment-balance-copy mb-2">
+						<span class="payment-balance-copy__label">{{ __("Credit Applied") }}</span>
+						<strong>-{{ formatCurrency(creditApplicable, selectedOrder?.currency) }}</strong>
+					</div>
 					<div class="payment-balance-copy mb-4">
-						<span class="payment-balance-copy__label">{{ __("Amount Due Now") }}</span>
+						<span class="payment-balance-copy__label">{{ __("To Take Now") }}</span>
 						<strong class="payment-balance-copy__amount">
-							{{ formatCurrency(itemPaymentPreview?.amount_due, selectedOrder?.currency) }}
+							{{ formatCurrency(itemPaymentTillAmount, selectedOrder?.currency) }}
 						</strong>
 					</div>
-					<!-- advance_paid only sees money allocated to THIS order, so surface any
-					     balance the customer already holds instead of double charging. -->
-					<v-alert
-						v-if="Number(itemPaymentPreview?.customer_credit?.total || 0) > 0.001"
-						type="warning"
-						variant="tonal"
-						density="compact"
-						border="start"
-						class="mb-4"
-					>
-						{{
-							__("Customer already holds {0} on account. Consider allocating it instead of taking payment.", [
-								formatCurrency(itemPaymentPreview?.customer_credit?.total, selectedOrder?.currency),
-							])
-						}}
-					</v-alert>
+					<!-- advance_paid only sees money allocated to THIS order, so offer the
+						     customer's own money before taking more from them. -->
+						<v-alert
+							v-if="creditApplicable > 0.001"
+							type="info"
+							variant="tonal"
+							density="compact"
+							border="start"
+							class="mb-4"
+						>
+							<v-checkbox
+								v-model="useCustomerCredit"
+								:disabled="itemPaymentLoading"
+								density="compact"
+								hide-details
+								:label="
+									__('Apply {0} of the customer\u2019s {1} credit', [
+										formatCurrency(creditApplicable, selectedOrder?.currency),
+										formatCurrency(
+											itemPaymentPreview?.customer_credit?.unallocated_payments,
+											selectedOrder?.currency,
+										),
+									])
+								"
+							/>
+						</v-alert>
 					<v-select
+						v-if="itemPaymentTillAmount > 0.001"
 						v-model="itemPaymentMode"
 						:items="paymentModeOptions"
 						item-title="label"
@@ -708,10 +738,10 @@
 						color="success"
 						variant="flat"
 						:loading="itemPaymentLoading"
-						:disabled="!itemPaymentMode || itemPaymentLoading"
+						:disabled="(itemPaymentTillAmount > 0 && !itemPaymentMode) || itemPaymentLoading"
 						@click="confirmItemPayment"
 					>
-						{{ __("Take Payment and Save") }}
+						{{ itemPaymentTillAmount > 0.001 ? __("Take Payment and Save") : __("Apply Credit and Save") }}
 					</v-btn>
 				</v-card-actions>
 			</v-card>
@@ -807,6 +837,11 @@ type ManagedSalesOrderAddress = {
 	display?: string | null;
 };
 
+type ManagedSalesOrderSurplus = {
+	amount?: number | null;
+	reason?: string | null;
+};
+
 type ManagedSalesOrderOrderLevelLock = {
 	is_locked?: boolean;
 	reason?: string | null;
@@ -833,6 +868,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	payment_types?: ManagedSalesOrderPaymentType[] | null;
 	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
 	order_level_lock?: ManagedSalesOrderOrderLevelLock | null;
+	surplus?: ManagedSalesOrderSurplus | null;
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
 	auto_release_date?: string | null;
@@ -885,6 +921,8 @@ const itemPaymentPreview = ref<any>(null);
 const itemPaymentMode = ref("");
 const itemPaymentError = ref("");
 const itemPaymentLoading = ref(false);
+// Opt-in: spending a customer's credit is their decision, not a silent netting off.
+const useCustomerCredit = ref(false);
 const creditNotice = ref("");
 
 const paymentForm = reactive({
@@ -986,6 +1024,10 @@ const canEditItems = computed(
 	() => Boolean(selectedOrder.value) && !orderLevelLock.value?.is_locked,
 );
 
+// Only ever populated when settling could not run - money that reached the order
+// without a payment reference to trim. Everything else is settled on save.
+const surplus = computed(() => selectedOrder.value?.surplus || null);
+const hasSurplus = computed(() => Number(surplus.value?.amount || 0) > 0);
 
 const paymentModeOptions = computed(() =>
 	(Array.isArray(posProfile.value?.payments) ? posProfile.value.payments : [])
@@ -1367,6 +1409,15 @@ const previewItemChanges = async () => {
 	}
 };
 
+/** Credit the cashier can offer, already capped server side at what this order needs. */
+const creditApplicable = computed(() => Number(itemPaymentPreview.value?.credit_applicable || 0));
+
+/** What the till takes once any offered credit is applied. */
+const itemPaymentTillAmount = computed(() => {
+	const due = Number(itemPaymentPreview.value?.amount_due || 0);
+	return useCustomerCredit.value ? Math.max(due - creditApplicable.value, 0) : due;
+});
+
 const closeItemPaymentDialog = () => {
 	// Cancelled: nothing was sent, so the edits stay staged and unsaved.
 	itemPaymentDialogOpen.value = false;
@@ -1386,6 +1437,7 @@ const confirmItemPayment = async () => {
 					name: selectedOrder.value.name,
 					items: buildItemPayload(),
 					payment: {
+						use_credit: useCustomerCredit.value ? 1 : 0,
 						mode_of_payment: itemPaymentMode.value,
 						reference_no: selectedOrder.value.customer_order_ref || selectedOrder.value.name,
 						// Guards against the total moving while the dialog was open.
@@ -1395,12 +1447,17 @@ const confirmItemPayment = async () => {
 			},
 			{ freeze: true, freeze_message: __("Taking payment and updating the order...") },
 		);
+		const creditApplied = Number(message?.credit_applied || 0);
 		selectedOrder.value = message?.sales_order || selectedOrder.value;
 		resetForm(selectedOrder.value);
 		itemPaymentDialogOpen.value = false;
 		itemPaymentPreview.value = null;
 		toastStore.show({
-			title: __("Payment taken and Sales Order updated"),
+			title: creditApplied
+				? __("{0} of credit applied. Sales Order updated.", [
+						formatCurrency(creditApplied, selectedOrder.value?.currency),
+					])
+				: __("Payment taken and Sales Order updated"),
 			color: "success",
 		});
 		await loadOrders();
@@ -1450,15 +1507,18 @@ const saveOrder = async () => {
 			itemPaymentPreview.value = preview;
 			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
 			itemPaymentError.value = "";
+			useCustomerCredit.value = false;
 			itemPaymentDialogOpen.value = true;
 			return;
 		}
 		// A reduction leaves the customer in credit. POS takes no refund, so make it
 		// visible rather than letting it disappear into the order total.
 		const credit = Number(preview.credit_after_change || 0);
+		// Settled server side on save: the order keeps its own value and the excess
+		// moves to the customer's account.
 		creditNotice.value =
-			credit > 0.001
-				? __("Customer is now in credit by {0}. Arrange a refund outside POS.", [
+			credit >= 1
+				? __("{0} has been moved to the customer's account.", [
 						formatCurrency(credit, selectedOrder.value?.currency),
 					])
 				: "";
