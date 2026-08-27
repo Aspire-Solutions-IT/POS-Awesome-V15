@@ -558,6 +558,47 @@ describe("SalesOrderManagementView", () => {
 		expect(plain).toHaveLength(0);
 	});
 
+	it("locks every control once the order is fully picked", async () => {
+		mockApi((method) => {
+			if (method.endsWith("get_managed_sales_order")) {
+				return {
+					...baseDetail,
+					order_level_lock: {
+						is_locked: true,
+						reason: "This Sales Order has been fully picked and can no longer be edited.",
+					},
+				};
+			}
+			return undefined;
+		});
+
+		const wrapper = mountView();
+		await flushPromises();
+
+		expect(wrapper.text()).toContain("fully picked and can no longer be edited");
+
+		const addButton = wrapper
+			.findAll("button")
+			.find((b: any) => b.text().trim() === "Add Items");
+		expect(addButton!.attributes("disabled")).toBeDefined();
+
+		// The unlocked row must be read only too - a finished order is closed outright.
+		const qtyInputs = wrapper
+			.findAll("input.items-input")
+			.filter((i: any) => i.attributes("min") === "0.01");
+		expect(qtyInputs.length).toBeGreaterThan(0);
+		for (const input of qtyInputs) {
+			expect(input.attributes("readonly")).toBeDefined();
+		}
+
+		const removeButtons = wrapper
+			.findAll("button")
+			.filter((b: any) => b.text().trim() === "Remove");
+		for (const button of removeButtons) {
+			expect(button.attributes("disabled")).toBeDefined();
+		}
+	});
+
 	it("blocks item editing while a Pick List is active on the whole order", async () => {
 		mockApi((method) => {
 			if (method.endsWith("get_managed_sales_order")) {

@@ -576,13 +576,60 @@ def _is_active_pick_list(link):
     return cstr(link.get("status") or "").strip() not in {"Cancelled", "Completed"}
 
 
-def _build_managed_sales_order_order_level_lock(order_level_pick_lists):
+def _managed_sales_order_completion(doc):
+    """Whether every line on the order has been fully picked / fully delivered.
+
+    Computed from the rows rather than read from per_picked / per_delivered: those
+    header fields can be stale on orders edited before the recalculation fix, and
+    this decides whether editing is allowed at all. Picked is measured against
+    stock_qty and delivered against qty, matching ERPNext's own arithmetic.
+
+    Returns count as delivered. A return Delivery Note carries a negative qty, so it
+    subtracts from delivered_qty and adds the same amount to returned_qty - leaving a
+    line that went out and came back looking undelivered. Commercially that line is
+    finished, so delivered_qty + returned_qty is what decides completion. Picked is
+    left alone: a return does not reduce picked_qty.
+    """
+    total_qty = total_stock_qty = picked_qty = delivered_qty = 0.0
+    rows = getattr(doc, "items", []) or []
+
+    for row in rows:
+        qty = flt(getattr(row, "qty", 0))
+        stock_qty = flt(getattr(row, "stock_qty", 0)) or qty
+        total_qty += qty
+        total_stock_qty += stock_qty
+        picked_qty += min(flt(getattr(row, "picked_qty", 0) or 0), stock_qty)
+        settled = flt(getattr(row, "delivered_qty", 0) or 0) + flt(getattr(row, "returned_qty", 0) or 0)
+        delivered_qty += min(settled, qty)
+
+    return {
+        "fully_picked": bool(rows) and total_stock_qty > 0 and picked_qty >= total_stock_qty - 0.001,
+        "fully_delivered": bool(rows) and total_qty > 0 and delivered_qty >= total_qty - 0.001,
+    }
+
+
+def _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists):
     """Whole-order edit lock, from Pick Lists linked to the order rather than a row.
 
     Same condition _validate_managed_sales_order_item_mutations throws on, exposed on
     the serialized order so POS can disable editing up front instead of only finding
     out when a save fails.
     """
+    # A finished order is closed to edits outright: adding or changing a line after
+    # everything has been picked or handed over would silently diverge from what the
+    # warehouse and the customer already acted on.
+    completion = _managed_sales_order_completion(doc)
+    if completion["fully_delivered"]:
+        return {
+            "is_locked": True,
+            "reason": _("This Sales Order has been fully delivered and can no longer be edited."),
+        }
+    if completion["fully_picked"]:
+        return {
+            "is_locked": True,
+            "reason": _("This Sales Order has been fully picked and can no longer be edited."),
+        }
+
     active_pick_lists = [link for link in (order_level_pick_lists or []) if _is_active_pick_list(link)]
     if not active_pick_lists:
         return {"is_locked": False, "reason": None}
@@ -822,7 +869,7 @@ def _serialize_managed_sales_order(doc):
         "pos_sales_person_name": pos_sales_person_name or pos_sales_person,
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
         "stream_pick_lists": stream_pick_lists,
-        "order_level_lock": _build_managed_sales_order_order_level_lock(order_level_pick_lists),
+        "order_level_lock": _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists),
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "items": items,
@@ -934,7 +981,7 @@ def _normalize_existing_managed_sales_order_item_row(row):
 
 def _validate_managed_sales_order_item_mutations(doc, normalized_items):
     row_pick_lists, order_level_pick_lists, _stream_pick_lists = _get_sales_order_pick_list_links(doc)
-    order_level_lock = _build_managed_sales_order_order_level_lock(order_level_pick_lists)
+    order_level_lock = _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists)
     if order_level_lock["is_locked"]:
         frappe.throw(order_level_lock["reason"])
 

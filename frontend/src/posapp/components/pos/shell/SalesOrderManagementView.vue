@@ -417,7 +417,7 @@
 														autocomplete="off"
 														min="0.01"
 														step="0.01"
-														:readonly="item.is_locked || saveLoading"
+														:readonly="item.is_locked || !canEditItems || saveLoading"
 														@blur="normalizeQty(item)"
 													/>
 												</td>
@@ -434,7 +434,7 @@
 															autocomplete="off"
 															min="0"
 															step="0.01"
-															:readonly="saveLoading"
+															:readonly="!canEditItems || saveLoading"
 															@blur="normalizeRate(item)"
 														/>
 														<span class="item-line-amount">
@@ -481,7 +481,7 @@
 														variant="text"
 														color="error"
 														size="small"
-														:disabled="item.is_locked || saveLoading"
+														:disabled="item.is_locked || !canEditItems || saveLoading"
 														@click="removeItem(item.rowKey)"
 													>
 														{{ __("Remove") }}

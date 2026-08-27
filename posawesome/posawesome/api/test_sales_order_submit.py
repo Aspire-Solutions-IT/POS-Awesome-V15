@@ -856,6 +856,88 @@ class TestSalesOrderSubmit(TestCase):
         rows = json.loads(update_items.call_args.kwargs["trans_items"])
         self.assertEqual([row["qty"] for row in rows], [1.0, 4.0])
 
+    def _completion_order(self, rows):
+        return SimpleNamespace(
+            doctype="Sales Order", name="SO-DONE", docstatus=1, rfs_order=1, is_pos=1,
+            customer="RFS-001", items=rows,
+        )
+
+    def _row(self, qty=2, picked=0, delivered=0, returned=0):
+        return SimpleNamespace(
+            name="SOI-1", item_code="ITEM-1", description="D", warehouse="Main - TC",
+            uom="Nos", qty=qty, stock_qty=qty, picked_qty=picked, delivered_qty=delivered,
+            returned_qty=returned, rate=10, bom_no=None, conversion_factor=1,
+        )
+
+    def test_fully_picked_order_is_locked(self):
+        doc = self._completion_order([self._row(qty=2, picked=2)])
+        lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
+        self.assertTrue(lock["is_locked"])
+        self.assertIn("fully picked", lock["reason"])
+
+    def test_fully_delivered_order_is_locked(self):
+        doc = self._completion_order([self._row(qty=2, delivered=2)])
+        lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
+        self.assertTrue(lock["is_locked"])
+        self.assertIn("fully delivered", lock["reason"])
+
+    def test_partially_picked_order_stays_editable(self):
+        doc = self._completion_order([self._row(qty=2, picked=1), self._row(qty=3)])
+        lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
+        self.assertFalse(lock["is_locked"])
+        self.assertIsNone(lock["reason"])
+
+    def test_completion_is_measured_across_every_row(self):
+        # One line fully picked must not close an order whose other line is untouched.
+        doc = self._completion_order([self._row(qty=2, picked=2), self._row(qty=2, picked=0)])
+        self.assertFalse(sales_orders._managed_sales_order_completion(doc)["fully_picked"])
+
+    def test_empty_order_is_not_treated_as_complete(self):
+        doc = self._completion_order([])
+        completion = sales_orders._managed_sales_order_completion(doc)
+        self.assertFalse(completion["fully_picked"])
+        self.assertFalse(completion["fully_delivered"])
+
+    def test_returned_line_counts_as_delivered(self):
+        # Delivered then returned: delivered_qty drops back and returned_qty holds the
+        # amount, but the line is commercially finished.
+        doc = self._completion_order([self._row(qty=1, delivered=0, returned=1)])
+        self.assertTrue(sales_orders._managed_sales_order_completion(doc)["fully_delivered"])
+
+    def test_partly_returned_line_counts_as_delivered(self):
+        # Mirrors real data: qty 5, 4 delivered, 1 returned.
+        doc = self._completion_order([self._row(qty=5, delivered=4, returned=1)])
+        self.assertTrue(sales_orders._managed_sales_order_completion(doc)["fully_delivered"])
+
+    def test_order_with_a_returned_line_and_delivered_lines_is_complete(self):
+        doc = self._completion_order([
+            self._row(qty=1, delivered=1),
+            self._row(qty=1, delivered=1),
+            self._row(qty=1, delivered=0, returned=1),
+        ])
+        lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
+        self.assertTrue(lock["is_locked"])
+        self.assertIn("fully delivered", lock["reason"])
+
+    def test_return_does_not_complete_a_short_delivered_line(self):
+        # 5 ordered, 3 delivered, 1 returned: one unit never went out.
+        doc = self._completion_order([self._row(qty=5, delivered=3, returned=1)])
+        self.assertFalse(sales_orders._managed_sales_order_completion(doc)["fully_delivered"])
+
+    def test_returns_do_not_affect_picked_completion(self):
+        doc = self._completion_order([self._row(qty=2, picked=1, delivered=0, returned=1)])
+        self.assertFalse(sales_orders._managed_sales_order_completion(doc)["fully_picked"])
+
+    def test_fully_picked_order_rejects_item_changes(self):
+        doc = self._completion_order([self._row(qty=2, picked=2)])
+        payload = {"name": "SO-DONE", "items": [
+            {"docname": "SOI-1", "item_code": "ITEM-1", "uom": "Nos", "description": "D",
+             "bom_no": None, "qty": 5, "conversion_factor": 1}
+        ]}
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc):
+            with self.assertRaisesRegex(RuntimeError, "fully picked"):
+                sales_orders.update_managed_sales_order_items(payload)
+
     def test_queue_receipt_email_flags_a_revision(self):
         doc = SimpleNamespace(name="SO-RECEIPT-1", pos_profile="Main POS")
         captured = {}
@@ -934,6 +1016,21 @@ class TestSalesOrderSubmit(TestCase):
             customer="RFS-001",
             items=[
                 SimpleNamespace(
+                    name="SOI-STILL-OPEN",
+                    item_code="ITEM-2",
+                    description="Desc 2",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    stock_qty=1,
+                    picked_qty=0,
+                    delivered_qty=0,
+                    rate=100,
+                    delivery_date="2026-07-30",
+                    bom_no=None,
+                    conversion_factor=1,
+                ),
+                SimpleNamespace(
                     name="SOI-PICKED",
                     item_code="ITEM-1",
                     description="Desc 1",
@@ -978,6 +1075,21 @@ class TestSalesOrderSubmit(TestCase):
             is_pos=1,
             customer="RFS-001",
             items=[
+                SimpleNamespace(
+                    name="SOI-STILL-OPEN",
+                    item_code="ITEM-2",
+                    description="Desc 2",
+                    warehouse="Main - TC",
+                    uom="Nos",
+                    qty=1,
+                    stock_qty=1,
+                    picked_qty=0,
+                    delivered_qty=0,
+                    rate=100,
+                    delivery_date="2026-07-30",
+                    bom_no=None,
+                    conversion_factor=1,
+                ),
                 SimpleNamespace(
                     name="SOI-DELIVERED",
                     item_code="ITEM-1",
