@@ -4,6 +4,7 @@
 		<UpdatePrompt />
 		<v-main class="main-content">
 			<ClosingDialog />
+			<ProfileSwitchDialog v-if="profileSwitchDialog" v-model="profileSwitchDialog" />
 			<Navbar
 				:pos-profile="posProfile"
 				:pending-invoices="pendingInvoicesCount"
@@ -26,6 +27,7 @@
 				:bootstrap-capabilities="visibleBootstrapCapabilitySummaries"
 				@nav-click="handleNavClick"
 				@close-shift="handleCloseShift"
+				@switch-profile="handleSwitchProfile"
 				@print-last-invoice="handlePrintLastInvoice"
 				@sync-invoices="handleSyncInvoices"
 				@toggle-offline="handleToggleOffline"
@@ -84,6 +86,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, getCurrentInstance } 
 // Note paths updated to be relative to layouts/ directory
 import Navbar from "../components/Navbar.vue";
 import ClosingDialog from "../components/pos/shell/ClosingDialog.vue";
+import ProfileSwitchDialog from "../components/pos/shift/ProfileSwitchDialog.vue";
 import AppLoadingOverlay from "../components/ui/LoadingOverlay.vue";
 import UpdatePrompt from "../components/ui/UpdatePrompt.vue";
 import { useLoading } from "../composables/core/useLoading.js";
@@ -897,6 +900,12 @@ const handleNavClick = () => {
 
 const handleCloseShift = () => {
 	get_closing_data();
+};
+
+const profileSwitchDialog = ref(false);
+
+const handleSwitchProfile = () => {
+	profileSwitchDialog.value = true;
 };
 
 const handleSyncInvoices = async () => {

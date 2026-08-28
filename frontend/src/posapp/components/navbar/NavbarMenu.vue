@@ -565,6 +565,14 @@ export default {
 							tone: "primary",
 							handler: "openDashboard",
 						},
+						{
+							id: "switch-profile",
+							label: __("Switch POS Profile"),
+							subtitle: __("Change till without closing the shift"),
+							icon: "mdi-swap-horizontal",
+							tone: "primary",
+							handler: "switchProfile",
+						},
 					],
 				},
 			];
@@ -638,6 +646,10 @@ export default {
 				case "closeShift":
 					this.closeMenu();
 					this.$emit("close-shift");
+					break;
+				case "switchProfile":
+					this.closeMenu();
+					this.$emit("switch-profile");
 					break;
 				case "openLanguageDialog":
 					this.closeMenu();
@@ -852,6 +864,7 @@ export default {
 	},
 	emits: [
 		"close-shift",
+		"switch-profile",
 		"sync-invoices",
 		"open-employee-switch",
 		"lock-pos",

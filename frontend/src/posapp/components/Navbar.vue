@@ -76,6 +76,7 @@
 					:network-online="networkOnline"
 					:server-online="serverOnline"
 					@close-shift="openCloseShift"
+					@switch-profile="openSwitchProfile"
 					@sync-invoices="syncPendingInvoices"
 					@open-employee-switch="openEmployeeSwitch"
 					@lock-pos="lockPosScreen"
@@ -659,6 +660,9 @@ export default {
 			window.location.href = "/app";
 		},
 
+		openSwitchProfile() {
+			this.$emit("switch-profile");
+		},
 		openCloseShift() {
 			this.$emit("close-shift");
 		},
@@ -1007,6 +1011,7 @@ export default {
 		"nav-click",
 		"change-page",
 		"close-shift",
+		"switch-profile",
 		"sync-invoices",
 		"retry-status",
 		"open-customer-display",

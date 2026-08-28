@@ -6,7 +6,7 @@ from __future__ import unicode_literals
 import json
 import re
 import frappe
-from frappe.utils import nowdate, flt, cstr, get_datetime
+from frappe.utils import nowdate, flt, cstr, cint, get_datetime
 from frappe import _
 from erpnext.accounts.doctype.loyalty_program.loyalty_program import (
     get_loyalty_program_details_with_points,
@@ -145,6 +145,16 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
             start_after=start_after,
         )
 
+        # Over-fetch by the number of hidden rows so that excluding them cannot
+        # shrink a full page. A short page is the client's end-of-list signal,
+        # so a page trimmed from 1000 to 999 would truncate the whole sync.
+        resolved_limit = cint(limit) if limit else None
+        fetch_limit = (
+            resolved_limit + len(EXCLUDED_POS_CUSTOMER_NAMES)
+            if resolved_limit and EXCLUDED_POS_CUSTOMER_NAMES
+            else resolved_limit
+        )
+
         customers = frappe.get_all(
             "Customer",
             filters=filters,
@@ -155,17 +165,60 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
                 "tax_id",
                 "customer_name",
                 "primary_address",
+                "modified",
             ],
             order_by="name",
             limit_start=None if start_after else offset,
-            limit_page_length=limit,
+            limit_page_length=fetch_limit,
         )
-        return _exclude_hidden_pos_customers(customers)
+        rows = _exclude_hidden_pos_customers(customers)
+        return rows[:resolved_limit] if resolved_limit else rows
 
     if _pos_profile.get("posa_use_server_cache") and not (limit or offset or start_after or modified_after):
         return __get_customer_names(pos_profile, limit, offset, start_after, modified_after)
     else:
         return _get_customer_names(pos_profile, limit, offset, start_after, modified_after)
+
+
+@frappe.whitelist()
+def search_customers(pos_profile, term=None, limit=20):
+    """Look a customer up directly on the server.
+
+    The POS searches its local cache, so a customer missing from that cache is
+    invisible at the till even though it exists. This is the fallback the client
+    uses when a local search comes back empty.
+    """
+    term = cstr(term or "").strip()
+    if not term:
+        return []
+
+    profile = json.loads(pos_profile) if isinstance(pos_profile, str) else pos_profile
+    filters = _get_rfs_customer_filters(profile)
+    like = "%{}%".format(term)
+
+    rows = frappe.get_all(
+        "Customer",
+        filters=filters,
+        or_filters=[
+            ["customer_name", "like", like],
+            ["name", "like", like],
+            ["mobile_no", "like", like],
+            ["email_id", "like", like],
+            ["tax_id", "like", like],
+        ],
+        fields=[
+            "name",
+            "mobile_no",
+            "email_id",
+            "tax_id",
+            "customer_name",
+            "primary_address",
+            "modified",
+        ],
+        order_by="customer_name",
+        limit_page_length=cint(limit) or 20,
+    )
+    return _exclude_hidden_pos_customers(rows)
 
 
 @frappe.whitelist()

@@ -34,6 +34,7 @@ from .customers import (
     get_sales_person_names,
     link_store_collection_address_to_customer,
     make_address,
+    search_customers,
     set_customer_info,
 )
 from .invoices import (
@@ -99,6 +100,8 @@ from .shifts import (
     check_opening_shift,
     create_opening_voucher,
     get_opening_dialog_data,
+    get_switchable_pos_profiles,
+    switch_pos_profile,
 )
 from .utilities import (
     get_app_branch,

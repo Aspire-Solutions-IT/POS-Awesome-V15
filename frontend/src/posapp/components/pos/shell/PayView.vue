@@ -221,7 +221,10 @@ import { useRtl } from "../../../composables/core/useRtl";
 import { useCustomersStore } from "../../../stores/customersStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { useToastStore } from "../../../stores/toastStore.js";
-import { getValidCachedOpeningForCurrentUser } from "../../../utils/openingCache";
+import {
+	getActiveOpeningShiftName,
+	getValidCachedOpeningForCurrentUser,
+} from "../../../utils/openingCache";
 
 // Composables
 import { usePosPayData } from "../../../composables/pos/payments/usePosPayData";
@@ -729,6 +732,7 @@ export default {
 			try {
 				const r = await frappe.call("posawesome.posawesome.api.shifts.check_opening_shift", {
 					user: frappe.session.user,
+					preferred_shift: getActiveOpeningShiftName() || null,
 				});
 				if (r.message) {
 					await applyOpeningData(r.message);
