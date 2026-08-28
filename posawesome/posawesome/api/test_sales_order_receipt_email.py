@@ -4,7 +4,11 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+
+class ValidationError(Exception):
+    """Stands in for frappe.ValidationError so throw() can be asserted on."""
 
 
 def _install_stub_modules():
@@ -21,6 +25,11 @@ def _install_stub_modules():
     frappe_module.get_doc = lambda *args, **kwargs: None
     frappe_module.attach_print = lambda *args, **kwargs: None
     frappe_module.sendmail = lambda *args, **kwargs: None
+    def _throw(message, exc=None, **_kwargs):
+        raise ValidationError(message)
+
+    frappe_module.throw = _throw
+    frappe_module.ValidationError = ValidationError
     frappe_module.get_traceback = lambda: "traceback"
     frappe_module.log_error = lambda *args, **kwargs: None
     frappe_module.logger = lambda *args, **kwargs: SimpleNamespace(info=lambda *a, **k: None)
@@ -43,6 +52,7 @@ def _install_stub_modules():
 
     frappe_utils = types.ModuleType("frappe.utils")
     frappe_utils.cint = lambda value=0: int(value or 0)
+    frappe_utils.cstr = lambda value="", *args, **kwargs: "" if value is None else str(value)
     frappe_utils.flt = lambda value=0, *args, **kwargs: float(value or 0)
     frappe_utils.getdate = lambda value: value
     frappe_utils.nowdate = lambda: "2026-06-03"
@@ -122,6 +132,7 @@ class TestSalesOrderReceiptEmail(TestCase):
             pos_profile="POS-1",
             print_format="POS Receipt",
             cc=["cc@example.com"],
+            revised=False,
         )
 
     def test_on_submit_skips_when_customer_email_is_missing(self):
@@ -434,3 +445,353 @@ class TestSalesOrderReceiptEmail(TestCase):
         log_error.assert_called_once_with(
             "traceback", "POSAwesome Receipt Email Error - Sales Order SO-0006"
         )
+
+
+class TestManagedSalesOrderReceiptResend(TestCase):
+    def _order(self, **overrides):
+        defaults = dict(
+            doctype="Sales Order",
+            name="SO-9001",
+            customer="CUST-1",
+            pos_profile="POS-1",
+            customer_address="ADDR-BILL",
+            shipping_address_name="ADDR-SHIP",
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _address_rows(self, billing_email="", shipping_email=""):
+        return [
+            {
+                "name": "ADDR-BILL",
+                "fieldname": "customer_address",
+                "label": "Billing Address",
+                "address_title": "Head Office",
+                "email_id": billing_email,
+            },
+            {
+                "name": "ADDR-SHIP",
+                "fieldname": "shipping_address_name",
+                "label": "Shipping Address",
+                "address_title": "Warehouse",
+                "email_id": shipping_email,
+            },
+        ]
+
+    def test_receipt_addresses_skip_missing_and_duplicate_records(self):
+        doc = self._order(customer_address="ADDR-1", shipping_address_name="ADDR-1")
+
+        with patch.object(
+            sales_orders.frappe.db,
+            "get_value",
+            return_value={"address_title": "Head Office", "email_id": "a@example.com"},
+        ):
+            rows = sales_orders._managed_sales_order_receipt_addresses(doc)
+
+        self.assertEqual([row["name"] for row in rows], ["ADDR-1"])
+        self.assertEqual(rows[0]["fieldname"], "customer_address")
+
+    def test_receipt_state_points_at_the_address_the_recipient_came_from(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders,
+            "_managed_sales_order_receipt_addresses",
+            return_value=self._address_rows(shipping_email="ship@example.com"),
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="ship@example.com"
+        ), patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("POS Receipt", [])
+        ):
+            state = sales_orders._managed_sales_order_receipt_email_state(doc)
+
+        self.assertEqual(state["recipient"], "ship@example.com")
+        self.assertEqual(state["recipient_address"], "ADDR-SHIP")
+        self.assertEqual(state["cc_emails"], [])
+        self.assertTrue(state["can_send"])
+        self.assertEqual(state["blocked_reason"], "")
+
+    def test_receipt_state_blocks_when_print_format_is_missing(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=[]
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="a@example.com"
+        ), patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("", [])
+        ):
+            state = sales_orders._managed_sales_order_receipt_email_state(doc)
+
+        self.assertFalse(state["can_send"])
+        self.assertIn("print format", state["blocked_reason"])
+
+    def test_receipt_state_blocks_when_no_email_anywhere(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=self._address_rows()
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value=""
+        ), patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("POS Receipt", [])
+        ):
+            state = sales_orders._managed_sales_order_receipt_email_state(doc)
+
+        self.assertFalse(state["can_send"])
+        self.assertEqual(state["recipient_address"], "")
+
+    def test_manual_receipt_settings_ignore_the_auto_send_toggle(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders,
+            "_get_receipt_email_settings",
+            return_value=(0, "POS Receipt", ["cc@example.com"]),
+        ):
+            print_format, cc_emails = sales_orders._get_manual_receipt_email_settings(doc)
+
+        self.assertEqual(print_format, "POS Receipt")
+        self.assertEqual(cc_emails, ["cc@example.com"])
+
+    def test_update_address_email_rejects_an_address_not_on_the_order(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=self._address_rows()
+        ), patch.object(sales_orders.frappe, "get_doc") as get_doc:
+            with self.assertRaises(ValidationError):
+                sales_orders._update_managed_sales_order_address_email(
+                    doc, "ADDR-SOMEONE-ELSE", "new@example.com"
+                )
+
+        get_doc.assert_not_called()
+
+    def test_update_address_email_rejects_an_invalid_email(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=self._address_rows()
+        ), patch.object(sales_orders.frappe, "get_doc") as get_doc:
+            with self.assertRaises(ValidationError):
+                sales_orders._update_managed_sales_order_address_email(doc, "ADDR-BILL", "not-an-email")
+
+        get_doc.assert_not_called()
+
+    def test_update_address_email_rejects_more_than_one_address(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=self._address_rows()
+        ), patch.object(sales_orders.frappe, "get_doc") as get_doc:
+            with self.assertRaises(ValidationError):
+                sales_orders._update_managed_sales_order_address_email(
+                    doc, "ADDR-BILL", "a@example.com, b@example.com"
+                )
+
+        get_doc.assert_not_called()
+
+    def test_update_address_email_saves_the_new_value(self):
+        doc = self._order()
+        address = SimpleNamespace(email_id="old@example.com", flags=SimpleNamespace(), save=MagicMock())
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=self._address_rows()
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=address):
+            result = sales_orders._update_managed_sales_order_address_email(
+                doc, "ADDR-BILL", " New@Example.com "
+            )
+
+        self.assertEqual(result, "New@Example.com")
+        self.assertEqual(address.email_id, "New@Example.com")
+        address.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_update_address_email_is_a_no_op_when_unchanged(self):
+        doc = self._order()
+        address = SimpleNamespace(email_id="same@example.com", flags=SimpleNamespace(), save=MagicMock())
+
+        with patch.object(
+            sales_orders,
+            "_managed_sales_order_receipt_addresses",
+            return_value=self._address_rows(billing_email="same@example.com"),
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=address):
+            sales_orders._update_managed_sales_order_address_email(doc, "ADDR-BILL", "same@example.com")
+
+        address.save.assert_not_called()
+
+    def test_resend_updates_the_address_then_enqueues_the_same_job(self):
+        doc = self._order()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders, "_update_managed_sales_order_address_email"
+        ) as update_email, patch.object(
+            sales_orders,
+            "_get_manual_receipt_email_settings",
+            return_value=("POS Receipt", ["cc@example.com"]),
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="new@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=False
+        ), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-9001"}
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            result = sales_orders.resend_managed_sales_order_receipt(
+                "SO-9001", address="ADDR-BILL", email="new@example.com", include_cc=1
+            )
+
+        update_email.assert_called_once_with(doc, "ADDR-BILL", "new@example.com")
+        enqueue.assert_called_once_with(
+            "posawesome.posawesome.api.sales_orders._send_receipt_email_job",
+            queue="short",
+            enqueue_after_commit=True,
+            sales_order_name="SO-9001",
+            recipient="new@example.com",
+            pos_profile="POS-1",
+            print_format="POS Receipt",
+            cc=["cc@example.com"],
+            revised=False,
+        )
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["recipient"], "new@example.com")
+
+    def test_resend_leaves_the_address_alone_when_no_email_is_passed(self):
+        doc = self._order()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders, "_update_managed_sales_order_address_email"
+        ) as update_email, patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("POS Receipt", [])
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="existing@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=False
+        ), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-9001"}
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            sales_orders.resend_managed_sales_order_receipt("SO-9001")
+
+        update_email.assert_not_called()
+        enqueue.assert_called_once()
+
+    def test_resend_reports_the_skip_instead_of_emailing_from_a_dev_site(self):
+        doc = self._order()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("POS Receipt", [])
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="customer@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=True
+        ), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-9001"}
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            result = sales_orders.resend_managed_sales_order_receipt("SO-9001")
+
+        enqueue.assert_not_called()
+        self.assertEqual(result["status"], "skipped_dev")
+        self.assertEqual(result["recipient"], "customer@example.com")
+
+    def test_resend_refuses_when_the_profile_has_no_print_format(self):
+        doc = self._order()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("", [])
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            with self.assertRaises(ValidationError):
+                sales_orders.resend_managed_sales_order_receipt("SO-9001")
+
+        enqueue.assert_not_called()
+
+    def test_resend_refuses_when_there_is_no_recipient(self):
+        doc = self._order()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders, "_get_manual_receipt_email_settings", return_value=("POS Receipt", [])
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value=""
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            with self.assertRaises(ValidationError):
+                sales_orders.resend_managed_sales_order_receipt("SO-9001")
+
+        enqueue.assert_not_called()
+
+    def test_resend_requires_a_sales_order_name(self):
+        with self.assertRaises(ValidationError):
+            sales_orders.resend_managed_sales_order_receipt("   ")
+
+    def test_receipt_state_exposes_the_profile_cc_list(self):
+        doc = self._order()
+
+        with patch.object(
+            sales_orders, "_managed_sales_order_receipt_addresses", return_value=self._address_rows()
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="a@example.com"
+        ), patch.object(
+            sales_orders,
+            "_get_manual_receipt_email_settings",
+            return_value=("POS Receipt", ["office@example.com"]),
+        ):
+            state = sales_orders._managed_sales_order_receipt_email_state(doc)
+
+        self.assertEqual(state["cc_emails"], ["office@example.com"])
+
+    def _resend_with_cc(self, **kwargs):
+        doc = self._order()
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders,
+            "_get_manual_receipt_email_settings",
+            return_value=("POS Receipt", ["office@example.com"]),
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value="customer@example.com"
+        ), patch.object(
+            sales_orders, "_is_dev_or_local_environment", return_value=False
+        ), patch.object(
+            sales_orders, "_serialize_managed_sales_order", return_value={"name": "SO-9001"}
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            sales_orders.resend_managed_sales_order_receipt("SO-9001", **kwargs)
+        return enqueue
+
+    def test_resend_drops_the_cc_list_unless_it_is_opted_into(self):
+        enqueue = self._resend_with_cc()
+
+        self.assertEqual(enqueue.call_args.kwargs["cc"], [])
+
+    def test_resend_drops_the_cc_list_when_the_box_is_unticked(self):
+        enqueue = self._resend_with_cc(include_cc=0)
+
+        self.assertEqual(enqueue.call_args.kwargs["cc"], [])
+
+    def test_resend_includes_the_cc_list_when_opted_into(self):
+        enqueue = self._resend_with_cc(include_cc=1)
+
+        self.assertEqual(enqueue.call_args.kwargs["cc"], ["office@example.com"])
+
+    def test_resend_accepts_the_opt_in_as_a_string_from_the_client(self):
+        # frappe.call sends checkbox values as "1"/"0", not booleans.
+        enqueue = self._resend_with_cc(include_cc="1")
+
+        self.assertEqual(enqueue.call_args.kwargs["cc"], ["office@example.com"])

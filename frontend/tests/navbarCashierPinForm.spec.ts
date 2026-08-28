@@ -27,14 +27,23 @@ describe("NavbarCashierPinForm", () => {
 			global: {
 				mocks: {
 					__: (value: string, ...args: string[]) =>
-						value.replace(/\{(\d+)\}/g, (_, index) => `${args[Number(index)] ?? ""}`),
+						value.replace(
+							/\{(\d+)\}/g,
+							(_, index) => `${args[Number(index)] ?? ""}`,
+						),
 				},
 				stubs: {
 					"v-alert": {
 						template: '<div class="v-alert"><slot /></div>',
 					},
 					"v-text-field": {
-						props: ["modelValue", "label", "type", "appendInnerIcon", "disabled"],
+						props: [
+							"modelValue",
+							"label",
+							"type",
+							"appendInnerIcon",
+							"disabled",
+						],
 						emits: ["update:modelValue", "click:append-inner"],
 						template:
 							'<label><span>{{ label }}</span><input :value="modelValue" :type="type || \'text\'" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" /></label>',
@@ -53,7 +62,10 @@ describe("NavbarCashierPinForm", () => {
 	beforeEach(() => {
 		frappeCall.mockReset();
 		vi.stubGlobal("__", (value: string, ...args: string[]) =>
-			value.replace(/\{(\d+)\}/g, (_, index) => `${args[Number(index)] ?? ""}`),
+			value.replace(
+				/\{(\d+)\}/g,
+				(_, index) => `${args[Number(index)] ?? ""}`,
+			),
 		);
 		vi.stubGlobal("frappe", {
 			call: frappeCall,
@@ -63,9 +75,9 @@ describe("NavbarCashierPinForm", () => {
 	it("shows a warning when cashier or profile context is missing", () => {
 		const wrapper = mountForm();
 
-		expect(wrapper.get('[data-test="cashier-pin-empty-state"]').text()).toContain(
-			"Load a POS profile and cashier first.",
-		);
+		expect(
+			wrapper.get('[data-test="cashier-pin-empty-state"]').text(),
+		).toContain("Load a POS profile and cashier first.");
 		expect(frappeCall).not.toHaveBeenCalled();
 	});
 
@@ -89,9 +101,9 @@ describe("NavbarCashierPinForm", () => {
 				method: "posawesome.posawesome.api.employees.get_cashier_pin_status",
 			}),
 		);
-		expect(wrapper.get('[data-test="cashier-pin-message"]').text()).toContain(
-			"Enter the current PIN, then choose a new one.",
-		);
+		expect(
+			wrapper.get('[data-test="cashier-pin-message"]').text(),
+		).toContain("Enter the current PIN, then choose a new one.");
 	});
 
 	it("shows validation error when the new pin is invalid", async () => {
@@ -108,13 +120,44 @@ describe("NavbarCashierPinForm", () => {
 		});
 
 		await flushPromises();
-		await wrapper.get('[data-test="cashier-pin-new-input"] input').setValue("12");
-		await wrapper.get('[data-test="cashier-pin-confirm-input"] input').setValue("12");
+		await wrapper
+			.get('[data-test="cashier-pin-new-input"] input')
+			.setValue("12");
+		await wrapper
+			.get('[data-test="cashier-pin-confirm-input"] input')
+			.setValue("12");
 		await wrapper.get('[data-test="cashier-pin-save"]').trigger("click");
 
-		expect(wrapper.get('[data-test="cashier-pin-message"]').text()).toContain(
-			"PIN must be 4 to 8 digits.",
-		);
+		expect(
+			wrapper.get('[data-test="cashier-pin-message"]').text(),
+		).toContain("PIN must be 4 to 8 digits.");
+	});
+
+	it("keeps the pin inputs masked, numeric and digits-only", async () => {
+		frappeCall.mockResolvedValue({
+			message: {
+				has_pin: false,
+			},
+		});
+
+		const wrapper = mountForm({
+			posProfile: { name: "Main POS" },
+			currentCashier: { user: "cashier@example.com" },
+			currentCashierDisplay: "Main Cashier",
+		});
+
+		await flushPromises();
+
+		const input = wrapper.get('[data-test="cashier-pin-new-input"] input');
+		expect(input.attributes("type")).toBe("password");
+		expect(input.attributes("inputmode")).toBe("numeric");
+		expect(input.attributes("maxlength")).toBe("8");
+
+		await input.setValue("12ab34");
+		expect((input.element as HTMLInputElement).value).toBe("1234");
+
+		await input.setValue("1234567890");
+		expect((input.element as HTMLInputElement).value).toBe("12345678");
 	});
 
 	it("saves the cashier pin and shows success state", async () => {
@@ -137,8 +180,12 @@ describe("NavbarCashierPinForm", () => {
 		});
 
 		await flushPromises();
-		await wrapper.get('[data-test="cashier-pin-new-input"] input').setValue("1234");
-		await wrapper.get('[data-test="cashier-pin-confirm-input"] input').setValue("1234");
+		await wrapper
+			.get('[data-test="cashier-pin-new-input"] input')
+			.setValue("1234");
+		await wrapper
+			.get('[data-test="cashier-pin-confirm-input"] input')
+			.setValue("1234");
 		await wrapper.get('[data-test="cashier-pin-save"]').trigger("click");
 
 		await flushPromises();
@@ -148,8 +195,8 @@ describe("NavbarCashierPinForm", () => {
 				method: "posawesome.posawesome.api.employees.save_cashier_pin",
 			}),
 		);
-		expect(wrapper.get('[data-test="cashier-pin-message"]').text()).toContain(
-			"Cashier PIN saved successfully.",
-		);
+		expect(
+			wrapper.get('[data-test="cashier-pin-message"]').text(),
+		).toContain("Cashier PIN saved successfully.");
 	});
 });

@@ -124,8 +124,12 @@
 					data-test="profile-switch-supervisor"
 				/>
 				<v-text-field
-					v-model="pin"
+					:model-value="pin"
 					:type="showPin ? 'text' : 'password'"
+					inputmode="numeric"
+					pattern="[0-9]*"
+					:maxlength="MAX_PIN_LENGTH"
+					@update:model-value="onPinInput"
 					:append-inner-icon="showPin ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
 					variant="outlined"
 					density="comfortable"
@@ -180,6 +184,7 @@ import { useUIStore } from "../../../stores/uiStore";
 import { useInvoiceStore } from "../../../stores/invoiceStore";
 import { useEmployeeStore } from "../../../stores/employeeStore";
 import { usePosShift } from "../../../composables/pos/shared/usePosShift";
+import { MAX_PIN_LENGTH, sanitizePinInput } from "../../../utils/cashierPin";
 
 defineOptions({
 	name: "ProfileSwitchDialog",
@@ -219,6 +224,10 @@ const supervisor_user = ref("");
 const pin = ref("");
 const showPin = ref(false);
 const error = ref("");
+
+function onPinInput(value) {
+	pin.value = sanitizePinInput(value);
+}
 
 const payments_methods_headers = [
 	{ title: __("Mode of Payment"), align: "start", sortable: false, value: "mode_of_payment" },

@@ -48,13 +48,16 @@
 				<div class="navbar-cashier-pin-form__input-wrap">
 					<input
 						:id="inputId('current')"
-						v-model="pinForm.current_pin"
+						:value="pinForm.current_pin"
 						class="navbar-cashier-pin-form__input"
 						:type="pinVisibility.current_pin ? 'text' : 'password'"
 						:disabled="pinStatusLoading || pinSubmitting"
 						autocomplete="off"
 						name="posa-cashier-current-pin"
 						inputmode="numeric"
+						pattern="[0-9]*"
+						:maxlength="MAX_PIN_LENGTH"
+						@input="onPinInput('current_pin', $event)"
 					/>
 					<button
 						type="button"
@@ -73,13 +76,16 @@
 				<div class="navbar-cashier-pin-form__input-wrap">
 					<input
 						:id="inputId('new')"
-						v-model="pinForm.new_pin"
+						:value="pinForm.new_pin"
 						class="navbar-cashier-pin-form__input"
 						:type="pinVisibility.new_pin ? 'text' : 'password'"
 						:disabled="pinStatusLoading || pinSubmitting"
 						autocomplete="new-password"
 						name="posa-cashier-new-pin"
 						inputmode="numeric"
+						pattern="[0-9]*"
+						:maxlength="MAX_PIN_LENGTH"
+						@input="onPinInput('new_pin', $event)"
 					/>
 					<button
 						type="button"
@@ -98,13 +104,16 @@
 				<div class="navbar-cashier-pin-form__input-wrap">
 					<input
 						:id="inputId('confirm')"
-						v-model="pinForm.confirm_pin"
+						:value="pinForm.confirm_pin"
 						class="navbar-cashier-pin-form__input"
 						:type="pinVisibility.confirm_pin ? 'text' : 'password'"
 						:disabled="pinStatusLoading || pinSubmitting"
 						autocomplete="new-password"
 						name="posa-cashier-confirm-pin"
 						inputmode="numeric"
+						pattern="[0-9]*"
+						:maxlength="MAX_PIN_LENGTH"
+						@input="onPinInput('confirm_pin', $event)"
 					/>
 					<button
 						type="button"
@@ -138,6 +147,8 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from "vue";
+
+import { MAX_PIN_LENGTH, sanitizePinInput } from "../../utils/cashierPin";
 
 defineOptions({
 	name: "NavbarCashierPinForm",
@@ -212,6 +223,13 @@ function resetPinForm() {
 	pinVisibility.confirm_pin = false;
 	pinMessage.value = "";
 	pinMessageType.value = "info";
+}
+
+function onPinInput(field, event) {
+	const digits = sanitizePinInput(event.target.value);
+	pinForm[field] = digits;
+	// Keep the DOM in sync when a rejected character leaves the value unchanged.
+	event.target.value = digits;
 }
 
 function togglePinVisibility(field) {

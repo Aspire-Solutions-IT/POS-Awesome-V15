@@ -60,8 +60,12 @@
 					}}
 				</v-alert>
 				<v-text-field
-					v-model="cashierPin"
+					:model-value="cashierPin"
 					:type="showPin ? 'text' : 'password'"
+					inputmode="numeric"
+					pattern="[0-9]*"
+					:maxlength="MAX_PIN_LENGTH"
+					@update:model-value="onPinInput"
 					:append-inner-icon="showPin ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
 					variant="outlined"
 					density="comfortable"
@@ -169,8 +173,12 @@
 					}}
 				</v-alert>
 				<v-text-field
-					v-model="cashierPin"
+					:model-value="cashierPin"
 					:type="showPin ? 'text' : 'password'"
+					inputmode="numeric"
+					pattern="[0-9]*"
+					:maxlength="MAX_PIN_LENGTH"
+					@update:model-value="onPinInput"
 					:append-inner-icon="showPin ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
 					variant="outlined"
 					density="comfortable"
@@ -217,6 +225,7 @@ import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useEmployeeStore } from "../../../stores/employeeStore";
 import { useUIStore } from "../../../stores/uiStore";
+import { MAX_PIN_LENGTH, sanitizePinInput } from "../../../utils/cashierPin";
 
 const employeeStore = useEmployeeStore();
 const uiStore = useUIStore();
@@ -231,6 +240,10 @@ const pinInputArmed = ref(false);
 const posProfileName = computed(
 	() => uiStore.posProfile?.name || window.frappe?.boot?.pos_profile?.name || "",
 );
+
+function onPinInput(value) {
+	cashierPin.value = sanitizePinInput(value);
+}
 
 watch(
 	[currentCashier, switchDialogOpen, lockDialogOpen, terminalEmployees],

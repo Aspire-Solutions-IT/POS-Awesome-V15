@@ -177,6 +177,16 @@
 								{{ __("Pay Remaining Balance") }}
 							</v-btn>
 							<v-btn
+								v-if="selectedOrder"
+								color="primary"
+								variant="tonal"
+								prepend-icon="mdi-email-outline"
+								:disabled="receiptLoading"
+								@click="openReceiptDialog"
+							>
+								{{ __("Email Receipt") }}
+							</v-btn>
+							<v-btn
 								color="primary"
 								:loading="saveLoading"
 								:disabled="!selectedOrder || !isDirty"
@@ -637,6 +647,96 @@
 			</v-card>
 		</v-dialog>
 
+		<!-- Resending is a deliberate act, so the recipient is shown and editable before
+		     anything is queued rather than the receipt silently going wherever the order
+		     happens to point. -->
+		<v-dialog v-model="receiptDialogOpen" max-width="520">
+			<v-card class="pos-themed-card">
+				<v-card-title>{{ __("Email Receipt") }}</v-card-title>
+				<v-card-text class="pt-2">
+					<v-alert
+						v-if="receiptError"
+						type="error"
+						variant="tonal"
+						density="compact"
+						border="start"
+						class="mb-4"
+					>
+						{{ receiptError }}
+					</v-alert>
+					<v-alert
+						v-if="receiptBlockedReason"
+						type="warning"
+						variant="tonal"
+						density="compact"
+						border="start"
+						class="mb-4"
+					>
+						{{ receiptBlockedReason }}
+					</v-alert>
+					<p class="mb-4">
+						{{
+							__("The receipt for {0} will be attached as a PDF and sent again.", [
+								selectedOrder?.name || "",
+							])
+						}}
+					</p>
+					<!-- The address is what the send resolves through, so name it rather than
+					     letting the field look like a free-text "send to" box. -->
+					<div class="payment-balance-copy mb-4">
+						<span class="payment-balance-copy__label">{{ __("Currently sends to") }}</span>
+						<strong>{{ receiptCurrentRecipient }}</strong>
+					</div>
+					<v-select
+						v-if="receiptAddressOptions.length > 1"
+						v-model="receiptForm.address"
+						:items="receiptAddressOptions"
+						item-title="title"
+						item-value="value"
+						:label="__('Address to update')"
+						density="compact"
+						hide-details
+						class="pos-themed-input mb-4"
+						@update:model-value="onReceiptAddressChange"
+					/>
+					<v-text-field
+						v-if="receiptAddressOptions.length"
+						v-model="receiptForm.email"
+						:label="receiptEmailLabel"
+						:hint="receiptEmailHint"
+						persistent-hint
+						density="compact"
+						type="email"
+						class="pos-themed-input"
+					/>
+					<!-- Opt-in: a resend is usually a fix for one customer, so the office
+					     copy is off unless it is asked for. -->
+					<v-checkbox
+						v-if="receiptCcEmails.length"
+						v-model="receiptForm.includeCc"
+						:label="__('Also send a copy to {0}', [receiptCcEmails.join(', ')])"
+						density="compact"
+						hide-details
+						class="mt-2"
+					/>
+				</v-card-text>
+				<v-card-actions class="justify-end">
+					<v-btn variant="text" :disabled="receiptLoading" @click="closeReceiptDialog">
+						{{ __("Cancel") }}
+					</v-btn>
+					<v-btn
+						color="primary"
+						variant="flat"
+						:loading="receiptLoading"
+						:disabled="receiptLoading || !receiptCanSend"
+						@click="sendReceipt"
+					>
+						{{ receiptEmailChanged ? __("Update Email and Send") : __("Send Receipt") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+
 		<!-- Kept out of the two column layout: the selector needs real width, and the
 		     detail panel is already tight. -->
 		<v-navigation-drawer
@@ -837,6 +937,24 @@ type ManagedSalesOrderAddress = {
 	display?: string | null;
 };
 
+type ManagedSalesOrderReceiptAddress = {
+	name: string;
+	fieldname?: string;
+	label?: string;
+	address_title?: string | null;
+	email_id?: string | null;
+};
+
+type ManagedSalesOrderReceiptEmail = {
+	print_format?: string | null;
+	recipient?: string | null;
+	recipient_address?: string | null;
+	addresses?: ManagedSalesOrderReceiptAddress[] | null;
+	cc_emails?: string[] | null;
+	can_send?: boolean;
+	blocked_reason?: string | null;
+};
+
 type ManagedSalesOrderSurplus = {
 	amount?: number | null;
 	reason?: string | null;
@@ -871,6 +989,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	surplus?: ManagedSalesOrderSurplus | null;
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
+	receipt_email?: ManagedSalesOrderReceiptEmail | null;
 	auto_release_date?: string | null;
 	shipping_address_name?: string | null;
 	customer_address?: string | null;
@@ -924,6 +1043,17 @@ const itemPaymentLoading = ref(false);
 // Opt-in: spending a customer's credit is their decision, not a silent netting off.
 const useCustomerCredit = ref(false);
 const creditNotice = ref("");
+
+// Resend receipt: the recipient is confirmed (and can be corrected on the Address)
+// before anything is queued.
+const receiptDialogOpen = ref(false);
+const receiptLoading = ref(false);
+const receiptError = ref("");
+const receiptForm = reactive({
+	address: "",
+	email: "",
+	includeCc: false,
+});
 
 const paymentForm = reactive({
 	amount: "",
@@ -1263,6 +1393,166 @@ const closePaymentDialog = () => {
 	paymentForm.amount = "";
 	paymentForm.mode_of_payment = "";
 	paymentForm.reference_no = "";
+};
+
+const receiptState = computed(() => selectedOrder.value?.receipt_email || null);
+
+const receiptAddresses = computed(() =>
+	Array.isArray(receiptState.value?.addresses) ? receiptState.value.addresses : [],
+);
+
+const receiptAddressOptions = computed(() =>
+	receiptAddresses.value.map((address) => {
+		const name = String(address.address_title || address.name || "");
+		const label = String(address.label || "");
+		return {
+			title: label ? `${label} - ${name}` : name,
+			value: address.name,
+		};
+	}),
+);
+
+/** The email currently stored on the address the dialog is pointed at. */
+const receiptSelectedAddressEmail = computed(
+	() =>
+		String(
+			receiptAddresses.value.find((address) => address.name === receiptForm.address)?.email_id || "",
+		),
+);
+
+/** Configured on the POS Profile, delivered as bcc, and only when the box is ticked. */
+const receiptCcEmails = computed(() =>
+	Array.isArray(receiptState.value?.cc_emails) ? receiptState.value.cc_emails : [],
+);
+
+/** True only for a real correction: a non-empty value that differs from what is stored. */
+const receiptEmailChanged = computed(() => {
+	const typed = receiptForm.email.trim();
+	return Boolean(typed) && typed !== receiptSelectedAddressEmail.value.trim();
+});
+
+/** Where the receipt lands if the dialog is sent as it stands. */
+const receiptCurrentRecipient = computed(
+	() =>
+		(receiptEmailChanged.value ? receiptForm.email.trim() : String(receiptState.value?.recipient || "")) ||
+		__("No email address found"),
+);
+
+const receiptCanSend = computed(
+	() =>
+		Boolean(receiptState.value?.print_format) &&
+		(receiptEmailChanged.value || Boolean(receiptState.value?.recipient)),
+);
+
+const receiptEmailLabel = computed(() => {
+	const address = receiptAddresses.value.find((row) => row.name === receiptForm.address);
+	return address?.label ? __("Email on {0}", [String(address.label)]) : __("Email Address");
+});
+
+/** Only a missing print format blocks the send outright - a missing email is fixable here. */
+const receiptBlockedReason = computed(() => {
+	if (!receiptState.value?.print_format) {
+		return String(receiptState.value?.blocked_reason || "");
+	}
+	if (!receiptAddressOptions.value.length) {
+		return __("This order has no address record, so the email can only be changed on the customer.");
+	}
+	return "";
+});
+
+const receiptEmailHint = computed(() => {
+	if (receiptEmailChanged.value) {
+		return __("Saved on the address before the receipt is sent.");
+	}
+	return receiptSelectedAddressEmail.value
+		? __("Stored on this address. Leave it as it is to send there.")
+		: __("This address has no email. Enter one to use it, or send to the address above.");
+});
+
+const onReceiptAddressChange = () => {
+	receiptForm.email = receiptSelectedAddressEmail.value;
+};
+
+const openReceiptDialog = () => {
+	if (!selectedOrder.value) return;
+	receiptError.value = "";
+	const state = receiptState.value;
+	// Prefer the address the recipient actually resolved from, so an edit changes the
+	// record that decides where the receipt goes.
+	receiptForm.address =
+		String(state?.recipient_address || "") || receiptAddressOptions.value[0]?.value || "";
+	receiptForm.email = receiptSelectedAddressEmail.value;
+	receiptForm.includeCc = false;
+	receiptDialogOpen.value = true;
+};
+
+const closeReceiptDialog = () => {
+	receiptDialogOpen.value = false;
+	receiptError.value = "";
+};
+
+const sendReceipt = async () => {
+	if (!selectedOrder.value || receiptLoading.value) return;
+
+	const email = receiptForm.email.trim();
+	if (!receiptCanSend.value) {
+		receiptError.value = __("There is no email address to send this receipt to.");
+		return;
+	}
+	// Only a typed correction writes to the Address. An untouched field means "send it
+	// wherever it already goes", which may be the customer record rather than an address.
+	if (receiptEmailChanged.value && !receiptForm.address) {
+		receiptError.value = __("This order has no address record to save the email on.");
+		return;
+	}
+	const willUpdateAddress = receiptEmailChanged.value;
+
+	receiptLoading.value = true;
+	receiptError.value = "";
+
+	try {
+		const message = await api.call<{
+			status?: string;
+			recipient?: string;
+			sales_order?: ManagedSalesOrderDetail;
+		}>(
+			"posawesome.posawesome.api.sales_orders.resend_managed_sales_order_receipt",
+			{
+				sales_order: selectedOrder.value.name,
+				address: willUpdateAddress ? receiptForm.address : null,
+				email: willUpdateAddress ? email : null,
+				include_cc: receiptForm.includeCc ? 1 : 0,
+			},
+			{ freeze: true, freeze_message: __("Queueing the receipt...") },
+		);
+
+		// Refreshes the receipt state (and any corrected address email) without calling
+		// resetForm: a resend changes no item or header field, and resetForm would throw
+		// away edits the user still has staged.
+		if (message?.sales_order) {
+			selectedOrder.value = message.sales_order;
+		}
+
+		if (message?.status === "skipped_dev") {
+			// The server refuses to email real customers from a dev copy, so say that
+			// rather than reporting a receipt that was never queued.
+			toastStore.show({
+				title: __("Not sent: receipts are disabled on this development site."),
+				color: "warning",
+			});
+		} else {
+			toastStore.show({
+				title: __("Receipt queued for {0}", [message?.recipient || email]),
+				color: "success",
+			});
+		}
+		receiptDialogOpen.value = false;
+	} catch (error: any) {
+		console.error("Failed to resend the Sales Order receipt", error);
+		receiptError.value = getErrorMessage(error, __("Unable to queue the receipt"));
+	} finally {
+		receiptLoading.value = false;
+	}
 };
 
 const openPaymentDialog = () => {

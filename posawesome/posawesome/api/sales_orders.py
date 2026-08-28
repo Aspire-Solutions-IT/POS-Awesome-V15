@@ -145,6 +145,120 @@ def _resolve_customer_email(so_doc):
     return str(email or "").strip()
 
 
+# Address fields the receipt is resolved through, in the order _resolve_customer_email
+# consults them. The label is what the resend dialog shows for each record.
+MANAGED_RECEIPT_ADDRESS_SOURCES = (
+    ("customer_address", "Billing Address"),
+    ("shipping_address_name", "Shipping Address"),
+)
+
+
+def _managed_sales_order_receipt_addresses(doc):
+    """The order's own addresses, as the resend dialog needs to show and edit them."""
+    rows = []
+    seen = set()
+    for fieldname, label in MANAGED_RECEIPT_ADDRESS_SOURCES:
+        address_name = cstr(getattr(doc, fieldname, "") or "").strip()
+        if not address_name or address_name in seen:
+            continue
+        seen.add(address_name)
+        values = (
+            frappe.db.get_value("Address", address_name, ["address_title", "email_id"], as_dict=True) or {}
+        )
+        rows.append(
+            {
+                "name": address_name,
+                "fieldname": fieldname,
+                "label": label,
+                "address_title": cstr(values.get("address_title") or "").strip(),
+                "email_id": cstr(values.get("email_id") or "").strip(),
+            }
+        )
+    return rows
+
+
+def _get_manual_receipt_email_settings(doc):
+    """Print format and cc list for a resend, as (print_format, cc_emails).
+
+    Deliberately ignores posa_auto_email_receipt_on_submit: someone asking for the
+    receipt to go out again has already decided, whether or not the profile emails one
+    on submit. The print format is still required - there is nothing to attach without
+    it.
+    """
+    profile_name = cstr(getattr(doc, "pos_profile", "") or "").strip()
+    if not profile_name:
+        return "", []
+
+    _enabled, print_format, cc_emails = _get_receipt_email_settings(profile_name)
+    return print_format, cc_emails
+
+
+def _managed_sales_order_receipt_email_state(doc):
+    """Where a resent receipt would go, and why it could not be sent."""
+    addresses = _managed_sales_order_receipt_addresses(doc)
+    recipient = _resolve_customer_email(doc)
+    print_format, cc_emails = _get_manual_receipt_email_settings(doc)
+
+    # The address the recipient actually came from, so the dialog edits the record that
+    # decides where the receipt goes rather than an unrelated one on the same order.
+    recipient_address = ""
+    for address in addresses:
+        if address["email_id"] and address["email_id"] == recipient:
+            recipient_address = address["name"]
+            break
+
+    blocked_reason = ""
+    if not print_format:
+        blocked_reason = _("No receipt print format is configured on this POS Profile.")
+    elif not recipient:
+        blocked_reason = _("No email address is set for this customer.")
+
+    return {
+        "print_format": print_format,
+        "recipient": recipient,
+        "recipient_address": recipient_address,
+        "addresses": addresses,
+        # The profile's cc list, so the dialog can name who a copy would go to. Sent as
+        # bcc by _send_receipt_email_job, and only when the user opts in.
+        "cc_emails": cc_emails,
+        "can_send": not blocked_reason,
+        "blocked_reason": blocked_reason,
+    }
+
+
+def _update_managed_sales_order_address_email(doc, address_name, email):
+    """Write a corrected email onto one of this order's own addresses.
+
+    Restricted to the billing/shipping address on the order so the endpoint cannot be
+    turned into a way to edit arbitrary Address records, and saved through the document
+    so the change lands in Version history.
+    """
+    address_name = cstr(address_name or "").strip()
+    email = cstr(email or "").strip()
+    if not address_name:
+        frappe.throw(_("Select which address to update before changing the email."))
+    if not email:
+        frappe.throw(_("Email address is required."))
+
+    allowed = {row["name"] for row in _managed_sales_order_receipt_addresses(doc)}
+    if address_name not in allowed:
+        frappe.throw(_("Address {0} is not linked to this Sales Order.").format(address_name))
+
+    sanitized = validate_email_address(email, throw=False)
+    if len(split_emails(sanitized)) != 1:
+        frappe.throw(_("{0} is not a valid email address.").format(email))
+    email = split_emails(sanitized)[0]
+
+    address = frappe.get_doc("Address", address_name)
+    if cstr(getattr(address, "email_id", "") or "").strip() == email:
+        return email
+
+    address.email_id = email
+    address.flags.ignore_permissions = True
+    address.save(ignore_permissions=True)
+    return email
+
+
 def _get_print_format_override(print_format):
     records = frappe.get_all(
         "Print Format Overrides",
@@ -876,6 +990,7 @@ def _serialize_managed_sales_order(doc):
         "surplus": _get_managed_sales_order_surplus(doc),
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
+        "receipt_email": _managed_sales_order_receipt_email_state(doc),
         "items": items,
     }
 
@@ -1733,6 +1848,72 @@ def update_managed_sales_order(data):
 
     doc.reload()
     return _serialize_managed_sales_order(doc)
+
+
+@frappe.whitelist()
+def resend_managed_sales_order_receipt(sales_order, address=None, email=None, include_cc=0):
+    """Queue this order's receipt again, optionally correcting the address email first.
+
+    Uses the same job and print format as the automatic send on submit, so a resent
+    receipt is the same document the customer would have been sent. The email is written
+    to the Address before the recipient is resolved, so a correction made in the dialog
+    is what the receipt actually goes to.
+
+    The POS Profile's cc list (delivered as bcc) is opt-in here rather than automatic:
+    a resend is usually a fix for one customer, and copying the office every time
+    someone corrects a typo is noise.
+    """
+    sales_order_name = cstr(sales_order or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    if cstr(email or "").strip():
+        _update_managed_sales_order_address_email(doc, address, email)
+
+    print_format, cc_emails = _get_manual_receipt_email_settings(doc)
+    if not cint(include_cc):
+        cc_emails = []
+    if not print_format:
+        frappe.throw(
+            _("No receipt print format is configured on POS Profile {0}.").format(
+                cstr(getattr(doc, "pos_profile", "") or "") or _("for this order")
+            )
+        )
+
+    recipient = _resolve_customer_email(doc)
+    if not recipient:
+        frappe.throw(_("No email address is set for this customer."))
+
+    if _is_dev_or_local_environment():
+        # Same guard as the automatic send: a dev copy carries real customer data and
+        # must not email it. Reported back so the UI can say so rather than claiming
+        # a receipt went out.
+        return {
+            "status": "skipped_dev",
+            "recipient": recipient,
+            "sales_order": _serialize_managed_sales_order(doc),
+        }
+
+    frappe.enqueue(
+        "posawesome.posawesome.api.sales_orders._send_receipt_email_job",
+        queue="short",
+        enqueue_after_commit=True,
+        sales_order_name=doc.name,
+        recipient=recipient,
+        pos_profile=doc.pos_profile,
+        print_format=print_format,
+        cc=cc_emails,
+        revised=False,
+    )
+
+    return {
+        "status": "queued",
+        "recipient": recipient,
+        "sales_order": _serialize_managed_sales_order(doc),
+    }
 
 
 @frappe.whitelist()
