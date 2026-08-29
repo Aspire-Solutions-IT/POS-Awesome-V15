@@ -2,9 +2,13 @@
 	<tr class="posa-cart-item-row" v-memo="memoDeps">
 		<template v-for="column in visibleColumns" :key="column.key">
 			<!-- Item Name Column -->
-			<td v-if="column.key === 'item_name'" class="text-start" :data-column-key="'item_name'">
-				<div class="d-flex align-center">
-					<span>{{ item.item_name }}</span>
+			<td
+				v-if="column.key === 'item_name'"
+				class="text-start posa-cart-item-name-cell"
+				:data-column-key="'item_name'"
+			>
+				<div class="d-flex align-center posa-cart-item-name-content">
+					<span class="posa-cart-item-name-text">{{ item.item_name }}</span>
 					<v-chip v-if="item.is_bundle" color="secondary" size="x-small" class="ml-1">
 						{{ __("Bundle") }}
 					</v-chip>
@@ -775,10 +779,28 @@ function handleWarehouseSelect(warehouse) {
 td {
 	padding: 16px 12px;
 	vertical-align: middle;
-	height: 60px;
+	height: auto;
+	min-height: var(--cell-height, 60px);
 	text-align: center;
 	color: var(--pos-text-primary);
 	position: relative;
+}
+
+.posa-cart-item-name-content {
+	height: auto;
+	min-height: calc(var(--cell-height, 60px) - 28px);
+	flex-wrap: wrap;
+	justify-content: flex-start;
+	align-content: center;
+	gap: 4px;
+}
+
+.posa-cart-item-name-text {
+	flex: 1 1 12rem;
+	min-width: 0;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	line-height: 1.35;
 }
 
 /* Keyboard focus styles */

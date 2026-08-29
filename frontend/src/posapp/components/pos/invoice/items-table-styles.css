@@ -229,7 +229,8 @@
 .posa-cart-table td {
 	padding: 14px 12px;
 	vertical-align: middle;
-	height: 60px;
+	height: auto;
+	min-height: var(--cell-height, 60px);
 	text-align: center;
 	color: var(--pos-text-primary);
 	position: relative;
@@ -551,7 +552,7 @@
 
 /* Ensure table rows have consistent spacing */
 .posa-cart-table tbody tr:not([style*="height: 0"]) {
-	height: var(--cell-height, 60px);
+	height: auto;
 	min-height: var(--cell-height, 60px);
 }
 
