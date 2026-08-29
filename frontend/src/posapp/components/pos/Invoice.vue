@@ -387,7 +387,7 @@ export default {
 			packed_dialog_items: [],
 			show_packed_dialog: false,
 			invoiceTypes: ["Order"],
-			itemsPerPage: 1000,
+			itemsPerPage: 10,
 			itemSearch: "",
 			expanded: [],
 			singleExpand: true,

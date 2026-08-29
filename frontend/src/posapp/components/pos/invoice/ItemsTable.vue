@@ -17,7 +17,8 @@
 			:class="tableClasses"
 			fixed-header
 			:density="tableDensity"
-			hide-default-footer
+			:items-per-page="itemsPerPage"
+			:items-per-page-options="[10, 25, 50, 100]"
 			:header-props="dynamicHeaderProps"
 			:search="itemSearch"
 			:custom-filter="customItemFilter"
