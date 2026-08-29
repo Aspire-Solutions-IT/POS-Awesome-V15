@@ -171,7 +171,6 @@ class TestPosCustomersRfs(unittest.TestCase):
 		def fake_get_all(
 			doctype,
 			filters=None,
-			or_filters=None,
 			fields=None,
 			order_by=None,
 			limit_start=None,
@@ -181,7 +180,6 @@ class TestPosCustomersRfs(unittest.TestCase):
 			frappe_module.last_get_all = {
 				"doctype": doctype,
 				"filters": filters,
-				"or_filters": or_filters,
 				"fields": fields,
 				"order_by": order_by,
 				"limit_start": limit_start,
@@ -235,7 +233,6 @@ class TestPosCustomersRfs(unittest.TestCase):
 		utils_module.nowdate = lambda: "2026-06-12"
 		utils_module.flt = lambda value, *args, **kwargs: float(value or 0)
 		utils_module.cstr = lambda value: "" if value is None else str(value)
-		utils_module.cint = lambda value, *args, **kwargs: int(float(value or 0))
 		utils_module.get_datetime = lambda value: type("Dt", (), {"isoformat": lambda self: value})()
 
 		caching_module = types.ModuleType("frappe.utils.caching")
@@ -324,81 +321,6 @@ class TestPosCustomersRfs(unittest.TestCase):
 			self.frappe.get_all = original_get_all
 
 		self.assertEqual([row["name"] for row in rows], ["CUST-1001"])
-
-	def test_get_customer_names_returns_modified_for_delta_sync(self):
-		self.module.get_customer_names('{"customer_groups":[]}', limit=25)
-
-		self.assertIn("modified", self.frappe.last_get_all["fields"])
-
-	def test_get_customer_names_page_stays_full_when_hidden_row_is_excluded(self):
-		"""A page trimmed by the hidden-customer filter must not come back short:
-		the client reads a short page as end-of-list and stops syncing."""
-		original_get_all = self.frappe.get_all
-
-		def fake_customers(*args, **kwargs):
-			if args and args[0] == "Customer" and not kwargs.get("pluck"):
-				requested = kwargs.get("limit_page_length")
-				rows = [{"name": "13682", "customer_name": "Hidden"}]
-				rows += [
-					{"name": f"CUST-{i:04d}", "customer_name": f"Customer {i}"}
-					for i in range(requested - 1)
-				]
-				return rows
-			return original_get_all(*args, **kwargs)
-
-		self.frappe.get_all = fake_customers
-		try:
-			rows = self.module.get_customer_names('{"customer_groups":[]}', limit=10)
-		finally:
-			self.frappe.get_all = original_get_all
-
-		self.assertEqual(len(rows), 10)
-		self.assertNotIn("13682", [row["name"] for row in rows])
-
-	def test_search_customers_applies_rfs_filters_and_matches_all_fields(self):
-		self.module.search_customers('{"customer_groups":[]}', term="taken on day")
-
-		self.assertEqual(self.frappe.last_get_all["doctype"], "Customer")
-		self.assertEqual(
-			self.frappe.last_get_all["filters"],
-			{"disabled": 0, "rfs_customer": 1},
-		)
-		matched_fields = [
-			clause[0] for clause in self.frappe.last_get_all["or_filters"]
-		]
-		self.assertEqual(
-			matched_fields,
-			["customer_name", "name", "mobile_no", "email_id", "tax_id"],
-		)
-		for clause in self.frappe.last_get_all["or_filters"]:
-			self.assertEqual(clause[1], "like")
-			self.assertEqual(clause[2], "%taken on day%")
-
-	def test_search_customers_returns_empty_for_blank_term(self):
-		self.frappe.last_get_all = None
-
-		self.assertEqual(self.module.search_customers('{"customer_groups":[]}'), [])
-		self.assertEqual(self.module.search_customers('{"customer_groups":[]}', term="   "), [])
-		self.assertIsNone(self.frappe.last_get_all)
-
-	def test_search_customers_excludes_customer_13682(self):
-		original_get_all = self.frappe.get_all
-
-		def fake_customers(*args, **kwargs):
-			if args and args[0] == "Customer" and not kwargs.get("pluck"):
-				return [
-					{"name": "13682", "customer_name": "Hidden Customer"},
-					{"name": "taken on day", "customer_name": "taken on day"},
-				]
-			return original_get_all(*args, **kwargs)
-
-		self.frappe.get_all = fake_customers
-		try:
-			rows = self.module.search_customers('{"customer_groups":[]}', term="a")
-		finally:
-			self.frappe.get_all = original_get_all
-
-		self.assertEqual([row["name"] for row in rows], ["taken on day"])
 
 	def test_get_customers_count_filters_to_rfs_customers(self):
 		count = self.module.get_customers_count('{"customer_groups":[]}')

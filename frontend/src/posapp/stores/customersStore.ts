@@ -268,37 +268,6 @@ export const useCustomersStore = defineStore("customers", () => {
 		syncBootstrapCustomerReadiness(0);
 	}
 
-	async function searchCustomersOnServer(term: string): Promise<Customer[]> {
-		if (!posProfile.value || isOffline()) {
-			return [];
-		}
-		const serializedProfile = getSerializedProfile(posProfile.value);
-		if (!serializedProfile) {
-			return [];
-		}
-		try {
-			const response = await (frappe.call as any)({
-				method: "posawesome.posawesome.api.customers.search_customers",
-				args: { pos_profile: serializedProfile, term, limit: 50 },
-			});
-			const rows: Customer[] = (response?.message || []).filter(
-				(customer: Customer) => isCustomerVisible(customer),
-			);
-			if (rows.length) {
-				// Cache the hit so the next search resolves locally, and flag
-				// the cache as short so the next verify pass repairs it.
-				await setCustomerStorage(rows);
-				console.warn(
-					`Customer "${term}" was missing from the local cache; served ${rows.length} row(s) from the server`,
-				);
-			}
-			return rows;
-		} catch (err) {
-			console.error("Server customer search failed", err);
-			return [];
-		}
-	}
-
 	async function performSearch({ append = false } = {}) {
 		await ensureDatabase();
 
@@ -347,17 +316,6 @@ export const useCustomersStore = defineStore("customers", () => {
 			customers.value = visibleResults;
 		}
 
-		// The local cache can be stale or incomplete. Rather than telling the
-		// operator a customer does not exist, ask the server before giving up.
-		if (!append && normalizedTerm && !visibleResults.length) {
-			const remote = await searchCustomersOnServer(normalizedTerm);
-			if (remote.length) {
-				customers.value = remote;
-				hasMore.value = false;
-				return remote.length;
-			}
-		}
-
 		hasMore.value = results.length === PAGE_SIZE;
 		if (hasMore.value) {
 			page.value += 1;
@@ -392,7 +350,10 @@ export const useCustomersStore = defineStore("customers", () => {
 			return count;
 		}
 		if (nextCustomerStart.value) {
-			await backgroundLoadCustomers(nextCustomerStart.value);
+			await backgroundLoadCustomers(
+				nextCustomerStart.value,
+				getCustomersLastSync(),
+			);
 			await performSearch({ append: true });
 		}
 		return count;
@@ -426,66 +387,9 @@ export const useCustomersStore = defineStore("customers", () => {
 		});
 	}
 
-	// Stamp the sync watermark only once the cache actually matches the server.
-	// Stamping over a short cache strands every missing row behind it: those rows
-	// have an older `modified` than the watermark, so no delta fetch can reach
-	// them and the gap becomes permanent.
-	async function finalizeCustomerSync(): Promise<boolean> {
-		const localCount = await getCustomerStorageCount();
-		loadedCustomerCount.value = localCount;
-		syncBootstrapCustomerReadiness(localCount);
-		customersLoaded.value = true;
-
-		const expected = Number(totalCustomerCount.value || 0);
-		if (expected && localCount < expected) {
-			console.warn(
-				`Customer cache incomplete: ${localCount} of ${expected} cached; watermark not advanced`,
-			);
-			loadProgress.value = Math.min(
-				99,
-				Math.round((localCount / expected) * 100),
-			);
-			return false;
-		}
-
-		setCustomersLastSync(new Date().toISOString());
-		loadProgress.value = 100;
-		logFinalLoadedCustomerCount();
-		return true;
-	}
-
-	// Drop the cache and reload it from scratch. This is the only way to recover
-	// rows that are older than the current watermark.
-	async function fullResyncCustomers(expectedCount = 0) {
-		await clearCustomerStorage();
-		setCustomersLastSync(null);
-		resetPagination();
-		loadedCustomerCount.value = 0;
-		nextCustomerStart.value = null;
-		if (expectedCount) {
-			totalCustomerCount.value = expectedCount;
-		}
-		syncBootstrapCustomerReadiness(0);
-
-		const rows: Customer[] = await fetchCustomerPage(null, null, PAGE_SIZE);
-		if (rows.length) {
-			await setCustomerStorage(rows);
-		}
-		loadedCustomerCount.value = rows.length;
-
-		const startAfter =
-			rows.length === PAGE_SIZE ? rows[rows.length - 1]?.name || null : null;
-		if (startAfter) {
-			nextCustomerStart.value = startAfter;
-			await backgroundLoadCustomers(startAfter);
-		} else {
-			await finalizeCustomerSync();
-		}
-	}
-
 	async function backgroundLoadCustomers(
 		startAfter: string | null,
-		_syncSince: string | null = null,
+		syncSince: string | null,
 	) {
 		if (!posProfile.value || isOffline()) {
 			return;
@@ -499,12 +403,9 @@ export const useCustomersStore = defineStore("customers", () => {
 		try {
 			let cursor: string | null = startAfter;
 			while (cursor) {
-				// Backfill pages must not carry modified_after. Combining a
-				// cursor with a delta filter returns an empty page, which the
-				// loop below would read as "end of list" and truncate the sync.
 				const rows: Customer[] = await fetchCustomerPage(
 					cursor,
-					null,
+					syncSince,
 					limit,
 				);
 				if (rows.length) {
@@ -529,7 +430,11 @@ export const useCustomersStore = defineStore("customers", () => {
 				} else {
 					cursor = null;
 					nextCustomerStart.value = null;
-					await finalizeCustomerSync();
+					setCustomersLastSync(new Date().toISOString());
+					loadProgress.value = 100;
+					customersLoaded.value = true;
+					syncBootstrapCustomerReadiness(loadedCustomerCount.value);
+					logFinalLoadedCustomerCount();
 				}
 			}
 		} catch (err) {
@@ -583,31 +488,39 @@ export const useCustomersStore = defineStore("customers", () => {
 				);
 				if (rows.length) {
 					await setCustomerStorage(rows);
+					loadedCustomerCount.value += rows.length;
+					syncBootstrapCustomerReadiness(loadedCustomerCount.value);
+					if (totalCustomerCount.value) {
+						loadProgress.value = Math.min(
+							100,
+							Math.round(
+								(loadedCustomerCount.value /
+									totalCustomerCount.value) *
+									100,
+							),
+						);
+					}
 				}
 				const startAfter =
 					rows.length === PAGE_SIZE
 						? rows[rows.length - 1]?.name || null
 						: null;
 				if (startAfter) {
-					await backgroundLoadCustomers(startAfter);
-				}
-
-				// If the cache is still short after the delta pass, the missing
-				// rows are older than the watermark and no delta can ever reach
-				// them. Rebuild from scratch instead of looping on this forever.
-				const afterDelta = await getCustomerStorageCount();
-				if (afterDelta < serverCount) {
-					console.warn(
-						`Customer cache short by ${serverCount - afterDelta} after delta sync; running full resync`,
-					);
-					await fullResyncCustomers(serverCount);
+					await backgroundLoadCustomers(startAfter, syncSince);
 				} else {
-					await finalizeCustomerSync();
+					setCustomersLastSync(new Date().toISOString());
+					loadProgress.value = 100;
+					customersLoaded.value = true;
+					syncBootstrapCustomerReadiness(loadedCustomerCount.value);
+					logFinalLoadedCustomerCount();
 				}
 				await searchCustomers(searchTerm.value);
 			} else if (serverCount < localCount) {
-				await fullResyncCustomers(serverCount);
-				await searchCustomers(searchTerm.value);
+				await clearCustomerStorage();
+				setCustomersLastSync(null);
+				syncBootstrapCustomerReadiness(0);
+				resetPagination();
+				await load_customer_names_internal();
 			} else {
 				if (customersLoaded.value || localCount > 0) {
 					logFinalLoadedCustomerCount();
@@ -644,12 +557,15 @@ export const useCustomersStore = defineStore("customers", () => {
 			return;
 		}
 
-		// The cache is empty here, so this is a from-scratch load. A watermark
-		// that outlived the cache would filter this fetch down to "changed
-		// since then" - usually nothing - and strand every existing customer.
-		const syncSince = null;
-		if (getCustomersLastSync()) {
-			setCustomersLastSync(null);
+		let syncSince = getCustomersLastSync();
+		// Ensure syncSince is a valid ISO string or null.
+		if (
+			!syncSince ||
+			syncSince === "null" ||
+			syncSince === "undefined" ||
+			!syncSince.trim()
+		) {
+			syncSince = null;
 		}
 
 		loadProgress.value = 0;
@@ -692,9 +608,13 @@ export const useCustomersStore = defineStore("customers", () => {
 					? rows[rows.length - 1]?.name || null
 					: null;
 			if (nextCustomerStart.value) {
-				void backgroundLoadCustomers(nextCustomerStart.value);
+				backgroundLoadCustomers(nextCustomerStart.value, syncSince);
 			} else {
-				await finalizeCustomerSync();
+				setCustomersLastSync(new Date().toISOString());
+				loadProgress.value = 100;
+				customersLoaded.value = true;
+				syncBootstrapCustomerReadiness(loadedCustomerCount.value);
+				logFinalLoadedCustomerCount();
 			}
 			customersLoaded.value = true;
 		} catch (err) {
@@ -804,7 +724,6 @@ export const useCustomersStore = defineStore("customers", () => {
 		queueSearch,
 		loadMoreCustomers,
 		verifyServerCustomerCount,
-		fullResyncCustomers,
 		get_customer_names,
 		backgroundLoadCustomers,
 		addOrUpdateCustomer,

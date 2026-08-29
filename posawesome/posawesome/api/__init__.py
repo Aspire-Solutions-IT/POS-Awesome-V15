@@ -34,7 +34,6 @@ from .customers import (
     get_sales_person_names,
     link_store_collection_address_to_customer,
     make_address,
-    search_customers,
     set_customer_info,
 )
 from .invoices import (
