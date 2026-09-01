@@ -901,7 +901,15 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 				stores.uiStore.setLastInvoice(responseInvoiceName);
 			}
 
-			if (!waitForInvoiceProcessing) {
+			// Sales Orders get the success screen instead, which carries the same
+			// confirmation plus the delivery window and a print button. Toasting as
+			// well would just be a second notification for one event.
+			const willShowSuccessScreen =
+				type === "Order" &&
+				Boolean(profile?.posa_create_only_sales_order) &&
+				!hasPostSubmitPaymentWork;
+
+			if (!waitForInvoiceProcessing && !willShowSuccessScreen) {
 				const submittedTitle =
 					type === "Order" && profile?.posa_create_only_sales_order
 						? createdSalesOrders.length > 1

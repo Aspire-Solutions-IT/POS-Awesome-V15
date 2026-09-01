@@ -250,6 +250,32 @@ class TestSalesOrderSubmit(TestCase):
             [{"mode_of_payment": "Cash", "amount": 100.0}, {"mode_of_payment": "Card", "amount": -10.0}],
         )
 
+    def test_payment_types_still_count_advances_moved_onto_invoices(self):
+        # Submitting an invoice against the order splits the Payment Entry Reference
+        # row: the claimed portion is repointed at the invoice and only carries
+        # advance_voucher_no back to the order. Both halves are the same payment.
+        captured = {}
+
+        def fake_sql(query, values=None, **kwargs):
+            captured["query"] = query
+            captured["values"] = values
+            return [{"mode_of_payment": "Credit Card", "amount": 1381.22}]
+
+        with patch.object(sales_orders.frappe.db, "sql", side_effect=fake_sql):
+            payments = sales_orders._get_managed_sales_order_payment_types("SO-1")
+
+        self.assertEqual(payments, [{"mode_of_payment": "Credit Card", "amount": 1381.22}])
+        self.assertIn("ref.advance_voucher_type = 'Sales Order'", captured["query"])
+        self.assertIn("ref.advance_voucher_no = %(sales_order)s", captured["query"])
+        self.assertEqual(captured["values"], {"sales_order": "SO-1"})
+
+    def test_payment_types_skip_the_advance_breadcrumb_when_the_site_lacks_it(self):
+        with patch.object(sales_orders.frappe.db, "has_column", return_value=False):
+            condition = sales_orders._managed_sales_order_payment_reference_condition()
+
+        self.assertNotIn("advance_voucher", condition)
+        self.assertIn("ref.reference_name = %(sales_order)s", condition)
+
     def test_stream_pick_list_links_require_a_safe_openable_url(self):
         status_rows = [
             {"name": "PICK-3", "status": "Completed", "stream_id": "C3", "stream_status": "Delivered",
@@ -1599,6 +1625,166 @@ class TestSalesOrderSubmit(TestCase):
         self.assertEqual(second_payload["posa_delivery_charges"], "")
         self.assertEqual(second_payload["posa_delivery_charges_rate"], 0)
         self.assertEqual(second_payload["taxes"], [])
+
+    def test_allocate_group_discounts_prorates_fixed_amount_by_net_total(self):
+        # The till case: a whole-order discount larger than one of the groups.
+        # Copied verbatim it would exceed that group's own total and ERPNext
+        # would throw "Additional Discount Amount cannot exceed the total".
+        order = {"discount_amount": 1093.72}
+        groups = [
+            {"group_id": "living", "row_ids": ["row-1"]},
+            {"group_id": "bedroom", "row_ids": ["row-2"]},
+        ]
+        item_map = {
+            "row-1": {"qty": 1, "rate": 5334.88, "amount": 5334.88},
+            "row-2": {"qty": 1, "rate": 539.95, "amount": 539.95},
+        }
+
+        allocations = sales_orders._allocate_group_discounts(order, groups, item_map)
+
+        self.assertEqual(allocations["living"], 993.20)
+        self.assertEqual(allocations["bedroom"], 100.52)
+        self.assertEqual(round(sum(allocations.values()), 2), 1093.72)
+        # The whole point: each share now fits inside its own group's net total.
+        self.assertLess(allocations["bedroom"], 539.95)
+
+    def test_allocate_group_discounts_puts_remainder_on_last_group(self):
+        order = {"discount_amount": 100}
+        groups = [
+            {"group_id": "g1", "row_ids": ["row-1"]},
+            {"group_id": "g2", "row_ids": ["row-2"]},
+            {"group_id": "g3", "row_ids": ["row-3"]},
+        ]
+        item_map = {
+            "row-1": {"amount": 33.33},
+            "row-2": {"amount": 33.33},
+            "row-3": {"amount": 33.34},
+        }
+
+        allocations = sales_orders._allocate_group_discounts(order, groups, item_map)
+
+        self.assertEqual(allocations["g1"], 33.33)
+        self.assertEqual(allocations["g2"], 33.33)
+        self.assertEqual(allocations["g3"], 33.34)
+        self.assertEqual(round(sum(allocations.values()), 2), 100.0)
+
+    def test_allocate_group_discounts_falls_back_to_qty_times_rate(self):
+        order = {"discount_amount": 30}
+        groups = [
+            {"group_id": "g1", "row_ids": ["row-1"]},
+            {"group_id": "g2", "row_ids": ["row-2"]},
+        ]
+        item_map = {
+            "row-1": {"qty": 2, "rate": 50},
+            "row-2": {"qty": 1, "rate": 50},
+        }
+
+        allocations = sales_orders._allocate_group_discounts(order, groups, item_map)
+
+        self.assertEqual(allocations["g1"], 20.0)
+        self.assertEqual(allocations["g2"], 10.0)
+
+    def test_allocate_group_discounts_skips_percentage_discounts(self):
+        # ERPNext recomputes `discount_amount` per document from the percentage,
+        # so those already land correctly on each group.
+        order = {"discount_amount": 1093.72, "additional_discount_percentage": 18.62}
+        groups = [
+            {"group_id": "living", "row_ids": ["row-1"]},
+            {"group_id": "bedroom", "row_ids": ["row-2"]},
+        ]
+        item_map = {"row-1": {"amount": 5334.88}, "row-2": {"amount": 539.95}}
+
+        self.assertEqual(sales_orders._allocate_group_discounts(order, groups, item_map), {})
+
+    def test_allocate_group_discounts_skips_undiscounted_orders(self):
+        groups = [{"group_id": "g1", "row_ids": ["row-1"]}]
+        item_map = {"row-1": {"amount": 100}}
+
+        self.assertEqual(sales_orders._allocate_group_discounts({}, groups, item_map), {})
+        self.assertEqual(
+            sales_orders._allocate_group_discounts({"discount_amount": 0}, groups, item_map), {}
+        )
+
+    def test_copy_group_order_payload_carries_only_its_share_of_the_discount(self):
+        order = {
+            "doctype": "Sales Order",
+            "conversion_rate": 1,
+            "discount_amount": 1093.72,
+            "base_discount_amount": 1093.72,
+            "items": [
+                {"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 5334.88, "amount": 5334.88},
+                {"item_code": "ITEM-2", "posa_row_id": "row-2", "qty": 1, "rate": 539.95, "amount": 539.95},
+            ],
+        }
+        item_map = {item["posa_row_id"]: item for item in order["items"]}
+
+        second_payload = sales_orders._copy_group_order_payload(
+            order,
+            {"group_id": "bedroom", "label": "Bedroom", "row_ids": ["row-2"]},
+            item_map,
+            "ORBASE1234-02",
+            carries_delivery_charge=False,
+            discount_amount=100.52,
+        )
+
+        self.assertEqual(second_payload["discount_amount"], 100.52)
+        self.assertEqual(second_payload["base_discount_amount"], 100.52)
+        # The source order is untouched by the copy.
+        self.assertEqual(order["discount_amount"], 1093.72)
+
+    def test_copy_group_order_payload_leaves_discount_alone_when_not_allocated(self):
+        order = {"doctype": "Sales Order", "discount_amount": 25, "base_discount_amount": 25,
+                 "items": [{"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 100}]}
+        item_map = {"row-1": order["items"][0]}
+
+        payload = sales_orders._copy_group_order_payload(
+            order,
+            {"group_id": "g1", "label": "G1", "row_ids": ["row-1"]},
+            item_map,
+            "ORBASE1234-01",
+        )
+
+        self.assertEqual(payload["discount_amount"], 25)
+
+    def test_build_split_group_documents_prorates_discount_across_groups(self):
+        order = {
+            "doctype": "Sales Order",
+            "customer_order_ref": "ORBASE1234",
+            "conversion_rate": 1,
+            "discount_amount": 1093.72,
+            "base_discount_amount": 1093.72,
+            "posa_split_delivery": 1,
+            "items": [
+                {"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 5334.88, "amount": 5334.88},
+                {"item_code": "ITEM-2", "posa_row_id": "row-2", "qty": 1, "rate": 539.95, "amount": 539.95},
+            ],
+            "posa_split_groups": [
+                {"group_id": "living", "label": "Living", "row_ids": ["row-1"]},
+                {"group_id": "bedroom", "label": "Bedroom", "row_ids": ["row-2"]},
+            ],
+        }
+
+        saved_payloads = []
+
+        def fake_save_sales_order_doc(payload):
+            saved_payloads.append(payload)
+            doc = FakeGroupedSalesOrder(
+                name=f"SO-GROUP-{len(saved_payloads)}", grand_total=100
+            )
+            doc.update(payload)
+            return doc
+
+        with patch.object(
+            sales_orders, "_save_sales_order_doc_from_payload", side_effect=fake_save_sales_order_doc
+        ), patch.object(sales_orders.frappe, "get_all", return_value=[]):
+            sales_orders._build_split_group_documents(order)
+
+        self.assertEqual(saved_payloads[0]["discount_amount"], 993.20)
+        self.assertEqual(saved_payloads[1]["discount_amount"], 100.52)
+        self.assertEqual(
+            round(saved_payloads[0]["discount_amount"] + saved_payloads[1]["discount_amount"], 2),
+            1093.72,
+        )
 
     def test_submit_sales_order_forces_full_allocation_for_pos_split_delivery(self):
         order = {

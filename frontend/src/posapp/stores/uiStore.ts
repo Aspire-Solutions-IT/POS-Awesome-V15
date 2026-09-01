@@ -69,6 +69,19 @@ export const useUIStore = defineStore("ui", () => {
     paymentDialogOpen.value = false;
   };
 
+  // Lives here rather than in Payments.vue because submission tears that
+  // component down (finishSubmissionNavigation runs before onSuccess), so a ref
+  // owned by it can never render the screen that follows a successful payment.
+  const orderSuccess = ref<any | null>(null);
+
+  const showOrderSuccess = (payload: any) => {
+    orderSuccess.value = payload;
+  };
+
+  const closeOrderSuccess = () => {
+    orderSuccess.value = null;
+  };
+
   const openInvoiceManagement = (targetTab: string = "history") => {
     invoiceManagementTargetTab.value = targetTab || "history";
     invoiceManagementDialog.value = true;
@@ -280,6 +293,9 @@ export const useUIStore = defineStore("ui", () => {
     setActiveView,
     openPaymentDialog,
     closePaymentDialog,
+    orderSuccess,
+    showOrderSuccess,
+    closeOrderSuccess,
     openInvoiceManagement,
     closeInvoiceManagement,
     setPaymentRouteTarget,

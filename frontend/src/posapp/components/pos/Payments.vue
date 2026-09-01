@@ -507,7 +507,6 @@ const is_cashback = ref(true);
 const paid_change = ref(0);
 const credit_change = ref(0);
 const loading = ref(false);
-const show_change_dialog = ref(false);
 const is_credit_return = ref(false);
 const customer_info = ref("");
 const print_format = ref("");
@@ -2621,8 +2620,16 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 				customer_credit_dict.value = [];
 				redeem_customer_credit.value = false;
 				is_cashback.value = true;
-				show_change_dialog.value = true;
 				is_credit_return.value = false;
+
+				// Sales Orders only: they are the flow with a delivery window to read
+				// out and a POS receipt to print. Invoices and Quotations keep the toast.
+				if (submittedDoctype === "Sales Order" && submittedOrderNames.length) {
+					uiStore.showOrderSuccess({
+						orders: submittedOrderNames,
+						profile: pos_profile.value,
+					});
+				}
 			},
 			onFinishNavigation: (clearInvoice) => {
 				finishSubmissionNavigation(clearInvoice);

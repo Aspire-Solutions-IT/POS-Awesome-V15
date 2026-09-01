@@ -30,6 +30,10 @@
 		>
 			<Payments dialog-mode />
 		</v-dialog>
+		<!-- Rendered here, not inside Payments: submission unmounts that component
+		     (finishSubmissionNavigation runs before onSuccess), so the screen that
+		     follows a successful payment has to outlive it. -->
+		<OrderSuccessDialog />
 		<v-row
 			v-show="!dialog"
 			dense
@@ -199,6 +203,7 @@ import ItemsSelector from "../items/ItemsSelector.vue";
 import Invoice from "../Invoice.vue";
 import OpeningDialog from "../shift/OpeningDialog.vue";
 import Payments from "../Payments.vue";
+import OrderSuccessDialog from "../payments/OrderSuccessDialog.vue";
 import PosOffers from "../offers/PosOffers.vue";
 import PosCoupons from "../offers/PosCoupons.vue";
 import Drafts from "../flows/Drafts.vue";
@@ -607,6 +612,7 @@ export default {
 		Invoice,
 		OpeningDialog,
 		Payments,
+		OrderSuccessDialog,
 		Drafts,
 		InvoiceManagement,
 

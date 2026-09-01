@@ -863,6 +863,28 @@ def _get_managed_sales_order_shipping_address(doc):
     return address
 
 
+def _managed_sales_order_payment_reference_condition():
+    """Reference rows that represent money the customer paid against the order.
+
+    Invoicing an order does not leave the advance where it was: submitting a Sales
+    Invoice that claims it splits the Payment Entry Reference row, so the portion the
+    invoice took now points at the invoice and only the remainder still names the
+    order. Reading `reference_name` alone therefore makes the customer's payment shrink
+    every time part of the order is invoiced. ERPNext leaves a breadcrumb on the split
+    row - `advance_voucher_no` keeps naming the order it came from - so the invoiced
+    portion is counted back in here. Sites predating those columns just miss it.
+    """
+    condition = "(ref.reference_doctype = 'Sales Order' and ref.reference_name = %(sales_order)s)"
+    if frappe.db.has_column("Payment Entry Reference", "advance_voucher_no") and frappe.db.has_column(
+        "Payment Entry Reference", "advance_voucher_type"
+    ):
+        condition += (
+            " or (ref.advance_voucher_type = 'Sales Order'"
+            " and ref.advance_voucher_no = %(sales_order)s)"
+        )
+    return condition
+
+
 def _get_managed_sales_order_payment_types(sales_order):
     """Modes of payment actually used against the order.
 
@@ -882,13 +904,12 @@ def _get_managed_sales_order_payment_types(sales_order):
             ) as amount
         from `tabPayment Entry Reference` ref
         inner join `tabPayment Entry` pe on pe.name = ref.parent
-        where ref.reference_doctype = 'Sales Order'
-          and ref.reference_name = %s
-          and pe.docstatus = 1
+        where pe.docstatus = 1
+          and ({reference_condition})
         group by pe.mode_of_payment
         order by amount desc
-        """,
-        sales_order,
+        """.format(reference_condition=_managed_sales_order_payment_reference_condition()),
+        {"sales_order": sales_order},
         as_dict=True,
     )
     payments = []
@@ -1871,6 +1892,48 @@ def get_managed_sales_order(sales_order):
 
 
 @frappe.whitelist()
+def get_pos_order_summary(sales_order):
+    """Post-submit summary for the POS success screen.
+
+    quoted_estimated_delivery_window is a virtual field derived from
+    latest_quoted_date, which _update_soi_fields writes from an after_commit hook
+    via db.set_value(update_modified=False). Both of those bypass the document
+    layer, so the cache is cleared and the doc reloaded here: without it this
+    reads back the same pre-fixup snapshot the submit response was built from,
+    which is blank on exactly the orders whose quoted dates were filled in by
+    that hook.
+
+    "settled" tells the caller whether the window is worth showing yet, so it can
+    retry while later background work (payment entries, PO creation, auto-pick)
+    settles the supply dates rather than showing a blank window as final.
+    """
+    frappe.clear_document_cache("Sales Order", sales_order)
+    doc = frappe.get_doc("Sales Order", sales_order)
+    doc.check_permission("read")
+
+    window = None
+    try:
+        window = doc.quoted_estimated_delivery_window
+    except Exception:
+        # The window is a nicety on a screen confirming money already taken.
+        # Never let it turn a successful payment into an error toast.
+        frappe.log_error(
+            f"Sales Order {sales_order}: failed to resolve quoted_estimated_delivery_window",
+            "POSAwesome Order Summary",
+        )
+
+    return {
+        "name": doc.name,
+        "docstatus": doc.docstatus,
+        "customer_name": doc.customer_name,
+        "grand_total": flt(doc.rounded_total or doc.grand_total),
+        "currency": doc.currency,
+        "quoted_estimated_delivery_window": window,
+        "settled": bool(window),
+    }
+
+
+@frappe.whitelist()
 def update_managed_sales_order(data):
     payload = _unwrap_managed_sales_order_payload(data)
 
@@ -2491,7 +2554,75 @@ def _validate_split_groups(payload):
     return groups, item_map
 
 
-def _copy_group_order_payload(order, group, item_map, customer_order_ref, carries_delivery_charge=True):
+def _group_net_total(group, item_map):
+    """Net total of one split group's items.
+
+    Mirrors the `apply_discount_on = "Net Total"` base that
+    `_apply_delivery_charges_tax_row` forces onto every POS Awesome Sales Order,
+    so the discount is prorated against the same figure ERPNext validates it
+    against.
+    """
+    total = 0
+    for row_id in group.get("row_ids") or []:
+        item = item_map.get(row_id) or {}
+        amount = item.get("amount")
+        if amount in (None, ""):
+            amount = flt(item.get("qty")) * flt(item.get("rate"))
+        total += flt(amount)
+    return total
+
+
+def _allocate_group_discounts(order, groups, item_map, precision=2):
+    """Split the order-level Additional Discount Amount across the split groups.
+
+    A percentage discount needs no help: `additional_discount_percentage` rides
+    along on every group payload and ERPNext's `set_discount_amount` recomputes
+    `discount_amount` per document against that group's own net total. A fixed
+    amount does not. Copied verbatim onto every group it is applied in full to
+    each one, which either trips ERPNext's "Additional Discount Amount cannot
+    exceed the total before such discount" validation (when a group is smaller
+    than the discount) or silently discounts the order once per group (when
+    every group is larger).
+
+    Returns {group_id: discount_amount}, pro-rata by net total with the
+    remainder on the last group so the parts always sum back to the whole.
+    An empty mapping means "leave the payload's discount alone".
+    """
+    discount_amount = flt((order or {}).get("discount_amount"), precision)
+    if not discount_amount:
+        return {}
+
+    # Percentage-entered discounts are already correct per group; recomputing
+    # them here would fight ERPNext, which overrides `discount_amount` from the
+    # percentage anyway.
+    if flt((order or {}).get("additional_discount_percentage")):
+        return {}
+
+    totals = [_group_net_total(group, item_map) for group in groups]
+    base = flt(sum(totals), precision)
+    if not base:
+        return {}
+
+    allocations = {}
+    allocated_sum = 0
+    for index, group in enumerate(groups):
+        if index < len(groups) - 1:
+            allocated = flt(discount_amount * (totals[index] / base), precision)
+            allocated_sum = flt(allocated_sum + allocated, precision)
+        else:
+            allocated = flt(discount_amount - allocated_sum, precision)
+        allocations[group["group_id"]] = allocated
+    return allocations
+
+
+def _copy_group_order_payload(
+    order,
+    group,
+    item_map,
+    customer_order_ref,
+    carries_delivery_charge=True,
+    discount_amount=None,
+):
     group_payload = deepcopy(order)
     group_payload.pop("name", None)
     group_payload.pop("amended_from", None)
@@ -2517,6 +2648,14 @@ def _copy_group_order_payload(order, group, item_map, customer_order_ref, carrie
                     and row.get("description") == original_charge_name
                 )
             ]
+
+    if discount_amount is not None:
+        # The order-level discount is a whole-order figure and this payload holds
+        # only a subset of the items, so it must carry only its prorated share.
+        group_payload["discount_amount"] = discount_amount
+        group_payload["base_discount_amount"] = flt(
+            discount_amount * (flt(order.get("conversion_rate")) or 1)
+        )
 
     return group_payload
 
@@ -2600,6 +2739,7 @@ def _save_sales_order_doc_from_payload(payload):
 
 def _build_split_group_documents(order):
     groups, item_map = _validate_split_groups(order)
+    discount_allocations = _allocate_group_discounts(order, groups, item_map)
     batch_root = _ensure_unique_customer_order_ref({"customer_order_ref": order.get("customer_order_ref")})
     built = []
     for index, group in enumerate(groups, start=1):
@@ -2610,6 +2750,7 @@ def _build_split_group_documents(order):
             item_map,
             preferred_ref,
             carries_delivery_charge=(index == 1),
+            discount_amount=discount_allocations.get(group["group_id"]),
         )
         _ensure_unique_customer_order_ref(payload)
         so_doc = _save_sales_order_doc_from_payload(payload)
