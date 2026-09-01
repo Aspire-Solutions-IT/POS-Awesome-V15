@@ -73,6 +73,101 @@ class _FakeNewAddressDoc:
 		return self
 
 
+class _FakeCriterion:
+	"""Records a rendered WHERE fragment so tests can assert on the built query."""
+
+	def __init__(self, text):
+		self.text = text
+
+	def __or__(self, other):
+		return _FakeCriterion("({0} OR {1})".format(self.text, other.text))
+
+	def __repr__(self):
+		return self.text
+
+
+class _FakeField:
+	def __init__(self, name):
+		self.name = name
+
+	def __eq__(self, other):
+		return _FakeCriterion("{0} = {1}".format(self.name, other))
+
+	def __hash__(self):
+		return hash(self.name)
+
+	def like(self, pattern):
+		return _FakeCriterion("{0} LIKE {1!r}".format(self.name, pattern))
+
+	def isin(self, values):
+		return _FakeCriterion("{0} IN {1!r}".format(self.name, sorted(values)))
+
+	def notin(self, values):
+		return _FakeCriterion("{0} NOT IN {1!r}".format(self.name, sorted(values)))
+
+
+class _FakeTable:
+	def __getattr__(self, name):
+		return _FakeField(name)
+
+
+class _FakeQuery:
+	def __init__(self, recorder):
+		self.recorder = recorder
+
+	def select(self, *fields):
+		self.recorder["select"] = [field.name for field in fields]
+		return self
+
+	def where(self, criterion):
+		self.recorder["where"].append(criterion.text)
+		return self
+
+	def orderby(self, field):
+		self.recorder["orderby"].append(field.name)
+		return self
+
+	def limit(self, value):
+		self.recorder["limit"] = value
+		return self
+
+	def offset(self, value):
+		self.recorder["offset"] = value
+		return self
+
+	def run(self, as_dict=False):
+		self.recorder["ran"] = True
+		return self.recorder["rows"]
+
+
+class _FakeQueryBuilder:
+	def __init__(self):
+		self.recorder = {}
+		self.reset()
+
+	def reset(self):
+		self.recorder.clear()
+		self.recorder.update(
+			{
+				"doctype": None,
+				"select": [],
+				"where": [],
+				"orderby": [],
+				"limit": None,
+				"offset": None,
+				"rows": [],
+				"ran": False,
+			}
+		)
+
+	def DocType(self, name):
+		self.recorder["doctype"] = name
+		return _FakeTable()
+
+	def from_(self, table):
+		return _FakeQuery(self.recorder)
+
+
 class TestPosCustomersRfs(unittest.TestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -162,6 +257,7 @@ class TestPosCustomersRfs(unittest.TestCase):
 				return []
 
 		frappe_module.db = _FakeDb()
+		frappe_module.qb = _FakeQueryBuilder()
 		frappe_module.last_get_all = None
 		frappe_module.last_customer_doc = None
 		frappe_module.last_address_doc = None
@@ -293,6 +389,7 @@ class TestPosCustomersRfs(unittest.TestCase):
 		self.frappe.db.customers = {}
 		self.frappe.db.contacts = {}
 		self.frappe.db.dynamic_links = []
+		self.frappe.qb.reset()
 
 	def test_get_customer_names_filters_to_rfs_customers(self):
 		self.module.get_customer_names('{"customer_groups":[]}', limit=25)
@@ -477,6 +574,71 @@ class TestPosCustomersRfs(unittest.TestCase):
 				"Customer A", "STORE-ADDR-1"
 			)
 
+
+	def test_search_customers_scopes_to_rfs_and_excludes_hidden_customer(self):
+		self.module.search_customers('{"customer_groups":[]}')
+
+		where = self.frappe.qb.recorder["where"]
+		self.assertEqual(self.frappe.qb.recorder["doctype"], "Customer")
+		self.assertIn("disabled = 0", where)
+		self.assertIn("rfs_customer = 1", where)
+		self.assertIn("name NOT IN ['13682']", where)
+
+	def test_search_customers_restricts_to_profile_customer_groups(self):
+		original = self.module.get_customer_groups
+		self.module.get_customer_groups = lambda pos_profile: ["Retail", "Wholesale"]
+		try:
+			self.module.search_customers('{"customer_groups":[{"customer_group":"Retail"}]}')
+		finally:
+			self.module.get_customer_groups = original
+
+		self.assertIn(
+			"customer_group IN ['Retail', 'Wholesale']",
+			self.frappe.qb.recorder["where"],
+		)
+
+	def test_search_customers_requires_every_word_to_match_some_field(self):
+		self.module.search_customers('{"customer_groups":[]}', search_term="john smith")
+
+		word_clauses = [c for c in self.frappe.qb.recorder["where"] if "LIKE" in c]
+		# One ANDed clause per word, each an OR across the searchable fields.
+		self.assertEqual(len(word_clauses), 2)
+		for clause, word in zip(word_clauses, ["john", "smith"]):
+			for fieldname in self.module.CUSTOMER_SEARCH_FIELDS:
+				self.assertIn("{0} LIKE '%{1}%'".format(fieldname, word), clause)
+
+	def test_search_customers_escapes_like_wildcards(self):
+		self.module.search_customers('{"customer_groups":[]}', search_term="50%_off")
+
+		clause = [c for c in self.frappe.qb.recorder["where"] if "LIKE" in c][0]
+		self.assertIn("50\\\\%\\\\_off", clause)
+
+	def test_search_customers_clamps_limit_and_offset(self):
+		self.module.search_customers('{"customer_groups":[]}', limit=99999, offset=-5)
+		self.assertEqual(
+			self.frappe.qb.recorder["limit"], self.module.CUSTOMER_SEARCH_MAX_LIMIT
+		)
+		self.assertEqual(self.frappe.qb.recorder["offset"], 0)
+
+		self.module.search_customers('{"customer_groups":[]}', limit="not-a-number")
+		self.assertEqual(
+			self.frappe.qb.recorder["limit"], self.module.CUSTOMER_SEARCH_DEFAULT_LIMIT
+		)
+
+	def test_search_customers_returns_rows_ordered_by_display_name(self):
+		self.frappe.qb.recorder["rows"] = [
+			{"name": "CUST-1", "customer_name": "Alice"},
+		]
+
+		rows = self.module.search_customers('{"customer_groups":[]}')
+
+		self.assertEqual(rows, [{"name": "CUST-1", "customer_name": "Alice"}])
+		self.assertEqual(self.frappe.qb.recorder["orderby"], ["customer_name", "name"])
+
+	def test_search_customers_accepts_a_dict_pos_profile(self):
+		self.module.search_customers({"customer_groups": []})
+
+		self.assertTrue(self.frappe.qb.recorder["ran"])
 
 if __name__ == "__main__":
 	unittest.main()

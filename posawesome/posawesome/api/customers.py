@@ -187,6 +187,93 @@ def get_customers_count(pos_profile):
     return max(0, count - hidden_count)
 
 
+CUSTOMER_SEARCH_FIELDS = (
+    "name",
+    "customer_name",
+    "mobile_no",
+    "email_id",
+    "tax_id",
+)
+
+CUSTOMER_SEARCH_DEFAULT_LIMIT = 50
+CUSTOMER_SEARCH_MAX_LIMIT = 200
+
+
+def _escape_like_term(value):
+    """Escape LIKE wildcards so a typed % or _ is matched literally."""
+    return cstr(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _coerce_int(value, default, minimum, maximum=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(parsed, minimum)
+    if maximum is not None:
+        parsed = min(parsed, maximum)
+    return parsed
+
+
+@frappe.whitelist()
+def search_customers(pos_profile, search_term=None, limit=None, offset=0):
+    """Search customers directly against the database.
+
+    The POS customer dropdown calls this on every (debounced) keystroke so results
+    always reflect the server rather than the terminal's local cache. Matching
+    mirrors the old client-side search: each whitespace-separated word must appear
+    in at least one searchable field.
+    """
+    if isinstance(pos_profile, str):
+        pos_profile = json.loads(pos_profile)
+    pos_profile = pos_profile or {}
+
+    limit = _coerce_int(
+        limit, CUSTOMER_SEARCH_DEFAULT_LIMIT, 1, CUSTOMER_SEARCH_MAX_LIMIT
+    )
+    offset = _coerce_int(offset, 0, 0)
+
+    customer = frappe.qb.DocType("Customer")
+    query = (
+        frappe.qb.from_(customer)
+        .select(
+            customer.name,
+            customer.customer_name,
+            customer.mobile_no,
+            customer.email_id,
+            customer.tax_id,
+            customer.primary_address,
+        )
+        .where(customer.disabled == 0)
+        .where(customer.rfs_customer == 1)
+    )
+
+    customer_groups = get_customer_groups(pos_profile)
+    if customer_groups:
+        query = query.where(customer.customer_group.isin(customer_groups))
+
+    if EXCLUDED_POS_CUSTOMER_NAMES:
+        query = query.where(customer.name.notin(sorted(EXCLUDED_POS_CUSTOMER_NAMES)))
+
+    for word in cstr(search_term).split():
+        pattern = "%{0}%".format(_escape_like_term(word))
+        condition = None
+        for fieldname in CUSTOMER_SEARCH_FIELDS:
+            field_condition = getattr(customer, fieldname).like(pattern)
+            condition = (
+                field_condition if condition is None else (condition | field_condition)
+            )
+        query = query.where(condition)
+
+    return (
+        query.orderby(customer.customer_name)
+        .orderby(customer.name)
+        .limit(limit)
+        .offset(offset)
+        .run(as_dict=True)
+    )
+
+
 @frappe.whitelist()
 def get_customer_info(customer=None, company=None):
     customer = cstr(customer or "").strip()

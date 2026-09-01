@@ -20,6 +20,9 @@ import {
 } from "../../offline/index";
 
 const PAGE_SIZE = 1000;
+// The customer dropdown pages through server search results; the background
+// cache backfill keeps using the larger PAGE_SIZE.
+const SEARCH_PAGE_SIZE = 50;
 const CUSTOMER_SCOPE_STORAGE_KEY = "posa_customers_profile_scope";
 const EXCLUDED_CUSTOMER_NAMES = new Set(["13682"]);
 
@@ -268,7 +271,9 @@ export const useCustomersStore = defineStore("customers", () => {
 		syncBootstrapCustomerReadiness(0);
 	}
 
-	async function performSearch({ append = false } = {}) {
+	let searchRequestSeq = 0;
+
+	async function performLocalSearch({ append = false } = {}) {
 		await ensureDatabase();
 
 		let collection = db.table("customers");
@@ -303,10 +308,10 @@ export const useCustomersStore = defineStore("customers", () => {
 			});
 		}
 
-		const offset = page.value * PAGE_SIZE;
+		const offset = page.value * SEARCH_PAGE_SIZE;
 		const results = await collection
 			.offset(offset)
-			.limit(PAGE_SIZE)
+			.limit(SEARCH_PAGE_SIZE)
 			.toArray();
 		const visibleResults = results.filter((customer) => isCustomerVisible(customer));
 
@@ -316,12 +321,83 @@ export const useCustomersStore = defineStore("customers", () => {
 			customers.value = visibleResults;
 		}
 
-		hasMore.value = results.length === PAGE_SIZE;
+		hasMore.value = results.length === SEARCH_PAGE_SIZE;
 		if (hasMore.value) {
 			page.value += 1;
 		}
 
 		return visibleResults.length;
+	}
+
+	type ServerSearchOutcome =
+		| { status: "ok"; count: number }
+		| { status: "superseded" }
+		| { status: "unavailable" };
+
+	async function performServerSearch({
+		append = false,
+	} = {}): Promise<ServerSearchOutcome> {
+		const serializedProfile = getSerializedProfile(posProfile.value);
+		if (!serializedProfile) {
+			return { status: "unavailable" };
+		}
+
+		const requestId = ++searchRequestSeq;
+		const response = await (frappe.call as any)({
+			method: "posawesome.posawesome.api.customers.search_customers",
+			args: {
+				pos_profile: serializedProfile,
+				search_term: normalizeSearchTerm(searchTerm.value),
+				limit: SEARCH_PAGE_SIZE,
+				offset: page.value * SEARCH_PAGE_SIZE,
+			},
+		});
+
+		// A newer keystroke has already overtaken this response.
+		if (requestId !== searchRequestSeq) {
+			return { status: "superseded" };
+		}
+
+		const rows: Customer[] = Array.isArray(response?.message)
+			? response.message
+			: [];
+		const visibleRows = rows.filter((customer) => isCustomerVisible(customer));
+
+		customers.value = append
+			? [...customers.value, ...visibleRows]
+			: visibleRows;
+
+		hasMore.value = rows.length === SEARCH_PAGE_SIZE;
+		if (hasMore.value) {
+			page.value += 1;
+		}
+
+		// Keep the offline cache warm with the rows this till actually touches.
+		if (visibleRows.length) {
+			void setCustomerStorage(visibleRows);
+		}
+
+		return { status: "ok", count: visibleRows.length };
+	}
+
+	async function performSearch({ append = false } = {}) {
+		if (!isOffline()) {
+			try {
+				const outcome = await performServerSearch({ append });
+				if (outcome.status === "ok") {
+					return outcome.count;
+				}
+				if (outcome.status === "superseded") {
+					return customers.value.length;
+				}
+			} catch (err) {
+				console.error(
+					"Server customer search failed, falling back to local cache",
+					err,
+				);
+			}
+		}
+		return performLocalSearch({ append });
 	}
 
 	async function searchCustomers(term = "", append = false) {
@@ -334,6 +410,10 @@ export const useCustomersStore = defineStore("customers", () => {
 
 	async function queueSearch(term: string) {
 		const normalized = normalizeSearchTerm(term);
+		// Server search is live, so it need not wait for the cache backfill.
+		if (!isOffline()) {
+			return searchCustomers(normalized, false);
+		}
 		if (isCustomerBackgroundLoading.value) {
 			pendingCustomerSearch.value = normalized;
 			return null;
@@ -345,8 +425,16 @@ export const useCustomersStore = defineStore("customers", () => {
 		if (loadingCustomers.value) {
 			return 0;
 		}
-		const count = await performSearch({ append: true });
-		if (count === PAGE_SIZE) {
+
+		if (!isOffline()) {
+			if (!hasMore.value) {
+				return 0;
+			}
+			return performSearch({ append: true });
+		}
+
+		const count = await performLocalSearch({ append: true });
+		if (count === SEARCH_PAGE_SIZE) {
 			return count;
 		}
 		if (nextCustomerStart.value) {
@@ -354,7 +442,7 @@ export const useCustomersStore = defineStore("customers", () => {
 				nextCustomerStart.value,
 				getCustomersLastSync(),
 			);
-			await performSearch({ append: true });
+			await performLocalSearch({ append: true });
 		}
 		return count;
 	}
