@@ -11,6 +11,11 @@ vi.mock("../src/posapp/services/api", () => ({
 	},
 }));
 
+/** What the stubbed selector emits; a test can point it at another item. */
+const selectorItem: { current: Record<string, any> } = {
+	current: { item_code: "ITEM-NEW", stock_uom: "Nos" },
+};
+
 vi.mock("../src/posapp/components/pos/items/ItemsSelector.vue", async () => {
 	const { defineComponent, h } = await import("vue");
 	return {
@@ -23,7 +28,7 @@ vi.mock("../src/posapp/components/pos/items/ItemsSelector.vue", async () => {
 						"button",
 						{
 							class: "stub-add-item",
-							onClick: () => emit("add-item", { item_code: "ITEM-NEW", stock_uom: "Nos" }),
+							onClick: () => emit("add-item", { ...selectorItem.current }),
 						},
 						"stub add",
 					);
@@ -145,6 +150,37 @@ const VueDatePickerStub = defineComponent({
 	},
 });
 
+/** Renders as a real <select> so a test can pick an option, unlike the box stubs. */
+const VSelectStub = defineComponent({
+	props: {
+		modelValue: { type: [String, Number], default: "" },
+		items: { type: Array, default: () => [] },
+		itemTitle: { type: String, default: "title" },
+		itemValue: { type: String, default: "value" },
+		label: { type: String, default: "" },
+	},
+	emits: ["update:modelValue"],
+	setup(props, { emit }) {
+		const optionValue = (item: any) =>
+			item && typeof item === "object" ? String(item[props.itemValue] ?? "") : String(item ?? "");
+		const optionLabel = (item: any) =>
+			item && typeof item === "object" ? String(item[props.itemTitle] ?? "") : String(item ?? "");
+		return () =>
+			h(
+				"select",
+				{
+					value: props.modelValue as any,
+					"aria-label": props.label,
+					onChange: (event: Event) =>
+						emit("update:modelValue", (event.target as HTMLSelectElement).value),
+				},
+				(props.items as any[]).map((item) =>
+					h("option", { value: optionValue(item) }, optionLabel(item)),
+				),
+			);
+	},
+});
+
 const flushPromises = async () => {
 	await Promise.resolve();
 	await Promise.resolve();
@@ -206,6 +242,32 @@ const baseDetail = {
 	],
 };
 
+/** An order whose POS Profile has an NS warehouse, as a real POS order does. */
+const nsDetail = {
+	...baseDetail,
+	company: "Test Company",
+	pos_profile: "Main POS",
+	default_ns_warehouse: "NS Main - TC",
+	delivery_charge_collection: 0,
+};
+
+const nsWarehouseRows = [
+	{ name: "NS Main - TC", warehouse_name: "NS Main" },
+	{ name: "NS Annexe - TC", warehouse_name: "NS Annexe" },
+];
+
+const nsItemDetails = {
+	item_code: "NS-1001",
+	item_name: "NS Sofa",
+	description: "Added from the item selector",
+	uom: "Nos",
+	stock_uom: "Nos",
+	conversion_factor: 1,
+	rate: 99,
+	currency: "GBP",
+	delivery_date: "2026-07-30",
+};
+
 const newItemDetails = {
 	item_code: "ITEM-NEW",
 	item_name: "Newly Added Item",
@@ -265,6 +327,9 @@ const mockApi = (extra: (_method: string, _args: any) => any = () => undefined) 
 		if (method.endsWith("preview_managed_sales_order_items")) {
 			return noIncreasePreview;
 		}
+		if (method === "frappe.client.get_list") {
+			return nsWarehouseRows;
+		}
 		return null;
 	});
 };
@@ -273,6 +338,7 @@ describe("SalesOrderManagementView", () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		vi.clearAllMocks();
+		selectorItem.current = { item_code: "ITEM-NEW", stock_uom: "Nos" };
 		vi.stubGlobal("__", (value: string) => value);
 		(globalThis as any).frappe = { _: (value: string) => value };
 		const uiStore = useUIStore();
@@ -289,7 +355,7 @@ describe("SalesOrderManagementView", () => {
 		mockApi();
 	});
 
-	const mountView = () =>
+	const mountView = (overrides: Record<string, any> = {}) =>
 		mount(SalesOrderManagementView, {
 			global: {
 				mocks: {
@@ -313,6 +379,7 @@ describe("SalesOrderManagementView", () => {
 					VSelect: BoxStub,
 					VueDatePicker: VueDatePickerStub,
 					VNavigationDrawer: BoxStub,
+					...overrides,
 				},
 			},
 		});
@@ -758,5 +825,147 @@ describe("SalesOrderManagementView", () => {
 			.findAll("button")
 			.find((button: any) => button.text().trim() === "Add Items");
 		expect(addButton!.attributes("disabled")).toBeDefined();
+	});
+	/** An NS order, with a picker that a test can actually operate. */
+	const mountNsView = async (detail: Record<string, any> = nsDetail) => {
+		selectorItem.current = { item_code: "NS-1001", stock_uom: "Nos" };
+		mockApi((method) => {
+			if (method.endsWith("get_managed_sales_order_new_item_details")) return nsItemDetails;
+			if (method.endsWith("update_managed_sales_order_items")) return detail;
+			if (method.endsWith("get_managed_sales_order")) return detail;
+			return undefined;
+		});
+		const wrapper = mountView({ VSelect: VSelectStub });
+		await flushPromises();
+		return wrapper;
+	};
+
+	const warehouseSelects = (wrapper: any) => wrapper.findAll("select.item-warehouse-select");
+
+	const warehouseValues = (wrapper: any) =>
+		warehouseSelects(wrapper).map((select: any) => (select.element as HTMLSelectElement).value);
+
+	const savedItemsPayload = () =>
+		(api.call as any).mock.calls.find(
+			(call: any[]) =>
+				call[0] === "posawesome.posawesome.api.sales_orders.update_managed_sales_order_items",
+		)?.[1]?.data?.items;
+
+	it("stages a new NS row in the order's default NS warehouse and sends it on save", async () => {
+		const wrapper = await mountNsView();
+		await addItemThroughSelector(wrapper);
+
+		const listCall = (api.call as any).mock.calls.find(
+			(call: any[]) => call[0] === "frappe.client.get_list",
+		);
+		expect(listCall).toBeTruthy();
+		expect(listCall[1]).toEqual(
+			expect.objectContaining({
+				doctype: "Warehouse",
+				filters: { is_group: 0, is_ns_location: 1, company: "Test Company" },
+			}),
+		);
+
+		// One picker: on the staged NS row, not on the saved rows.
+		expect(warehouseValues(wrapper)).toEqual(["NS Main - TC"]);
+
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+
+		expect(savedItemsPayload()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ docname: null, item_code: "NS-1001", warehouse: "NS Main - TC" }),
+			]),
+		);
+	});
+
+	it("offers no picker on an NS row already saved on the order", async () => {
+		const wrapper = await mountNsView({
+			...nsDetail,
+			items: [
+				{
+					...baseDetail.items[1],
+					name: "SOI-NS",
+					item_code: "NS-2002",
+					item_name: "Saved NS Item",
+					warehouse: "NS Annexe - TC",
+				},
+			],
+		});
+
+		expect(warehouseSelects(wrapper)).toHaveLength(0);
+	});
+
+	it("hides the picker on a Collection order, as the cart does", async () => {
+		const wrapper = await mountNsView({ ...nsDetail, delivery_charge_collection: 1 });
+		await addItemThroughSelector(wrapper);
+
+		expect(warehouseSelects(wrapper)).toHaveLength(0);
+
+		// The row still goes to the default NS warehouse; only the choice is withheld.
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+		expect(savedItemsPayload()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ item_code: "NS-1001", warehouse: "NS Main - TC" }),
+			]),
+		);
+	});
+
+	it("keeps the picker on a Collection order at Peterborough", async () => {
+		const wrapper = await mountNsView({
+			...nsDetail,
+			delivery_charge_collection: 1,
+			pos_profile: "Peterborough",
+		});
+		await addItemThroughSelector(wrapper);
+
+		expect(warehouseSelects(wrapper)).toHaveLength(1);
+	});
+
+	it("re-adding an NS item whose warehouse was changed stages a second row", async () => {
+		const wrapper = await mountNsView();
+		await addItemThroughSelector(wrapper);
+
+		await warehouseSelects(wrapper)[0]!.setValue("NS Annexe - TC");
+		await addItemThroughSelector(wrapper);
+
+		// Two separate lines, not one line of qty 2.
+		expect(warehouseValues(wrapper)).toEqual(["NS Annexe - TC", "NS Main - TC"]);
+
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+
+		const staged = (savedItemsPayload() || []).filter((row: any) => row.item_code === "NS-1001");
+		expect(staged).toHaveLength(2);
+		expect(staged.map((row: any) => row.warehouse)).toEqual(["NS Annexe - TC", "NS Main - TC"]);
+		expect(staged.every((row: any) => row.qty === 1)).toBe(true);
+	});
+
+	it("still merges a re-added NS item that is going to the same warehouse", async () => {
+		const wrapper = await mountNsView();
+		await addItemThroughSelector(wrapper);
+		await addItemThroughSelector(wrapper);
+
+		expect(warehouseValues(wrapper)).toEqual(["NS Main - TC"]);
+
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+
+		const staged = (savedItemsPayload() || []).filter((row: any) => row.item_code === "NS-1001");
+		expect(staged).toHaveLength(1);
+		expect(staged[0].qty).toBe(2);
+	});
+
+	it("blocks the save when the warehouse is cleared on a staged NS row", async () => {
+		const wrapper = await mountNsView();
+		await addItemThroughSelector(wrapper);
+
+		await warehouseSelects(wrapper)[0]!.setValue("");
+		await findSaveButton(wrapper)!.trigger("click");
+		await flushPromises();
+
+		expect(wrapper.text()).toContain("please choose a warehouse");
+		expect(savedItemsPayload()).toBeUndefined();
 	});
 });

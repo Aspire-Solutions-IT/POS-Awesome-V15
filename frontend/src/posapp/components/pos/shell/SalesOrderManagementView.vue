@@ -432,6 +432,23 @@
 														<span v-if="item.lock_reason" class="item-lock-reason">
 															{{ item.lock_reason }}
 														</span>
+														<!-- Staged NS rows only: the same picker the cart offers at order
+														     creation, so the line lands in the warehouse staff chose. -->
+														<v-select
+															v-if="canPickWarehouse(item)"
+															v-model="item.warehouse"
+															class="item-warehouse-select"
+															:items="warehouseOptions"
+															item-title="label"
+															item-value="value"
+															:label="__('Warehouse')"
+															:loading="warehouseLoading"
+															:disabled="!canEditItems || saveLoading"
+															density="compact"
+															variant="outlined"
+															hide-details
+															prepend-inner-icon="mdi-warehouse"
+														/>
 													</div>
 												</td>
 												<td>
@@ -990,6 +1007,9 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
 	receipt_email?: ManagedSalesOrderReceiptEmail | null;
+	delivery_charge_collection?: number | null;
+	company?: string | null;
+	default_ns_warehouse?: string | null;
 	auto_release_date?: string | null;
 	shipping_address_name?: string | null;
 	customer_address?: string | null;
@@ -1022,6 +1042,11 @@ const detailTab = ref("details");
 const editableItems = ref<EditableSalesOrderItem[]>([]);
 const itemSelectorOpen = ref(false);
 const addItemLoading = ref(false);
+const warehouseOptions = ref<Array<{ label: string; value: string }>>([]);
+const warehouseLoading = ref(false);
+// The list is per company, and every order in the list shares one, so it is fetched
+// once rather than on every order the user clicks through.
+let loadedWarehouseCompany = "";
 let localRowCounter = 0;
 const nextLocalRowKey = () => `local-${++localRowCounter}`;
 const listLoading = ref(false);
@@ -1309,6 +1334,64 @@ const syncSelectedListRow = (detail: ManagedSalesOrderDetail) => {
 	});
 };
 
+/** NS lines are identified by their item code prefix, exactly as in the POS cart. */
+const isNsItem = (item: { item_code?: string | null } | null | undefined) =>
+	String(item?.item_code || "")
+		.trim()
+		.toLowerCase()
+		.startsWith("ns");
+
+const nsDefaultWarehouse = computed(() => String(selectedOrder.value?.default_ns_warehouse || "").trim());
+
+// Mirrors the cart: a "Collection" delivery charge hides the NS warehouse selector
+// everywhere except the Peterborough POS Profile, where staff still pick a warehouse.
+// The order's own profile decides, not the operator's - this view can be filtered to
+// another branch's orders.
+const hideWarehouseSelector = computed(
+	() =>
+		Number(selectedOrder.value?.delivery_charge_collection || 0) === 1 &&
+		String(selectedOrder.value?.pos_profile || "").trim() !== "Peterborough",
+);
+
+/**
+ * Only a row still staged locally is placeable: once it is on the order the server
+ * keeps its stored warehouse, so offering a picker there would be a lie.
+ */
+const canPickWarehouse = (item: EditableSalesOrderItem) =>
+	Boolean(item.is_new) &&
+	isNsItem(item) &&
+	warehouseOptions.value.length > 0 &&
+	!hideWarehouseSelector.value;
+
+const loadWarehouseOptions = async (company?: string | null) => {
+	const target = String(company || "").trim();
+	if (!target || warehouseLoading.value || loadedWarehouseCompany === target) return;
+	warehouseLoading.value = true;
+	try {
+		const rows = await api.call<any[]>("frappe.client.get_list", {
+			doctype: "Warehouse",
+			fields: ["name", "warehouse_name"],
+			filters: { is_group: 0, is_ns_location: 1, company: target },
+			limit_page_length: 0,
+			order_by: "warehouse_name asc",
+		});
+		warehouseOptions.value = (Array.isArray(rows) ? rows : [])
+			.map((row: any) => {
+				const value = String(row?.name || "").trim();
+				if (!value) return null;
+				return { label: String(row?.warehouse_name || value).trim() || value, value };
+			})
+			.filter(Boolean) as Array<{ label: string; value: string }>;
+		loadedWarehouseCompany = target;
+	} catch (error) {
+		console.error("Failed to load warehouse options", error);
+		warehouseOptions.value = [];
+		loadedWarehouseCompany = "";
+	} finally {
+		warehouseLoading.value = false;
+	}
+};
+
 const removeItem = (rowKey: string) => {
 	editableItems.value = editableItems.value.filter((item) => item.rowKey !== rowKey);
 };
@@ -1317,10 +1400,20 @@ const onAddItem = async (item: any) => {
 	if (!item?.item_code || !selectedOrder.value || saveLoading.value || !canEditItems.value) return;
 
 	const uom = String(item.uom || item.stock_uom || "");
+	const ns = isNsItem(item);
+	// A fresh NS row starts in the order's default NS warehouse, the same place the
+	// cart puts it at order creation.
+	const warehouse = ns ? nsDefaultWarehouse.value : "";
 	// Only merge into rows still staged locally. Bumping the qty of a row already on
 	// the order would be a silent edit of an existing line.
 	const pending = editableItems.value.find(
-		(row) => row.is_new && row.item_code === item.item_code && String(row.uom || "") === uom,
+		(row) =>
+			row.is_new &&
+			row.item_code === item.item_code &&
+			String(row.uom || "") === uom &&
+			// An NS row the operator moved to another warehouse is a separate line, not
+			// more of the same one.
+			(!ns || String(row.warehouse || "") === warehouse),
 	);
 	if (pending) {
 		pending.qty = Number(pending.qty || 0) + 1;
@@ -1350,7 +1443,7 @@ const onAddItem = async (item: any) => {
 			// Sent back on save: update_child_qty_rate assigns description
 			// unconditionally, so dropping it would blank the saved line.
 			description: details.description ?? "",
-			warehouse: "",
+			warehouse,
 			uom: details.uom ?? "",
 			qty: 1,
 			picked_qty: 0,
@@ -1659,6 +1752,7 @@ const selectOrder = async (name: string) => {
 		);
 		selectedOrder.value = message || null;
 		resetForm(selectedOrder.value);
+		void loadWarehouseOptions(selectedOrder.value?.company);
 	} catch (error) {
 		console.error("Failed to load Sales Order detail", error);
 		detailError.value = __("Unable to load the selected Sales Order");
@@ -1676,7 +1770,9 @@ const buildItemPayload = () =>
 		description: item.description || null,
 		qty: Number(item.qty || 0),
 		conversion_factor: Number(item.conversion_factor || 1),
-		...(item.is_new ? { rate: Number(item.rate || 0) } : {}),
+		...(item.is_new
+			? { rate: Number(item.rate || 0), warehouse: String(item.warehouse || "").trim() || null }
+			: {}),
 	}));
 
 const previewItemChanges = async () => {
@@ -1771,6 +1867,11 @@ const validateEditableItems = (): string => {
 		}
 		if (item.is_new && (!Number.isFinite(Number(item.rate)) || Number(item.rate) < 0)) {
 			return __("Item {0}: Rate cannot be negative.", [label]);
+		}
+		// Reached when the picker was cleared, or when the order's POS Profile has no
+		// default NS warehouse to pre-fill: either way the row needs a deliberate choice.
+		if (canPickWarehouse(item) && !String(item.warehouse || "").trim()) {
+			return __("Item {0}: please choose a warehouse.", [label]);
 		}
 	}
 	return "";
@@ -2214,6 +2315,18 @@ watch(
 
 .item-lock-reason {
 	color: var(--v-theme-error);
+}
+
+.item-warehouse-select {
+	margin-top: 4px;
+	max-width: 260px;
+}
+
+/* .item-cell span dims and shrinks the row's meta lines; the select's own labels and
+   selection text must not inherit that. */
+.item-warehouse-select span {
+	color: inherit;
+	font-size: inherit;
 }
 
 .items-input {

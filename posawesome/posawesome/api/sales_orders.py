@@ -899,6 +899,24 @@ def _get_managed_sales_order_payment_types(sales_order):
     return payments
 
 
+def _is_ns_item_code(item_code):
+    """NS lines are identified by their item code prefix, as they are in the POS cart."""
+    return cstr(item_code or "").strip().lower().startswith("ns")
+
+
+def _get_managed_sales_order_ns_default_warehouse(doc):
+    """default_ns_warehouse of the order's own POS Profile.
+
+    The order's profile, not the operator's: Sales Order Management can be filtered to
+    another profile's orders, and a line has to land in the warehouse that order's
+    branch works from.
+    """
+    pos_profile = cstr(getattr(doc, "pos_profile", "") or "").strip()
+    if not pos_profile:
+        return ""
+    return cstr(frappe.db.get_value("POS Profile", pos_profile, "default_ns_warehouse") or "").strip()
+
+
 def _serialize_managed_sales_order(doc):
     items = []
     latest_component_due_date = None
@@ -952,6 +970,13 @@ def _serialize_managed_sales_order(doc):
 
     shipping_address = _get_managed_sales_order_shipping_address(doc)
     delivery_charge, delivery_charge_rate = _get_managed_sales_order_delivery_charge(doc)
+    # Mirrors the cart: a Collection charge hides the NS warehouse picker. The flag is
+    # sent rather than the decision so the client applies the same rule it does there.
+    delivery_charge_collection = (
+        cint(frappe.db.get_value("Delivery Charges", delivery_charge, "collection") or 0)
+        if delivery_charge
+        else 0
+    )
     pos_sales_person = cstr(getattr(doc, "pos_sales_person", "") or "").strip()
     pos_sales_person_name = (
         cstr(frappe.db.get_value("User", pos_sales_person, "full_name") or "") if pos_sales_person else ""
@@ -982,6 +1007,10 @@ def _serialize_managed_sales_order(doc):
         "latest_component_due_date": latest_component_due_date,
         "delivery_charge": delivery_charge,
         "delivery_charge_rate": delivery_charge_rate,
+        "delivery_charge_collection": delivery_charge_collection,
+        "company": getattr(doc, "company", None),
+        "pos_profile": getattr(doc, "pos_profile", None),
+        "default_ns_warehouse": _get_managed_sales_order_ns_default_warehouse(doc),
         "pos_sales_person": pos_sales_person,
         "pos_sales_person_name": pos_sales_person_name or pos_sales_person,
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
@@ -1050,6 +1079,9 @@ def _normalize_managed_sales_order_item_row(row):
         "uom": cstr(row.get("uom") or "").strip() or None,
         "description": cstr(row.get("description") or "").strip() or None,
         "bom_no": cstr(row.get("bom_no") or "").strip() or None,
+        # Only honoured for new NS rows; an existing row always keeps its stored
+        # warehouse, and a non-NS row keeps the one resolved from the Item.
+        "warehouse": cstr(row.get("warehouse") or "").strip() or None,
         "qty": qty,
         "conversion_factor": conversion_factor,
         # None means "not supplied", which is distinct from a deliberate 0. Only
@@ -1145,6 +1177,30 @@ def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items):
     _settle_managed_sales_order_surplus(doc)
 
 
+def _resolve_new_managed_sales_order_item_warehouse(doc, item_code, requested, ns_default_warehouse):
+    """Warehouse for a row being added to a managed Sales Order.
+
+    Only NS lines are placed deliberately: they are the rows the POS cart offers a
+    warehouse picker for, and the warehouse the operator picked has to survive the save.
+    Anything else stays None so set_order_defaults resolves it from the Item, which
+    reports a missing default more clearly than we could here.
+    """
+    if not _is_ns_item_code(item_code):
+        return None
+
+    requested = cstr(requested or "").strip()
+    if not requested:
+        return ns_default_warehouse or None
+
+    warehouse_company = frappe.db.get_value("Warehouse", requested, "company")
+    if not warehouse_company:
+        frappe.throw(_("Warehouse {0} does not exist.").format(requested))
+    order_company = cstr(getattr(doc, "company", "") or "").strip()
+    if order_company and cstr(warehouse_company) != order_company:
+        frappe.throw(_("Warehouse {0} does not belong to company {1}.").format(requested, order_company))
+    return requested
+
+
 def _prepare_managed_sales_order_item_rows(doc, incoming_items):
     """Normalise and price the incoming rows against the stored order.
 
@@ -1155,6 +1211,7 @@ def _prepare_managed_sales_order_item_rows(doc, incoming_items):
         frappe.throw(_("Sales Order items payload must be a list."))
 
     existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
+    ns_default_warehouse = _get_managed_sales_order_ns_default_warehouse(doc)
     normalized_items = []
     for row in incoming_items:
         normalized = _normalize_managed_sales_order_item_row(row)
@@ -1181,9 +1238,11 @@ def _prepare_managed_sales_order_item_rows(doc, incoming_items):
                 normalized["rate"] = flt(pricing.get("rate"))
             else:
                 normalized["rate"] = flt(requested_rate)
-            # set_order_defaults resolves the warehouse from the Item and falls back to
-            # the parent delivery_date, with clearer errors than we could raise here.
-            normalized["warehouse"] = None
+            normalized["warehouse"] = _resolve_new_managed_sales_order_item_warehouse(
+                doc, normalized["item_code"], normalized.get("warehouse"), ns_default_warehouse
+            )
+            # set_order_defaults falls back to the parent delivery_date, with clearer
+            # errors than we could raise here.
             normalized["delivery_date"] = None
         normalized_items.append(normalized)
     return normalized_items
@@ -2116,8 +2175,7 @@ def _apply_ns_default_warehouse(order_data):
     for item in order_data.get("items", []) or []:
         if not isinstance(item, dict):
             continue
-        item_code = str(item.get("item_code") or "").strip()
-        if item_code.lower().startswith("ns") and not item.get("warehouse"):
+        if _is_ns_item_code(item.get("item_code")) and not item.get("warehouse"):
             item["warehouse"] = ns_warehouse
 
 
