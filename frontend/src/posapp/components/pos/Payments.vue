@@ -1891,6 +1891,24 @@ const ensurePaymentLinesInitialized = (doc = invoice_doc.value) => {
 	return initializedPayment;
 };
 
+// The pay screen keeps its preferred payment line topped up to the order total, so a
+// "submit without payment" would otherwise send a full-value payment row and book a
+// Payment Entry for money that was never taken. A failed submit restores the lines via
+// restorePaymentLinesAfterFailedSubmit().
+const clearPaymentLinesForNoPaymentSubmit = () => {
+	const doc = invoice_doc.value;
+	if (!doc || !Array.isArray(doc.payments)) {
+		return;
+	}
+
+	doc.payments.forEach((payment) => {
+		payment.amount = 0;
+		if (payment.base_amount !== undefined) {
+			payment.base_amount = 0;
+		}
+	});
+};
+
 const restorePaymentLinesAfterFailedSubmit = () => {
 	const doc = invoice_doc.value;
 	if (!doc) {
@@ -2510,6 +2528,9 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 
 	submissionInFlight.value = true;
 	loading.value = true;
+	if (options.allowNoPaymentOrderSubmit) {
+		clearPaymentLinesForNoPaymentSubmit();
+	}
 	const shouldHoldOrder = Boolean(options.forceHoldOrder || effectiveHoldOrder.value);
 	const holdReason = options.forceHoldOrder
 		? "submitted without payment"

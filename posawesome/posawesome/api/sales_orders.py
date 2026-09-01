@@ -2661,6 +2661,14 @@ def submit_sales_order(order, data=None):
         order["sales_order_settlement_state"] = data.get("sales_order_settlement_state")
     if data.get("allow_no_payment_order_submit") and not order.get("allow_no_payment_order_submit"):
         order["allow_no_payment_order_submit"] = data.get("allow_no_payment_order_submit")
+    if cint(order.get("allow_no_payment_order_submit")):
+        # "Submit without payment" is only ever sent by the button of that name, and
+        # nothing was collected at the till. The pay screen pre-fills its preferred
+        # payment line with the order total, so the payload can still arrive carrying a
+        # full-value row plus a "full" settlement state; honouring either would book a
+        # Payment Entry against an order the customer has not paid for.
+        order["payments"] = []
+        order["sales_order_settlement_state"] = "none"
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
     is_split_group_submit = _is_split_group_submit(order)

@@ -1780,6 +1780,45 @@ class TestSalesOrderSubmit(TestCase):
         auto_dn.assert_called_once_with(so_doc)
         self.assertFalse(enqueue.called)
 
+    def test_submit_sales_order_ignores_prefilled_payments_when_no_payment_submitted(self):
+        # The pay screen keeps its preferred payment line topped up to the order total,
+        # so "submit without payment" can arrive carrying a full-value row and a "full"
+        # settlement state. Nothing was collected, so nothing may be booked.
+        so_doc = FakeSalesOrder(grand_total=239.99)
+        order = {
+            "doctype": "Sales Order",
+            "payments": [{"mode_of_payment": "Cash", "amount": 239.99}],
+            "sales_order_settlement_state": "full",
+            "allow_no_payment_order_submit": 1,
+        }
+
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(
+            sales_orders, "_apply_kit_meta_fields"
+        ), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(
+            sales_orders, "_is_collection_delivery_charge_selected", return_value=True
+        ), patch.object(
+            sales_orders, "_apply_collection_flow_tag"
+        ), patch.object(
+            sales_orders, "_apply_collect_from_store_tag"
+        ), patch.object(
+            sales_orders, "_create_payment_entries"
+        ) as create_payment_entries, patch.object(
+            sales_orders, "_auto_create_delivery_note_for_non_ns_items"
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            sales_orders.submit_sales_order(json.dumps(order), json.dumps({}))
+
+        self.assertEqual(so_doc.docstatus, 1)
+        self.assertFalse(create_payment_entries.called)
+        self.assertFalse(enqueue.called)
+
     def test_submit_sales_order_enqueues_payment_entries_for_deposit(self):
         so_doc = FakeSalesOrder(grand_total=300)
         order = {
