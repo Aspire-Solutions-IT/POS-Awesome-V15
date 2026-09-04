@@ -2150,6 +2150,10 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
         amount=payment_amount,
         email_to=recipient or None,
         send_email=cint(send_email),
+        # Shop/till roles carry no standard Sales Order permission at all -- they're
+        # authorised by reaching this whitelisted endpoint (_validate_managed_sales_order_doc
+        # above), the same as every other Sales Order mutation in this file.
+        check_permission=False,
     )
 
     doc.reload()
@@ -2176,7 +2180,7 @@ def delete_managed_sales_order_payment_link(sales_order):
 
     from customer_due_dates.revolut.payment_link import delete_payment_link
 
-    delete_payment_link(reference_doctype="Sales Order", reference_name=doc.name)
+    delete_payment_link(reference_doctype="Sales Order", reference_name=doc.name, check_permission=False)
 
     doc.reload()
     return {"sales_order": _serialize_managed_sales_order(doc)}
