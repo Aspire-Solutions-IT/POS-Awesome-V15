@@ -1,10 +1,10 @@
 {
  "content": null,
- "creation": "2026-04-08 17:25:00.000000",
+ "creation": "2026-04-08 17:25:00",
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-04-08 17:25:00.000000",
+ "modified": "2026-07-29 11:26:54.813441",
  "modified_by": "Administrator",
  "module": "POSAwesome",
  "name": "pos",
@@ -25,6 +25,9 @@
   },
   {
    "role": "Accounts User"
+  },
+  {
+   "role": "Shop"
   }
  ],
  "script": null,

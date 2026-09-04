@@ -108,6 +108,26 @@ export function fromArabicNumerals(str: string | number): string {
 }
 
 /**
+ * Validate free-typed numeric input.
+ *
+ * Accepts what the input parsers (`setFormatedFloat` / `setFormatedCurrency`) actually
+ * understand: `,` as an optional thousands separator and `.` as the decimal separator,
+ * with Arabic-Indic digits and separators normalised first. A partially typed value
+ * (`"12."`, `".5"`) and an empty box are valid, so the field does not flash an error
+ * while a decimal is being entered or after it is cleared.
+ *
+ * @returns `true` when valid, or the error message shown by the field.
+ */
+export function isNumberInput(value: any): boolean | string {
+	const westernValue = fromArabicNumerals(String(value ?? "")).trim();
+	if (westernValue === "") return true;
+
+	const pattern = /^[+-]?(\d+|\d{1,3}(,\d{3})+)?(\.\d*)?$/;
+	const hasDigit = /\d/.test(westernValue);
+	return (pattern.test(westernValue) && hasDigit) || "invalid number";
+}
+
+/**
  * Get appropriate locale for number formatting.
  */
 export function getNumberLocale(): string {
@@ -303,11 +323,7 @@ export function useFormat() {
 		return get_currency_symbol(currency);
 	};
 
-	const isNumber = (value: any): boolean | string => {
-		const westernValue = fromArabicNumerals(String(value));
-		const pattern = /^-?(\d+|\d{1,3}(\.\d{3})*)(,\d+)?$/;
-		return pattern.test(westernValue) || "invalid number";
-	};
+	const isNumber = (value: any): boolean | string => isNumberInput(value);
 
 	const isNegative = (value: any): boolean => {
 		if (value === null || value === undefined) return false;
@@ -446,9 +462,7 @@ export default {
 			return get_currency_symbol(currency);
 		},
 		isNumber(value: any): boolean | string {
-			const westernValue = fromArabicNumerals(String(value));
-			const pattern = /^-?(\d+|\d{1,3}(\.\d{3})*)(,\d+)?$/;
-			return pattern.test(westernValue) || "invalid number";
+			return isNumberInput(value);
 		},
 		isNegative(value: any): boolean {
 			if (value === null || value === undefined) return false;

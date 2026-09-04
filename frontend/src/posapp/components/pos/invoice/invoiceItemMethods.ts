@@ -35,6 +35,10 @@ interface InvoiceItemMethodsVm {
 	update_items_details: (_items: unknown[]) => unknown;
 	forceUpdate: () => void;
 	$forceUpdate?: () => void;
+	discount_input_mode?: "amount" | "percentage";
+	additional_discount?: number;
+	additional_discount_percentage?: number;
+	discount_amount?: number;
 }
 
 // Keep offline imports if needed for re-export or mixin usage?
@@ -363,6 +367,23 @@ const invoiceItemMethods: Record<string, unknown> &
 	// Discounts
 	update_discount_umount() {
 		return Discounts.update_discount_umount(this);
+	},
+	/** Live sync while typing in the % box: recalculates the discount amount. */
+	sync_discount_amount_from_percentage() {
+		this.discount_input_mode = "percentage";
+		Discounts.sync_discount_amount_from_percentage(this);
+		this.discount_amount = this.additional_discount;
+	},
+	/** Live sync while typing in the amount box: recalculates the discount %. */
+	sync_discount_percentage_from_amount() {
+		this.discount_input_mode = "amount";
+		Discounts.sync_discount_percentage_from_amount(this, { force: true });
+	},
+	/** Commits an amount entry (blur/change): mirrors % and applies the profile ceiling. */
+	commit_discount_amount() {
+		this.discount_input_mode = "amount";
+		Discounts.commit_discount_amount(this);
+		this.discount_amount = this.additional_discount;
 	},
 	calc_prices(item, value, $event) {
 		return Discounts.calc_prices(this, item, value, $event);

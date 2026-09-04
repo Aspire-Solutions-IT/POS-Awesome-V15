@@ -92,29 +92,9 @@ export function update_qty_limits(context: any, item: any) {
 		item.max_qty = flt(
 			item._base_actual_qty / (item.conversion_factor || 1),
 		);
-
-		// Set increment disable flag based on stock limits
-		const blockSale = Boolean(
-			context.pos_profile?.posa_block_sale_beyond_available_qty ||
-			context.blockSaleBeyondAvailableQty,
-		);
-		const allowNegativeStock =
-			!blockSale &&
-			(parseBooleanSetting(
-				context.stock_settings?.allow_negative_stock,
-			) ||
-				parseBooleanSetting(item?.allow_negative_stock));
-
-		if (allowNegativeStock) {
-			item.disable_increment = false;
-		} else if (blockSale) {
-			item.disable_increment = item.qty >= item.max_qty;
-		} else {
-			item.disable_increment =
-				!parseBooleanSetting(
-					context.stock_settings?.allow_negative_stock,
-				) && item.qty >= item.max_qty;
-		}
+		// POS should keep quantity increment available even when stock
+		// validation runs, because this setup allows overselling.
+		item.disable_increment = false;
 	}
 }
 

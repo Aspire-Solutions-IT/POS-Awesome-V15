@@ -138,6 +138,9 @@ describe("NavbarMenu cashier pin management", () => {
 					expect.objectContaining({
 						id: "awesome-dashboard",
 					}),
+					expect.objectContaining({
+						id: "switch-profile",
+					}),
 				],
 			}),
 		]);

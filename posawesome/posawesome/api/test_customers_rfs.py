@@ -1,0 +1,644 @@
+import importlib.util
+import json
+import pathlib
+import sys
+import types
+import unittest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
+class _AttrDict(dict):
+	"""Minimal stand-in for frappe._dict: supports both dict and attribute access."""
+
+	def __getattr__(self, name):
+		try:
+			return self[name]
+		except KeyError as exc:
+			raise AttributeError(name) from exc
+
+
+class _FakeCustomerDoc:
+	def __init__(self, payload):
+		self.payload = dict(payload)
+		self.customer_name = payload.get("customer_name")
+		self.customer_group = None
+		self.territory = None
+		self.name = payload.get("customer_name")
+
+	def save(self):
+		return self
+
+
+class _FakeAddressDoc:
+	def __init__(self, name):
+		self.name = name
+		self.links = []
+		self.saved = False
+
+	def append(self, fieldname, value):
+		if fieldname == "links":
+			self.links.append(value)
+
+	def save(self):
+		self.saved = True
+		return self
+
+
+class _FakeNewAddressDoc:
+	_counter = 0
+
+	def __init__(self, payload, registry):
+		self.payload = dict(payload)
+		self.links = list(self.payload.get("links") or [])
+		self.name = None
+		self._registry = registry
+
+	def insert(self):
+		_FakeNewAddressDoc._counter += 1
+		self.name = f"NEW-ADDR-{_FakeNewAddressDoc._counter}"
+		record = dict(self.payload)
+		record.pop("links", None)
+		record.setdefault("disabled", 0)
+		self._registry.addresses[self.name] = record
+		for link in self.links:
+			self._registry.dynamic_links.append(
+				{
+					"parenttype": "Address",
+					"parent": self.name,
+					"link_doctype": link.get("link_doctype"),
+					"link_name": link.get("link_name"),
+				}
+			)
+		return self
+
+
+class _FakeCriterion:
+	"""Records a rendered WHERE fragment so tests can assert on the built query."""
+
+	def __init__(self, text):
+		self.text = text
+
+	def __or__(self, other):
+		return _FakeCriterion("({0} OR {1})".format(self.text, other.text))
+
+	def __repr__(self):
+		return self.text
+
+
+class _FakeField:
+	def __init__(self, name):
+		self.name = name
+
+	def __eq__(self, other):
+		return _FakeCriterion("{0} = {1}".format(self.name, other))
+
+	def __hash__(self):
+		return hash(self.name)
+
+	def like(self, pattern):
+		return _FakeCriterion("{0} LIKE {1!r}".format(self.name, pattern))
+
+	def isin(self, values):
+		return _FakeCriterion("{0} IN {1!r}".format(self.name, sorted(values)))
+
+	def notin(self, values):
+		return _FakeCriterion("{0} NOT IN {1!r}".format(self.name, sorted(values)))
+
+
+class _FakeTable:
+	def __getattr__(self, name):
+		return _FakeField(name)
+
+
+class _FakeQuery:
+	def __init__(self, recorder):
+		self.recorder = recorder
+
+	def select(self, *fields):
+		self.recorder["select"] = [field.name for field in fields]
+		return self
+
+	def where(self, criterion):
+		self.recorder["where"].append(criterion.text)
+		return self
+
+	def orderby(self, field):
+		self.recorder["orderby"].append(field.name)
+		return self
+
+	def limit(self, value):
+		self.recorder["limit"] = value
+		return self
+
+	def offset(self, value):
+		self.recorder["offset"] = value
+		return self
+
+	def run(self, as_dict=False):
+		self.recorder["ran"] = True
+		return self.recorder["rows"]
+
+
+class _FakeQueryBuilder:
+	def __init__(self):
+		self.recorder = {}
+		self.reset()
+
+	def reset(self):
+		self.recorder.clear()
+		self.recorder.update(
+			{
+				"doctype": None,
+				"select": [],
+				"where": [],
+				"orderby": [],
+				"limit": None,
+				"offset": None,
+				"rows": [],
+				"ran": False,
+			}
+		)
+
+	def DocType(self, name):
+		self.recorder["doctype"] = name
+		return _FakeTable()
+
+	def from_(self, table):
+		return _FakeQuery(self.recorder)
+
+
+class TestPosCustomersRfs(unittest.TestCase):
+	@classmethod
+	def setUpClass(cls):
+		cls._install_stubs()
+		cls.module = cls._load_module()
+
+	@classmethod
+	def _install_stubs(cls):
+		posawesome_pkg = types.ModuleType("posawesome")
+		posawesome_pkg.__path__ = []
+		posawesome_inner_pkg = types.ModuleType("posawesome.posawesome")
+		posawesome_inner_pkg.__path__ = []
+		posawesome_api_pkg = types.ModuleType("posawesome.posawesome.api")
+		posawesome_api_pkg.__path__ = []
+
+		frappe_module = types.ModuleType("frappe")
+		frappe_module._ = lambda text: text
+		frappe_module.throw = lambda message: (_ for _ in ()).throw(Exception(message))
+		frappe_module.whitelist = lambda *args, **kwargs: (lambda fn: fn)
+		frappe_module.log_error = lambda *args, **kwargs: None
+
+		class _FakeDb:
+			def __init__(self):
+				self.count_calls = []
+				self.exists_calls = []
+				self.get_value_calls = []
+				self.sql_calls = []
+				self.exists_return_value = False
+				self.address_flags = {}
+				# Extra per-doctype field storage used by the store-collection
+				# address cloning logic.
+				self.addresses = {}
+				self.customers = {}
+				self.contacts = {}
+				self.dynamic_links = []
+
+			def count(self, doctype, filters):
+				self.count_calls.append((doctype, filters))
+				return 7
+
+			def exists(self, doctype, filters):
+				self.exists_calls.append((doctype, filters))
+				return self.exists_return_value
+
+			def _lookup(self, doctype, name, fieldname, as_dict):
+				table = {
+					"Address": self.addresses,
+					"Customer": self.customers,
+					"Contact": self.contacts,
+				}.get(doctype)
+				if table is None:
+					return None
+				record = table.get(name)
+				if record is None:
+					return None
+				if isinstance(fieldname, (list, tuple)):
+					values = [record.get(f) for f in fieldname]
+					if as_dict:
+						return dict(zip(fieldname, values))
+					return tuple(values)
+				return record.get(fieldname)
+
+			def get_value(self, doctype, name, fieldname, as_dict=False):
+				self.get_value_calls.append((doctype, name, fieldname))
+				if doctype == "Address" and fieldname == "posa_is_store_collection_point":
+					return self.address_flags.get(name, 0)
+				return self._lookup(doctype, name, fieldname, as_dict)
+
+			def sql(self, query, params=None, as_dict=0):
+				self.sql_calls.append((query, params))
+				if "posa_source_address" in query:
+					source_address, customer = params
+					copy_names = {
+						name
+						for name, record in self.addresses.items()
+						if record.get("posa_source_address") == source_address
+					}
+					for link in self.dynamic_links:
+						if (
+							link.get("parenttype") == "Address"
+							and link.get("link_doctype") == "Customer"
+							and link.get("link_name") == customer
+							and link.get("parent") in copy_names
+						):
+							return [_AttrDict(address_name=link.get("parent"))]
+					return []
+				return []
+
+		frappe_module.db = _FakeDb()
+		frappe_module.qb = _FakeQueryBuilder()
+		frappe_module.last_get_all = None
+		frappe_module.last_customer_doc = None
+		frappe_module.last_address_doc = None
+		frappe_module.last_new_address_doc = None
+		frappe_module.address_docs = {}
+
+		def fake_get_all(
+			doctype,
+			filters=None,
+			fields=None,
+			order_by=None,
+			limit_start=None,
+			limit_page_length=None,
+			pluck=None,
+		):
+			frappe_module.last_get_all = {
+				"doctype": doctype,
+				"filters": filters,
+				"fields": fields,
+				"order_by": order_by,
+				"limit_start": limit_start,
+				"limit_page_length": limit_page_length,
+				"pluck": pluck,
+			}
+			if doctype == "Customer" and pluck == "name":
+				if filters and filters.get("name") == ["in", ["13682"]]:
+					return ["13682"]
+				return []
+			if doctype == "Dynamic Link" and pluck == "parent":
+				return [
+					link.get("parent")
+					for link in frappe_module.db.dynamic_links
+					if filters and all(link.get(k) == v for k, v in filters.items())
+				]
+			if doctype == "Address":
+				return [
+					{
+						"name": "STORE-ADDR-1",
+						"address_title": "Main Store",
+						"address_line1": "1 High Street",
+						"city": "London",
+						"posa_is_store_collection_point": 1,
+					}
+				]
+			return []
+
+		def fake_get_doc(*args, **kwargs):
+			if len(args) == 2 and args[0] == "Address":
+				name = args[1]
+				doc = frappe_module.address_docs.get(name) or _FakeAddressDoc(name)
+				frappe_module.address_docs[name] = doc
+				frappe_module.last_address_doc = doc
+				return doc
+
+			payload = args[0]
+			if isinstance(payload, dict) and payload.get("doctype") == "Address":
+				doc = _FakeNewAddressDoc(payload, frappe_module.db)
+				frappe_module.last_new_address_doc = doc
+				return doc
+
+			doc = _FakeCustomerDoc(payload)
+			frappe_module.last_customer_doc = doc
+			return doc
+
+		frappe_module.get_all = fake_get_all
+		frappe_module.get_doc = fake_get_doc
+
+		utils_module = types.ModuleType("frappe.utils")
+		utils_module.nowdate = lambda: "2026-06-12"
+		utils_module.flt = lambda value, *args, **kwargs: float(value or 0)
+		utils_module.cstr = lambda value: "" if value is None else str(value)
+		utils_module.get_datetime = lambda value: type("Dt", (), {"isoformat": lambda self: value})()
+
+		caching_module = types.ModuleType("frappe.utils.caching")
+		caching_module.redis_cache = lambda ttl=None: (lambda fn: fn)
+
+		loyalty_module = types.ModuleType(
+			"erpnext.accounts.doctype.loyalty_program.loyalty_program"
+		)
+		loyalty_module.get_loyalty_program_details_with_points = (
+			lambda *args, **kwargs: {}
+		)
+
+		api_utils_module = types.ModuleType("posawesome.posawesome.api.utils")
+		api_utils_module.fetch_sales_person_names = lambda *args, **kwargs: []
+
+		stored_value_module = types.ModuleType("posawesome.posawesome.api.stored_value")
+		stored_value_module.get_stored_value_summary = lambda *args, **kwargs: {}
+
+		sys.modules["posawesome"] = posawesome_pkg
+		sys.modules["posawesome.posawesome"] = posawesome_inner_pkg
+		sys.modules["posawesome.posawesome.api"] = posawesome_api_pkg
+		sys.modules["frappe"] = frappe_module
+		sys.modules["frappe.utils"] = utils_module
+		sys.modules["frappe.utils.caching"] = caching_module
+		sys.modules[
+			"erpnext.accounts.doctype.loyalty_program.loyalty_program"
+		] = loyalty_module
+		sys.modules["posawesome.posawesome.api.utils"] = api_utils_module
+		sys.modules["posawesome.posawesome.api.stored_value"] = stored_value_module
+
+		cls.frappe = frappe_module
+
+	@classmethod
+	def _load_module(cls):
+		module_name = "posawesome.posawesome.api.customers"
+		file_path = (
+			REPO_ROOT
+			/ "posawesome"
+			/ "posawesome"
+			/ "api"
+			/ "customers.py"
+		)
+		spec = importlib.util.spec_from_file_location(module_name, file_path)
+		module = importlib.util.module_from_spec(spec)
+		sys.modules[module_name] = module
+		spec.loader.exec_module(module)
+		return module
+
+	def setUp(self):
+		self.frappe.last_get_all = None
+		self.frappe.last_customer_doc = None
+		self.frappe.last_address_doc = None
+		self.frappe.last_new_address_doc = None
+		self.frappe.address_docs = {}
+		self.frappe.db.exists_return_value = False
+		self.frappe.db.address_flags = {}
+		self.frappe.db.addresses = {}
+		self.frappe.db.customers = {}
+		self.frappe.db.contacts = {}
+		self.frappe.db.dynamic_links = []
+		self.frappe.qb.reset()
+
+	def test_get_customer_names_filters_to_rfs_customers(self):
+		self.module.get_customer_names('{"customer_groups":[]}', limit=25)
+
+		self.assertEqual(self.frappe.last_get_all["doctype"], "Customer")
+		self.assertEqual(
+			self.frappe.last_get_all["filters"],
+			{"disabled": 0, "rfs_customer": 1},
+		)
+
+	def test_get_customer_names_excludes_customer_13682(self):
+		original_get_all = self.frappe.get_all
+
+		def fake_customers(*args, **kwargs):
+			if args and args[0] == "Customer" and not kwargs.get("pluck"):
+				return [
+					{"name": "13682", "customer_name": "Hidden Customer"},
+					{"name": "CUST-1001", "customer_name": "Visible Customer"},
+				]
+			return original_get_all(*args, **kwargs)
+
+		self.frappe.get_all = fake_customers
+		try:
+			rows = self.module.get_customer_names('{"customer_groups":[]}', limit=25)
+		finally:
+			self.frappe.get_all = original_get_all
+
+		self.assertEqual([row["name"] for row in rows], ["CUST-1001"])
+
+	def test_get_customers_count_filters_to_rfs_customers(self):
+		count = self.module.get_customers_count('{"customer_groups":[]}')
+
+		self.assertEqual(count, 6)
+		self.assertEqual(
+			self.frappe.db.count_calls[-1],
+			("Customer", {"disabled": 0, "rfs_customer": 1}),
+		)
+
+	def test_create_customer_marks_customer_as_rfs(self):
+		customer = self.module.create_customer(
+			customer_name="RFS POS Customer",
+			company="Agile",
+			pos_profile_doc='{"posa_allow_duplicate_customer_names": 1}',
+			customer_group="Retail",
+			territory="United Kingdom",
+			method="create",
+		)
+
+		self.assertEqual(customer.payload["rfs_customer"], 1)
+		self.assertEqual(self.frappe.last_customer_doc.payload["rfs_customer"], 1)
+		self.assertEqual(customer.payload["auto_allocate_sales_orders"], 1)
+		self.assertEqual(self.frappe.last_customer_doc.payload["auto_allocate_sales_orders"], 1)
+
+	def test_create_customer_passes_phone_and_email_to_created_address(self):
+		captured = {}
+		original_make_address = self.module.make_address
+
+		def fake_make_address(args):
+			captured["args"] = json.loads(args) if isinstance(args, str) else args
+			return captured["args"]
+
+		self.module.make_address = fake_make_address
+		try:
+			self.module.create_customer(
+				customer_name="RFS POS Customer",
+				company="Agile",
+				pos_profile_doc='{"posa_allow_duplicate_customer_names": 1}',
+				method="create",
+				address_line1="1 Test Street",
+				city="London",
+				country="United Kingdom",
+				mobile_no="07123456789",
+				email_id="customer@example.com",
+			)
+		finally:
+			self.module.make_address = original_make_address
+
+		self.assertEqual(captured["args"]["phone"], "07123456789")
+		self.assertEqual(captured["args"]["email_id"], "customer@example.com")
+
+	def test_get_store_collection_addresses_filters_flagged_addresses(self):
+		addresses = self.module.get_store_collection_addresses()
+
+		self.assertEqual(addresses[0]["name"], "STORE-ADDR-1")
+		self.assertEqual(
+			self.frappe.last_get_all["filters"],
+			{"disabled": 0, "posa_is_store_collection_point": 1},
+		)
+
+	def test_link_store_collection_address_to_customer_creates_a_copy_not_a_link_on_original(self):
+		self.frappe.db.address_flags["STORE-ADDR-1"] = 1
+		self.frappe.db.addresses["STORE-ADDR-1"] = {
+			"address_title": "Main Store",
+			"address_line1": "1 High Street",
+			"address_line2": None,
+			"city": "London",
+			"state": None,
+			"country": "United Kingdom",
+			"pincode": "SW1A 1AA",
+			"address_type": "Shipping",
+			"phone": "020 7946 0000",
+			"email_id": "store@example.com",
+		}
+
+		result = self.module.link_store_collection_address_to_customer(
+			"Customer A", "STORE-ADDR-1"
+		)
+
+		self.assertTrue(result["linked"])
+		self.assertFalse(result["already_linked"])
+		self.assertEqual(result["source_address"], "STORE-ADDR-1")
+		# A new Address was created and linked - the original store address was untouched.
+		self.assertNotEqual(result["address_name"], "STORE-ADDR-1")
+		self.assertIsNone(self.frappe.last_address_doc)
+		copy_doc = self.frappe.last_new_address_doc
+		self.assertEqual(copy_doc.name, result["address_name"])
+		self.assertEqual(
+			copy_doc.links, [{"link_doctype": "Customer", "link_name": "Customer A"}]
+		)
+		self.assertEqual(copy_doc.payload["posa_source_address"], "STORE-ADDR-1")
+		self.assertEqual(copy_doc.payload["posa_is_store_collection_point"], 0)
+		self.assertEqual(copy_doc.payload["address_line1"], "1 High Street")
+		# No customer contact details on file - falls back to the store address's own.
+		self.assertEqual(copy_doc.payload["phone"], "020 7946 0000")
+		self.assertEqual(copy_doc.payload["email_id"], "store@example.com")
+
+	def test_link_store_collection_address_to_customer_prefers_customer_contact_details(self):
+		self.frappe.db.address_flags["STORE-ADDR-1"] = 1
+		self.frappe.db.addresses["STORE-ADDR-1"] = {
+			"address_title": "Main Store",
+			"address_line1": "1 High Street",
+			"phone": "020 7946 0000",
+			"email_id": "store@example.com",
+		}
+		self.frappe.db.customers["Customer A"] = {
+			"customer_primary_address": "CUST-ADDR-1",
+			"customer_primary_contact": None,
+		}
+		self.frappe.db.addresses["CUST-ADDR-1"] = {
+			"phone": "07123 456789",
+			"email_id": "customer@example.com",
+		}
+
+		result = self.module.link_store_collection_address_to_customer(
+			"Customer A", "STORE-ADDR-1"
+		)
+
+		copy_doc = self.frappe.last_new_address_doc
+		self.assertEqual(copy_doc.name, result["address_name"])
+		self.assertEqual(copy_doc.payload["phone"], "07123 456789")
+		self.assertEqual(copy_doc.payload["email_id"], "customer@example.com")
+
+	def test_link_store_collection_address_to_customer_is_idempotent(self):
+		self.frappe.db.address_flags["STORE-ADDR-1"] = 1
+		self.frappe.db.addresses["STORE-ADDR-1"] = {"address_title": "Main Store"}
+		self.frappe.db.addresses["EXISTING-COPY-1"] = {
+			"posa_source_address": "STORE-ADDR-1",
+		}
+		self.frappe.db.dynamic_links.append(
+			{
+				"parenttype": "Address",
+				"parent": "EXISTING-COPY-1",
+				"link_doctype": "Customer",
+				"link_name": "Customer A",
+			}
+		)
+
+		result = self.module.link_store_collection_address_to_customer(
+			"Customer A", "STORE-ADDR-1"
+		)
+
+		self.assertFalse(result["linked"])
+		self.assertTrue(result["already_linked"])
+		self.assertEqual(result["address_name"], "EXISTING-COPY-1")
+		self.assertIsNone(self.frappe.last_new_address_doc)
+
+	def test_link_store_collection_address_to_customer_rejects_non_store_address(self):
+		self.frappe.db.address_flags["STORE-ADDR-1"] = 0
+
+		with self.assertRaisesRegex(Exception, "Selected address is not a store collection point"):
+			self.module.link_store_collection_address_to_customer(
+				"Customer A", "STORE-ADDR-1"
+			)
+
+
+	def test_search_customers_scopes_to_rfs_and_excludes_hidden_customer(self):
+		self.module.search_customers('{"customer_groups":[]}')
+
+		where = self.frappe.qb.recorder["where"]
+		self.assertEqual(self.frappe.qb.recorder["doctype"], "Customer")
+		self.assertIn("disabled = 0", where)
+		self.assertIn("rfs_customer = 1", where)
+		self.assertIn("name NOT IN ['13682']", where)
+
+	def test_search_customers_restricts_to_profile_customer_groups(self):
+		original = self.module.get_customer_groups
+		self.module.get_customer_groups = lambda pos_profile: ["Retail", "Wholesale"]
+		try:
+			self.module.search_customers('{"customer_groups":[{"customer_group":"Retail"}]}')
+		finally:
+			self.module.get_customer_groups = original
+
+		self.assertIn(
+			"customer_group IN ['Retail', 'Wholesale']",
+			self.frappe.qb.recorder["where"],
+		)
+
+	def test_search_customers_requires_every_word_to_match_some_field(self):
+		self.module.search_customers('{"customer_groups":[]}', search_term="john smith")
+
+		word_clauses = [c for c in self.frappe.qb.recorder["where"] if "LIKE" in c]
+		# One ANDed clause per word, each an OR across the searchable fields.
+		self.assertEqual(len(word_clauses), 2)
+		for clause, word in zip(word_clauses, ["john", "smith"]):
+			for fieldname in self.module.CUSTOMER_SEARCH_FIELDS:
+				self.assertIn("{0} LIKE '%{1}%'".format(fieldname, word), clause)
+
+	def test_search_customers_escapes_like_wildcards(self):
+		self.module.search_customers('{"customer_groups":[]}', search_term="50%_off")
+
+		clause = [c for c in self.frappe.qb.recorder["where"] if "LIKE" in c][0]
+		self.assertIn("50\\\\%\\\\_off", clause)
+
+	def test_search_customers_clamps_limit_and_offset(self):
+		self.module.search_customers('{"customer_groups":[]}', limit=99999, offset=-5)
+		self.assertEqual(
+			self.frappe.qb.recorder["limit"], self.module.CUSTOMER_SEARCH_MAX_LIMIT
+		)
+		self.assertEqual(self.frappe.qb.recorder["offset"], 0)
+
+		self.module.search_customers('{"customer_groups":[]}', limit="not-a-number")
+		self.assertEqual(
+			self.frappe.qb.recorder["limit"], self.module.CUSTOMER_SEARCH_DEFAULT_LIMIT
+		)
+
+	def test_search_customers_returns_rows_ordered_by_display_name(self):
+		self.frappe.qb.recorder["rows"] = [
+			{"name": "CUST-1", "customer_name": "Alice"},
+		]
+
+		rows = self.module.search_customers('{"customer_groups":[]}')
+
+		self.assertEqual(rows, [{"name": "CUST-1", "customer_name": "Alice"}])
+		self.assertEqual(self.frappe.qb.recorder["orderby"], ["customer_name", "name"])
+
+	def test_search_customers_accepts_a_dict_pos_profile(self):
+		self.module.search_customers({"customer_groups": []})
+
+		self.assertTrue(self.frappe.qb.recorder["ran"])
+
+if __name__ == "__main__":
+	unittest.main()

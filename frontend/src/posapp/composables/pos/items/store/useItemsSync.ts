@@ -169,7 +169,13 @@ export function useItemsSync() {
 					.map((item) => itemsMap.get(item.item_code))
 					.filter((item): item is Item => !!item);
 
-				// Find the latest modification timestamp
+				// Find the latest modification timestamp.
+				// The delta is driven by Bin / Item Price changes, but the rows carry the
+				// *Item* doctype's `modified`, which is usually far older than the cursor.
+				// Writing that back would move the cursor BACKWARDS, so every later poll
+				// would return the same delta forever. Only ever advance the cursor; when
+				// it can't advance here, performBackgroundSync's server-timestamp fallback
+				// takes over because the stored value is unchanged.
 				let maxModified = "";
 				for (const item of fetchedItems) {
 					if (item.modified && item.modified > maxModified) {
@@ -177,7 +183,7 @@ export function useItemsSync() {
 					}
 				}
 
-				if (maxModified) {
+				if (maxModified && maxModified > lastSync) {
 					setItemsLastSync(maxModified);
 				}
 			}

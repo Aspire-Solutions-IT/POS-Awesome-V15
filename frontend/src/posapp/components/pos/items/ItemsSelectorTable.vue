@@ -1,14 +1,15 @@
 <template>
 	<div class="items-table-container">
-		<v-data-table-virtual
+		<v-data-table
 			ref="tableRef"
 			:headers="headers"
 			:items="displayedItems"
-			class="sleek-data-table overflow-y-auto"
-			:style="{ height: 'calc(100% - 80px)' }"
-			item-key="item_code"
+			class="sleek-data-table"
+			item-value="item_code"
 			fixed-header
 			height="100%"
+			:items-per-page="displayedItems.length || -1"
+			hide-default-footer
 			:header-props="headerProps"
 			:no-data-text="noDataText"
 			@click:row="handleRowClick"
@@ -18,7 +19,30 @@
 		>
 			<template v-slot:item.rate="{ item }">
 				<div v-if="context !== 'purchase'">
-					<div class="text-primary rate-cell-primary">
+					<div v-if="item.is_on_sale && item.price_before_sale != null" class="table-price-was">
+						{{
+							currencySymbol(
+								item.original_currency ||
+									item.currency ||
+									item.price_list_currency ||
+									posProfile.currency,
+							)
+						}}
+						{{
+							formatCurrency(
+								item.price_before_sale,
+								item.original_currency ||
+									item.currency ||
+									item.price_list_currency ||
+									posProfile.currency,
+								ratePrecision(item.price_before_sale),
+							)
+						}}
+					</div>
+					<div
+						class="text-primary rate-cell-primary"
+						:class="{ 'rate-cell-sale': item.is_on_sale && item.price_before_sale != null }"
+					>
 						<div>
 							{{
 								currencySymbol(
@@ -100,10 +124,15 @@
 					{{ formatActualQty(item.actual_qty) }}
 				</span>
 			</template>
+			<template v-slot:item.quantity_due_in="{ item }">
+				<span class="golden--text" :class="{ 'negative-number': isNegative(item.quantity_due_in) }">
+					{{ formatActualQty(item.quantity_due_in) }}
+				</span>
+			</template>
 			<template v-slot:item.next_due_date="{ item }">
 				<span>{{ formatDueDate(item.next_due_date) }}</span>
 			</template>
-		</v-data-table-virtual>
+		</v-data-table>
 	</div>
 </template>
 
@@ -195,6 +224,14 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 </script>
 
 <style scoped>
+.items-table-container {
+	height: 100%;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
 :deep(.item-row-highlighted) {
 	background-color: rgba(var(--v-theme-primary), 0.32);
 }
@@ -211,6 +248,18 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 	gap: 4px;
 }
 
+.rate-cell-sale {
+	color: var(--pos-error) !important;
+}
+
+.table-price-was {
+	font-size: 0.76rem;
+	font-weight: 500;
+	color: var(--pos-text-secondary);
+	text-decoration: line-through;
+	text-decoration-thickness: 1px;
+}
+
 .sleek-data-table {
 	margin: 0;
 	background-color: transparent;
@@ -218,6 +267,7 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 	overflow: hidden;
 	border: 1px solid var(--pos-border-light);
 	height: 100%;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
 	transition: all 0.3s ease;
@@ -237,9 +287,6 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 	border-bottom: 1px solid var(--pos-border-light);
 	background: var(--pos-surface-muted);
 	color: var(--pos-text-secondary);
-	position: sticky !important;
-	top: 0 !important;
-	z-index: 10 !important;
 	backdrop-filter: blur(8px);
 	-webkit-backdrop-filter: blur(8px);
 	box-shadow: none;
@@ -269,13 +316,16 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 .sleek-data-table :deep(.v-table__wrapper) {
 	border-radius: var(--pos-radius-md);
 	height: 100%;
+	min-height: 0;
 	overflow-y: auto;
 	scrollbar-width: thin;
 	position: relative;
+	overscroll-behavior: contain;
 }
 
 .sleek-data-table :deep(.v-data-table) {
 	height: 100%;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
 }

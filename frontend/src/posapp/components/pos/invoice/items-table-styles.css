@@ -96,7 +96,11 @@
 	text-align: center;
 	color: var(--pos-text-primary);
 	background:
-		radial-gradient(circle at top, color-mix(in srgb, var(--pos-primary) 10%, transparent), transparent 55%),
+		radial-gradient(
+			circle at top,
+			color-mix(in srgb, var(--pos-primary) 10%, transparent),
+			transparent 55%
+		),
 		linear-gradient(180deg, var(--pos-surface-raised) 0%, var(--pos-surface-muted) 100%);
 }
 
@@ -225,7 +229,8 @@
 .posa-cart-table td {
 	padding: 14px 12px;
 	vertical-align: middle;
-	height: 60px;
+	height: auto;
+	min-height: var(--cell-height, 60px);
 	text-align: center;
 	color: var(--pos-text-primary);
 	position: relative;
@@ -444,6 +449,20 @@
 	font-weight: 500;
 }
 
+/* Warehouse names can run much longer than the other values shown in this box
+   (rate, discount, uom); clip with an ellipsis instead of wrapping, since wrapped
+   text overflows the fixed row height and bleeds into the row below/above. */
+.posa-cart-table__editor-display--warehouse {
+	overflow: hidden;
+}
+
+.posa-cart-table__warehouse-text {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Input field overrides within the table */
 .posa-cart-table__editor-input,
 .posa-cart-table__qty-input {
@@ -533,7 +552,7 @@
 
 /* Ensure table rows have consistent spacing */
 .posa-cart-table tbody tr:not([style*="height: 0"]) {
-	height: var(--cell-height, 60px);
+	height: auto;
 	min-height: var(--cell-height, 60px);
 }
 
@@ -625,6 +644,7 @@
 	overflow: visible;
 	box-sizing: border-box;
 	position: relative;
+	z-index: 1;
 }
 
 .posa-expanded-content {
@@ -642,17 +662,18 @@
 	margin: 0;
 	position: relative;
 	overflow: visible;
+	z-index: 1;
 }
 
 @keyframes expandIn {
 	from {
 		opacity: 0;
-		transform: translateY(-20px) scale(0.95);
+		transform: scale(0.98);
 	}
 
 	to {
 		opacity: 1;
-		transform: translateY(0) scale(1);
+		transform: scale(1);
 	}
 }
 

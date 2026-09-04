@@ -28,10 +28,14 @@
 			<div class="card-item-details">
 				<div class="card-item-price">
 					<div class="primary-price">
+						<span v-if="isOnSale" class="price-was">
+							{{ currencySymbol(primaryCurrency) }}
+							{{ formatCurrency(item.price_before_sale, primaryCurrency, primaryPrecision) }}
+						</span>
 						<span class="currency-symbol">
 							{{ currencySymbol(primaryCurrency) }}
 						</span>
-						<span class="price-amount">
+						<span class="price-amount" :class="{ 'price-amount-sale': isOnSale }">
 							{{ formatCurrency(primaryRate, primaryCurrency, primaryPrecision) }}
 						</span>
 						<ItemRateInfoMenu
@@ -120,6 +124,14 @@ const primaryPrecision = computed(() => {
 });
 
 const rateInfo = computed(() => props.getItemRateInfo(props.item));
+
+const isOnSale = computed(() => {
+	return (
+		props.context !== "purchase" &&
+		Boolean(props.item.is_on_sale) &&
+		props.item.price_before_sale != null
+	);
+});
 
 const secondaryCurrency = computed(() => props.selectedCurrency);
 
@@ -285,6 +297,18 @@ const onDragEnd = (event) => {
 .secondary-price {
 	font-size: 0.8rem;
 	color: var(--pos-text-secondary);
+}
+
+.price-was {
+	font-size: 0.78rem;
+	font-weight: 500;
+	color: var(--pos-text-secondary);
+	text-decoration: line-through;
+	text-decoration-thickness: 1px;
+}
+
+.price-amount-sale {
+	color: var(--pos-error);
 }
 
 .card-item-stock {

@@ -17,27 +17,49 @@
 					{{ __("Submit") }}
 				</v-btn>
 			</v-col>
-			<v-col cols="12" sm="6" class="payment-action-col">
+<!--			<v-col cols="12" sm="6" class="payment-action-col">-->
+<!--				<v-btn-->
+<!--					block-->
+<!--					size="large"-->
+<!--					color="success"-->
+<!--					variant="flat"-->
+<!--					class="payment-submit-print-btn payment-footer-btn"-->
+<!--					@click="$emit('submit-and-print')"-->
+<!--					:loading="loading"-->
+<!--					:disabled="loading || validatePayment"-->
+<!--				>-->
+<!--					{{ __("Submit & Print") }}-->
+<!--				</v-btn>-->
+<!--			</v-col>-->
+			<v-col v-if="showSubmitWithoutPayment" cols="12" sm="6" class="payment-action-col payment-action-col--stacked">
 				<v-btn
 					block
 					size="large"
-					color="success"
+					color="warning"
 					variant="flat"
-					class="payment-submit-print-btn payment-footer-btn"
-					@click="$emit('submit-and-print')"
+					class="payment-submit-no-payment-btn payment-footer-btn"
+					@click="$emit('submit-without-payment')"
 					:loading="loading"
 					:disabled="loading || validatePayment"
 				>
-					{{ __("Submit & Print") }}
+					{{ __("Submit Without Payment") }}
 				</v-btn>
 			</v-col>
-			<v-col cols="12">
+			<v-col
+				cols="12"
+				sm="12"
+				:class="[
+					showSubmitWithoutPayment ? 'payment-action-col payment-action-col--stacked' : '',
+				]"
+			>
 				<v-btn
 					block
 					size="large"
 					color="error"
 					variant="flat"
-					class="mt-2 pa-1 payment-cancel-btn payment-footer-btn"
+					:class="[
+						showSubmitWithoutPayment ? 'pa-1 payment-cancel-btn payment-footer-btn' : 'mt-2 pa-1 payment-cancel-btn payment-footer-btn',
+					]"
 					@click="$emit('cancel')"
 				>
 					{{ __("Cancel Payment") }}
@@ -53,9 +75,10 @@ defineProps({
 	validatePayment: Boolean,
 	highlightSubmit: Boolean,
 	compact: Boolean,
+	showSubmitWithoutPayment: Boolean,
 });
 
-defineEmits(["submit", "submit-and-print", "cancel"]);
+defineEmits(["submit", "submit-and-print", "submit-without-payment", "cancel"]);
 
 const __ = window.__;
 </script>
@@ -88,6 +111,10 @@ const __ = window.__;
 	background-color: rgb(var(--v-theme-success)) !important;
 }
 
+.payment-submit-no-payment-btn {
+	background-color: rgb(var(--v-theme-warning)) !important;
+}
+
 .payment-cancel-btn {
 	background-color: rgb(var(--v-theme-error)) !important;
 }
@@ -114,6 +141,13 @@ const __ = window.__;
 	background-color: rgba(var(--v-theme-success), 0.9) !important;
 }
 
+.payment-submit-no-payment-btn:hover,
+.payment-submit-no-payment-btn:focus,
+.payment-submit-no-payment-btn:focus-visible,
+.payment-submit-no-payment-btn:active {
+	background-color: rgba(var(--v-theme-warning), 0.9) !important;
+}
+
 .payment-cancel-btn:hover,
 .payment-cancel-btn:focus,
 .payment-cancel-btn:focus-visible,
@@ -123,6 +157,10 @@ const __ = window.__;
 
 .payment-action-col {
 	padding-left: 4px;
+}
+
+.payment-action-col--stacked {
+	padding-top: 6px;
 }
 
 .payment-footer-btn:active {
@@ -142,6 +180,10 @@ const __ = window.__;
 
 	.payment-action-col {
 		padding-left: 0;
+		padding-top: 6px;
+	}
+
+	.payment-action-col--stacked {
 		padding-top: 6px;
 	}
 

@@ -13,7 +13,7 @@
 				:placeholder="customerFieldPlaceholder"
 				:loading="isCustomerSearchLocked"
 				v-model="internalCustomer"
-				:items="filteredCustomers"
+				:items="customerAutocompleteItems"
 				item-title="customer_name"
 				item-value="name"
 				:no-data-text="customerNoDataText"
@@ -62,23 +62,24 @@
 					<span v-if="showCustomerLoadProgress" class="customer-load-percent">
 						{{ customerLoadPercent }}%
 					</span>
-					<v-tooltip :text="__('Add new customer')" content-class="posa-theme-tooltip">
-						<template #activator="{ props }">
-							<v-icon
-								v-bind="props"
-								class="icon-button"
-								@mousedown.prevent.stop
-								@click.stop="new_customer"
-							>
-								mdi-plus
-							</v-icon>
-						</template>
-					</v-tooltip>
 				</template>
 
 				<!-- Dropdown display -->
 				<template #item="{ props, item }">
-					<v-list-item v-bind="props">
+					<v-list-item
+						v-if="item.raw.__isCreateNew"
+						v-bind="props"
+						class="create-customer-list-item"
+					>
+						<template #prepend>
+							<v-icon color="primary">mdi-plus-circle-outline</v-icon>
+						</template>
+						<v-list-item-title>{{ __("Create new customer") }}</v-list-item-title>
+						<v-list-item-subtitle>
+							{{ createCustomerHint }}
+						</v-list-item-subtitle>
+					</v-list-item>
+					<v-list-item v-else v-bind="props">
 						<v-list-item-subtitle v-if="item.raw.customer_name !== item.raw.name">
 							<div v-html="`ID: ${item.raw.name}`"></div>
 						</v-list-item-subtitle>
@@ -94,6 +95,25 @@
 						<v-list-item-subtitle v-if="item.raw.primary_address">
 							<div v-html="`Primary Address: ${item.raw.primary_address}`"></div>
 						</v-list-item-subtitle>
+					</v-list-item>
+				</template>
+
+				<template #no-data>
+					<v-list-item
+						v-if="showCreateCustomerAction"
+						class="create-customer-list-item"
+						@click="createCustomerFromSearch"
+					>
+						<template #prepend>
+							<v-icon color="primary">mdi-plus-circle-outline</v-icon>
+						</template>
+						<v-list-item-title>{{ __("Create new customer") }}</v-list-item-title>
+						<v-list-item-subtitle>
+							{{ createCustomerHint }}
+						</v-list-item-subtitle>
+					</v-list-item>
+					<v-list-item v-else>
+						<v-list-item-title>{{ customerNoDataText }}</v-list-item-title>
 					</v-list-item>
 				</template>
 			</v-autocomplete>
@@ -238,6 +258,7 @@ export default {
 		const internalCustomer = ref(null);
 		const tempSelectedCustomer = ref(null);
 		const isMenuOpen = ref(false);
+		const customerSearch = ref("");
 		const customerDropdown = ref(null);
 		const readonlyState = ref(false);
 
@@ -249,9 +270,7 @@ export default {
 		const showCustomerLoadProgress = computed(
 			() => loadingCustomers.value || isCustomerBackgroundLoading.value,
 		);
-		const isCustomerSearchLocked = computed(
-			() => loadingCustomers.value && customers.value.length === 0,
-		);
+		const isCustomerSearchLocked = computed(() => loadingCustomers.value && customers.value.length === 0);
 		const customerLoadPercent = computed(() =>
 			Math.max(0, Math.min(100, Math.round(loadProgress.value || 0))),
 		);
@@ -270,6 +289,30 @@ export default {
 				? `${__("Loading customers...")} ${customerLoadPercent.value}%`
 				: __("Customers not found"),
 		);
+		const trimmedCustomerSearch = computed(() => customerSearch.value.trim());
+		const showCreateCustomerAction = computed(
+			() => !isCustomerSearchLocked.value && Boolean(trimmedCustomerSearch.value),
+		);
+		const createCustomerHint = computed(() =>
+			trimmedCustomerSearch.value
+				? `Use "${trimmedCustomerSearch.value}" as the customer name`
+				: "",
+		);
+		const CREATE_NEW_CUSTOMER_VALUE = "__create_new_customer__";
+		const customerAutocompleteItems = computed(() => {
+			const items = filteredCustomers.value || [];
+			if (!showCreateCustomerAction.value) {
+				return items;
+			}
+			return [
+				...items,
+				{
+					name: CREATE_NEW_CUSTOMER_VALUE,
+					customer_name: trimmedCustomerSearch.value,
+					__isCreateNew: true,
+				},
+			];
+		});
 
 		const formatCustomerMetric = (value) => {
 			const numericValue = Number(value || 0);
@@ -339,6 +382,7 @@ export default {
 			}
 
 			detachScrollListener();
+			customerSearch.value = "";
 			if (tempSelectedCustomer.value) {
 				internalCustomer.value = tempSelectedCustomer.value;
 				customersStore.setSelectedCustomer(tempSelectedCustomer.value);
@@ -362,10 +406,17 @@ export default {
 				}
 			}
 			isMenuOpen.value = false;
+			customerSearch.value = "";
 			detachScrollListener();
 		};
 
 		const onCustomerChange = (val) => {
+			if (val === CREATE_NEW_CUSTOMER_VALUE) {
+				internalCustomer.value = selectedCustomer.value || null;
+				createCustomerFromSearch();
+				return;
+			}
+
 			if (val && val === selectedCustomer.value) {
 				internalCustomer.value = selectedCustomer.value;
 				toastStore.show({
@@ -389,6 +440,7 @@ export default {
 				return;
 			}
 			const term = value || "";
+			customerSearch.value = term;
 			searchDebounce(term);
 		};
 
@@ -414,8 +466,15 @@ export default {
 			}
 		};
 
-		const new_customer = () => {
-			customersStore.openUpdateCustomerDialog(null);
+		const new_customer = (customerName = "") => {
+			const name = customerName.trim();
+			customersStore.openUpdateCustomerDialog(name ? { customer_name: name } : null);
+		};
+
+		const createCustomerFromSearch = () => {
+			const name = trimmedCustomerSearch.value;
+			closeCustomerMenu();
+			new_customer(name);
 		};
 
 		const edit_customer = () => {
@@ -530,6 +589,7 @@ export default {
 		return {
 			customerDropdown,
 			filteredCustomers,
+			customerAutocompleteItems,
 			loadingCustomers,
 			isCustomerBackgroundLoading,
 			showCustomerLoadProgress,
@@ -538,6 +598,8 @@ export default {
 			customerFieldLabel,
 			customerFieldPlaceholder,
 			customerNoDataText,
+			showCreateCustomerAction,
+			createCustomerHint,
 			internalCustomer,
 			effectiveReadonly,
 			onCustomerMenuToggle,
@@ -545,6 +607,7 @@ export default {
 			onCustomerSearch,
 			handleEnter,
 			new_customer,
+			createCustomerFromSearch,
 			edit_customer,
 			selectFirstCustomer,
 			openNewCustomer,

@@ -1,58 +1,45 @@
 <template>
 	<v-row dense>
-		<v-col cols="12" sm="6">
-			<v-btn
-				block
-				color="accent"
-				theme="dark"
-				prepend-icon="mdi-content-save"
-				@click="$emit('save-and-clear')"
-				class="summary-btn"
-				:loading="saveLoading"
-			>
-				{{ __("Save & Clear") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6">
-			<v-btn
-				block
-				color="warning"
-				theme="dark"
-				prepend-icon="mdi-tray-full"
-				@click="$emit('load-drafts')"
-				class="white-text-btn summary-btn"
-				:loading="loadDraftsLoading"
-			>
-				{{ __("Drafts") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6" v-if="pos_profile.custom_allow_select_sales_order == 1">
-			<v-btn
-				block
-				color="info"
-				theme="dark"
-				prepend-icon="mdi-book-search"
-				@click="$emit('select-order')"
-				class="summary-btn"
-				:loading="selectOrderLoading"
-			>
-				{{ __("Select S.O") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6">
-			<v-btn
-				block
-				color="deep-purple"
-				theme="dark"
-				prepend-icon="mdi-folder-search-outline"
-				@click="$emit('open-invoice-management')"
-				class="summary-btn"
-				:loading="invoiceManagementLoading"
-			>
-				{{ __("Invoice Mgmt") }}
-			</v-btn>
-		</v-col>
-		<v-col cols="12" sm="6">
+<!--		<v-col cols="12" sm="6">-->
+<!--			<v-btn-->
+<!--				block-->
+<!--				color="accent"-->
+<!--				theme="dark"-->
+<!--				prepend-icon="mdi-content-save"-->
+<!--				@click="$emit('save-and-clear')"-->
+<!--				class="summary-btn"-->
+<!--				:loading="saveLoading"-->
+<!--			>-->
+<!--				{{ __("Save & Clear") }}-->
+<!--			</v-btn>-->
+<!--		</v-col>-->
+<!--		<v-col cols="12" sm="6">-->
+<!--			<v-btn-->
+<!--				block-->
+<!--				color="warning"-->
+<!--				theme="dark"-->
+<!--				prepend-icon="mdi-tray-full"-->
+<!--				@click="$emit('load-drafts')"-->
+<!--				class="white-text-btn summary-btn"-->
+<!--				:loading="loadDraftsLoading"-->
+<!--			>-->
+<!--				{{ __("Drafts") }}-->
+<!--			</v-btn>-->
+<!--		</v-col>-->
+<!--		<v-col cols="12" sm="6">-->
+<!--			<v-btn-->
+<!--				block-->
+<!--				color="deep-purple"-->
+<!--				theme="dark"-->
+<!--				prepend-icon="mdi-folder-search-outline"-->
+<!--				@click="$emit('open-invoice-management')"-->
+<!--				class="summary-btn"-->
+<!--				:loading="invoiceManagementLoading"-->
+<!--			>-->
+<!--				{{ __("Invoice Mgmt") }}-->
+<!--			</v-btn>-->
+<!--		</v-col>-->
+		<v-col cols="12">
 			<v-btn
 				block
 				color="error"
@@ -134,7 +121,6 @@ const props = defineProps({
 	},
 	saveLoading: Boolean,
 	loadDraftsLoading: Boolean,
-	selectOrderLoading: Boolean,
 	cancelLoading: Boolean,
 	invoiceManagementLoading: Boolean,
 	returnsLoading: Boolean,
@@ -146,7 +132,6 @@ const props = defineProps({
 defineEmits([
 	"save-and-clear",
 	"load-drafts",
-	"select-order",
 	"cancel-sale",
 	"open-invoice-management",
 	"open-returns",

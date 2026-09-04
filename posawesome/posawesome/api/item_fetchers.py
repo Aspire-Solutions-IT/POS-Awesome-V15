@@ -48,6 +48,30 @@ _serial_cache: Dict[int, Callable[..., Any]] = {}
 _bom_cache: Dict[int, Callable[..., Any]] = {}
 
 
+def _item_has_custom_tfw_price() -> bool:
+    return frappe.db.has_column("Item", "custom_tfw_price")
+
+
+def _resolve_custom_tfw_price(meta: Dict[str, Any] | frappe._dict | None) -> float:
+    if not meta:
+        return 0.0
+    raw_value = meta.get("custom_tfw_price")
+    numeric = flt(raw_value)
+    return numeric if numeric > 0 else 0.0
+
+
+def _item_has_pos_on_sale_price() -> bool:
+    return frappe.db.has_column("Item", "pos_on_sale_price")
+
+
+def _resolve_pos_on_sale_price(meta: Dict[str, Any] | frappe._dict | None) -> float:
+    if not meta:
+        return 0.0
+    raw_value = meta.get("pos_on_sale_price")
+    numeric = flt(raw_value)
+    return numeric if numeric > 0 else 0.0
+
+
 def _fetch_item_prices(
     price_list: str,
     currency: str,
@@ -250,6 +274,10 @@ def _fetch_item_meta(item_codes: Tuple[str, ...]):
         "purchase_uom",
         "standard_rate",
     ]
+    if _item_has_custom_tfw_price():
+        fields.append("custom_tfw_price")
+    if _item_has_pos_on_sale_price():
+        fields.append("pos_on_sale_price")
     if frappe.db.has_column("Item", "default_bom"):
         fields.append("default_bom")
     if frappe.db.has_column("Item", "valuation_rate"):
@@ -592,6 +620,7 @@ def merge_item_row(
     lookup_data: ItemLookupData,
     price_list_currency: Optional[str],
     exchange_rate: float,
+    company_currency: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Merge lookup data into a POS item row for downstream consumption."""
 
@@ -605,6 +634,14 @@ def merge_item_row(
         lookup_data.price_map.get(item_code, {}), item.get("uom"), meta.get("stock_uom")
     )
     price_currency = price_row.get("currency") if price_row else None
+    custom_tfw_price = _resolve_custom_tfw_price(meta)
+    pos_on_sale_price = _resolve_pos_on_sale_price(meta)
+    effective_company_currency = company_currency or price_list_currency
+
+    base_rate = custom_tfw_price if custom_tfw_price else (price_row.get("price_list_rate") if price_row else 0)
+    is_on_sale = pos_on_sale_price > 0
+    final_rate = pos_on_sale_price if is_on_sale else base_rate
+    uses_item_price = bool(custom_tfw_price) or is_on_sale
 
     batch_rows = lookup_data.batch_map.get(item_code, [])
     actual_qty = lookup_data.stock_map.get(item_code, 0) or 0
@@ -628,13 +665,17 @@ def merge_item_row(
             "standard_rate": meta.get("standard_rate"),
             "valuation_rate": meta.get("valuation_rate"),
             "default_bom": meta.get("default_bom"),
+            "custom_tfw_price": meta.get("custom_tfw_price"),
+            "pos_on_sale_price": meta.get("pos_on_sale_price"),
+            "is_on_sale": is_on_sale,
+            "price_before_sale": base_rate if is_on_sale else None,
             "batch_no_data": batch_rows,
             "serial_no_data": lookup_data.serial_map.get(item_code, []),
-            "rate": price_row.get("price_list_rate") if price_row else 0,
-            "price_list_rate": price_row.get("price_list_rate") if price_row else 0,
-            "currency": price_currency or price_list_currency,
-            "price_list_currency": price_list_currency,
-            "plc_conversion_rate": exchange_rate,
+            "rate": final_rate,
+            "price_list_rate": final_rate,
+            "currency": effective_company_currency if uses_item_price else (price_currency or price_list_currency),
+            "price_list_currency": effective_company_currency if uses_item_price else price_list_currency,
+            "plc_conversion_rate": 1 if uses_item_price else exchange_rate,
             "conversion_rate": exchange_rate,
         }
     )
@@ -663,6 +704,11 @@ class ItemDetailAggregator:
         self.cache_ttl = self._resolve_ttl()
         self.today = nowdate()
         self.warehouse = STOCK_SOURCE_WAREHOUSE
+        self.company_currency = (
+            frappe.db.get_value("Company", self.pos_profile.get("company"), "default_currency")
+            if self.pos_profile.get("company")
+            else self.pos_profile.get("currency")
+        )
         self.price_list_currency = self._determine_price_list_currency()
         self.exchange_rate = self._compute_exchange_rate()
 
@@ -841,6 +887,7 @@ class ItemDetailAggregator:
                     lookup_data,
                     self.price_list_currency or self.pos_profile.get("currency"),
                     self.exchange_rate,
+                    self.company_currency,
                 )
             )
         return result

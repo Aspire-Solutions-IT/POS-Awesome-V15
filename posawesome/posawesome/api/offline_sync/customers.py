@@ -86,7 +86,7 @@ def _collect_deleted_customers(profile, watermark, limit):
 	rows = frappe.get_all(
 		"Customer",
 		filters={"modified": [">", watermark]},
-		fields=["name", "modified", "disabled", "customer_group"],
+		fields=["name", "modified", "disabled", "customer_group", "rfs_customer"],
 		order_by="name asc",
 		limit_page_length=limit,
 	) or []
@@ -101,6 +101,7 @@ def _collect_deleted_customers(profile, watermark, limit):
 		if row.get("name")
 		and (
 			row.get("disabled")
+			or not row.get("rfs_customer")
 			or (allowed_groups and row.get("customer_group") not in allowed_groups)
 		)
 	]

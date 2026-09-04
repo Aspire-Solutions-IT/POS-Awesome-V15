@@ -4,6 +4,7 @@
 		<UpdatePrompt />
 		<v-main class="main-content">
 			<ClosingDialog />
+			<ProfileSwitchDialog v-if="profileSwitchDialog" v-model="profileSwitchDialog" />
 			<Navbar
 				:pos-profile="posProfile"
 				:pending-invoices="pendingInvoicesCount"
@@ -26,6 +27,7 @@
 				:bootstrap-capabilities="visibleBootstrapCapabilitySummaries"
 				@nav-click="handleNavClick"
 				@close-shift="handleCloseShift"
+				@switch-profile="handleSwitchProfile"
 				@print-last-invoice="handlePrintLastInvoice"
 				@sync-invoices="handleSyncInvoices"
 				@toggle-offline="handleToggleOffline"
@@ -57,10 +59,7 @@
 					>
 						{{ message }}
 					</div>
-					<div
-						v-if="visibleBootstrapRecoveryMessage"
-						class="bootstrap-warning-message"
-					>
+					<div v-if="visibleBootstrapRecoveryMessage" class="bootstrap-warning-message">
 						{{ visibleBootstrapRecoveryMessage }}
 					</div>
 				</div>
@@ -87,16 +86,18 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, getCurrentInstance } 
 // Note paths updated to be relative to layouts/ directory
 import Navbar from "../components/Navbar.vue";
 import ClosingDialog from "../components/pos/shell/ClosingDialog.vue";
+import ProfileSwitchDialog from "../components/pos/shift/ProfileSwitchDialog.vue";
 import AppLoadingOverlay from "../components/ui/LoadingOverlay.vue";
 import UpdatePrompt from "../components/ui/UpdatePrompt.vue";
 import { useLoading } from "../composables/core/useLoading.js";
+import { useInactivityLock } from "../composables/core/useInactivityLock";
+import { useUpdatePolling } from "../composables/core/useUpdatePolling";
 import { usePosShift } from "../composables/pos/shared/usePosShift";
 import { loadingState, initLoadingSources, setSourceProgress, markSourceLoaded } from "../utils/loading.js";
 import { useCustomersStore } from "../stores/customersStore.js";
 import { useSyncStore } from "../stores/syncStore.js";
 import { useToastStore } from "../stores/toastStore.js";
 import { useUIStore } from "../stores/uiStore.js";
-import { useUpdateStore } from "../stores/updateStore.js";
 import { useItemsStore } from "../stores/itemsStore.js";
 import { useOfflineSyncStore } from "../stores/offlineSyncStore";
 import { storeToRefs } from "pinia";
@@ -148,10 +149,7 @@ import {
 import { useRtl } from "../composables/core/useRtl";
 import authService from "../services/authService.js";
 import { getValidCachedOpeningForCurrentUser } from "../utils/openingCache";
-import {
-	formatBootstrapWarning,
-	shouldShowBootstrapBanner,
-} from "../utils/bootstrapWarnings";
+import { formatBootstrapWarning, shouldShowBootstrapBanner } from "../utils/bootstrapWarnings";
 import { listenForBootstrapSnapshotUpdates } from "../utils/bootstrapRuntimeEvents";
 import {
 	resolveBootstrapWarningUiState,
@@ -185,8 +183,7 @@ const { rtlClasses } = useRtl();
 const instance = getCurrentInstance();
 const $theme = instance?.proxy?.$theme || { toggle: () => {}, isDark: false }; // Fallback
 const __ = instance?.proxy?.__ || ((value) => value);
-const BUILD_VERSION =
-	typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
+const BUILD_VERSION = typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
 const OFFLINE_SYNC_SCHEMA_VERSION = "2026-04-09";
 const OFFLINE_SYNC_TIMER_INTERVAL_MS = 60_000;
 
@@ -199,7 +196,9 @@ const itemsStore = useItemsStore();
 const offlineSyncStore = useOfflineSyncStore();
 const toastStore = useToastStore();
 const uiStore = useUIStore();
-const updateStore = useUpdateStore();
+// Registers its own lifecycle hooks: seeds the running build version, then keeps
+// polling for newly deployed builds while this tab stays open.
+useUpdatePolling(BUILD_VERSION);
 
 // UI Store State
 const { posProfile, lastInvoiceId, posOpeningShift } = storeToRefs(uiStore);
@@ -207,14 +206,11 @@ const { posProfile, lastInvoiceId, posOpeningShift } = storeToRefs(uiStore);
 const { pendingInvoicesCount } = storeToRefs(syncStore);
 const { loadProgress, customersLoaded } = storeToRefs(customersStore);
 const { itemsLoaded, loadProgress: itemsLoadProgress } = storeToRefs(itemsStore);
-const supportedOfflineSyncResources = filterSupportedOfflineSyncResources(
-	getSyncResourceDefinitions(),
-);
+const supportedOfflineSyncResources = filterSupportedOfflineSyncResources(getSyncResourceDefinitions());
 const syncCoordinator = new SyncCoordinator({
 	concurrency: 1,
 	resources: supportedOfflineSyncResources,
-	runResource: async (resource, trigger) =>
-		runOfflineSyncResource(resource, trigger),
+	runResource: async (resource, trigger) => runOfflineSyncResource(resource, trigger),
 	onStateChange: (states) => {
 		offlineSyncStore.setResourceStates(filterSupportedOfflineSyncStates(states));
 	},
@@ -251,7 +247,6 @@ const confirmedBootstrapDecisionKey = ref("");
 const initialBootstrapSyncSettled = ref(false);
 const startupBootstrapWarningsReady = ref(false);
 let _sidebarObserver = null;
-let updateInterval = null;
 let removeBootstrapSnapshotListener = null;
 
 // Event Bus
@@ -259,6 +254,9 @@ const eventBus = instance?.proxy?.eventBus;
 
 // Initialize loading sources immediately in setup so watchers can mark them 100%
 initLoadingSources(["init", "items", "customers"]);
+
+// Auto-lock the terminal after 5 minutes of no activity, once a POS profile is registered.
+useInactivityLock(5 * 60 * 1000, () => Boolean(posProfile.value?.name));
 
 function getCurrentBootstrapProfile() {
 	return posProfile.value || frappe?.boot?.pos_profile || null;
@@ -297,11 +295,9 @@ function ensureBootstrapSnapshotIsCurrent() {
 		return currentSnapshot;
 	}
 
-	const nextSnapshot = createBootstrapSnapshotFromRegisterData(
-		registerData,
-		currentSnapshot,
-		{ buildVersion: BUILD_VERSION },
-	);
+	const nextSnapshot = createBootstrapSnapshotFromRegisterData(registerData, currentSnapshot, {
+		buildVersion: BUILD_VERSION,
+	});
 
 	if (JSON.stringify(currentSnapshot || null) !== JSON.stringify(nextSnapshot)) {
 		setBootstrapSnapshot(nextSnapshot);
@@ -330,11 +326,7 @@ function persistBootstrapRuntime(validation, decision) {
 
 function buildBootstrapConfirmationMessage(validation) {
 	const details = Array.from(
-		new Set(
-			(validation?.reasons || []).map((code) =>
-				formatBootstrapWarning(code, __),
-			),
-		),
+		new Set((validation?.reasons || []).map((code) => formatBootstrapWarning(code, __))),
 	);
 
 	return [
@@ -347,19 +339,14 @@ function buildBootstrapConfirmationMessage(validation) {
 function evaluateBootstrapSnapshot(options = {}) {
 	const allowPrompt = !!options.allowPrompt;
 	const snapshot = ensureBootstrapSnapshotIsCurrent();
-	const validation = validateBootstrapSnapshot(
-		snapshot,
-		buildCurrentBootstrapValidationInput(),
-	);
+	const validation = validateBootstrapSnapshot(snapshot, buildCurrentBootstrapValidationInput());
 	const decisionKey = buildBootstrapValidationKey(validation);
 	let decision = resolveBootstrapRuntimeState(validation, {
 		continueOffline: confirmedBootstrapDecisionKey.value === decisionKey,
 	});
 
 	if (decision.requiresConfirmation && allowPrompt) {
-		const confirmed = window.confirm(
-			buildBootstrapConfirmationMessage(validation),
-		);
+		const confirmed = window.confirm(buildBootstrapConfirmationMessage(validation));
 
 		if (confirmed) {
 			confirmedBootstrapDecisionKey.value = decisionKey;
@@ -385,19 +372,11 @@ function getOfflineSyncProfile() {
 }
 
 function canRunOfflineSync() {
-	return !!(
-		getOfflineSyncProfile()?.name &&
-		!getIsManualOffline() &&
-		navigator.onLine
-	);
+	return !!(getOfflineSyncProfile()?.name && !getIsManualOffline() && navigator.onLine);
 }
 
 function canRunTimerOfflineSync() {
-	return !!(
-		canRunOfflineSync() &&
-		serverOnline.value &&
-		!serverConnecting.value
-	);
+	return !!(canRunOfflineSync() && serverOnline.value && !serverConnecting.value);
 }
 
 async function callOfflineSyncMethod(method, args = {}) {
@@ -408,9 +387,7 @@ async function callOfflineSyncMethod(method, args = {}) {
 		method,
 		args,
 	});
-	return typeof response?.message === "undefined"
-		? response || {}
-		: response.message;
+	return typeof response?.message === "undefined" ? response || {} : response.message;
 }
 
 async function runOfflineSyncResource(resource) {
@@ -433,9 +410,7 @@ async function runOfflineSyncResource(resource) {
 
 async function hydrateOfflineSyncResourceStates() {
 	try {
-		const states = filterSupportedOfflineSyncStates(
-			await listSyncResourceStates(),
-		);
+		const states = filterSupportedOfflineSyncStates(await listSyncResourceStates());
 		syncCoordinator.hydrateResourceStates(states);
 	} catch (error) {
 		console.error("Failed to hydrate offline sync state", error);
@@ -443,45 +418,49 @@ async function hydrateOfflineSyncResourceStates() {
 }
 
 function scheduleBootCriticalWarmSync() {
-	return offlineSyncRuntime.scheduleBootWarmSync().catch((error) => {
-		console.error("Failed to schedule offline sync", error, syncCoordinator.getLastRunSummary());
-		return false;
-	}).finally(() => {
-		evaluateBootstrapSnapshot({ allowPrompt: false });
-	});
+	return offlineSyncRuntime
+		.scheduleBootWarmSync()
+		.catch((error) => {
+			console.error("Failed to schedule offline sync", error, syncCoordinator.getLastRunSummary());
+			return false;
+		})
+		.finally(() => {
+			evaluateBootstrapSnapshot({ allowPrompt: false });
+		});
 }
 
 function triggerOnlineResumeSync() {
-	return offlineSyncRuntime.triggerOnlineResumeSync().catch((error) => {
-		console.error(
-			"Failed to trigger online resume sync",
-			error,
-			syncCoordinator.getLastRunSummary(),
-		);
-		return false;
-	})
+	return offlineSyncRuntime
+		.triggerOnlineResumeSync()
+		.catch((error) => {
+			console.error("Failed to trigger online resume sync", error, syncCoordinator.getLastRunSummary());
+			return false;
+		})
 		.finally(() => {
 			evaluateBootstrapSnapshot({ allowPrompt: false });
 		});
 }
 
 function triggerOperatorRefreshSync(options = {}) {
-	return offlineSyncRuntime.triggerOperatorRefreshSync(options).catch((error) => {
-		console.error("Failed to run operator offline refresh", error, syncCoordinator.getLastRunSummary());
-		return false;
-	}).finally(() => {
-		evaluateBootstrapSnapshot({ allowPrompt: false });
-	});
+	return offlineSyncRuntime
+		.triggerOperatorRefreshSync(options)
+		.catch((error) => {
+			console.error(
+				"Failed to run operator offline refresh",
+				error,
+				syncCoordinator.getLastRunSummary(),
+			);
+			return false;
+		})
+		.finally(() => {
+			evaluateBootstrapSnapshot({ allowPrompt: false });
+		});
 }
 
 // Computed
 const routeLoadingState = getScopeState("route");
-const loadingActive = computed(
-	() => loadingState.active || routeLoadingState.value.count > 0,
-);
-const loadingIndeterminate = computed(
-	() => !loadingState.active && routeLoadingState.value.count > 0,
-);
+const loadingActive = computed(() => loadingState.active || routeLoadingState.value.count > 0);
+const loadingIndeterminate = computed(() => !loadingState.active && routeLoadingState.value.count > 0);
 const loadingMessage = computed(() => {
 	if (loadingState.active) {
 		return loadingState.message;
@@ -500,9 +479,7 @@ const bootstrapAlertType = computed(() =>
 		? "error"
 		: "warning",
 );
-const bootstrapCapabilitySummaries = computed(
-	() => bootstrapStatus.value?.capability_summaries || [],
-);
+const bootstrapCapabilitySummaries = computed(() => bootstrapStatus.value?.capability_summaries || []);
 const bootstrapWarningTitle = computed(() => {
 	if (bootstrapStatus.value?.primary_warning?.title) {
 		return __(bootstrapStatus.value.primary_warning.title);
@@ -521,22 +498,14 @@ const bootstrapWarningMessages = computed(() => {
 	}
 
 	if (Array.isArray(bootstrapStatus.value?.primary_warning?.messages)) {
-		return bootstrapStatus.value.primary_warning.messages.map((message) =>
-			__(message),
-		);
+		return bootstrapStatus.value.primary_warning.messages.map((message) => __(message));
 	}
 
 	return Array.from(
-		new Set(
-			(bootstrapStatus.value?.warning_codes || []).map((code) =>
-				formatBootstrapWarning(code, __),
-			),
-		),
+		new Set((bootstrapStatus.value?.warning_codes || []).map((code) => formatBootstrapWarning(code, __))),
 	);
 });
-const bootstrapWarningActive = computed(
-	() => bootstrapWarningMessages.value.length > 0,
-);
+const bootstrapWarningActive = computed(() => bootstrapWarningMessages.value.length > 0);
 const bootstrapRecoveryMessage = computed(() => {
 	if (!bootstrapWarningActive.value) {
 		return "";
@@ -549,11 +518,7 @@ const bootstrapWarningTooltip = computed(() => {
 		return "";
 	}
 
-	return [
-		bootstrapWarningTitle.value,
-		...bootstrapWarningMessages.value,
-		bootstrapRecoveryMessage.value,
-	]
+	return [bootstrapWarningTitle.value, ...bootstrapWarningMessages.value, bootstrapRecoveryMessage.value]
 		.filter(Boolean)
 		.join("\n");
 });
@@ -565,15 +530,9 @@ const bootstrapWarningUiState = computed(() =>
 		capabilitySummaries: bootstrapCapabilitySummaries.value,
 	}),
 );
-const visibleBootstrapWarningActive = computed(
-	() => bootstrapWarningUiState.value.active,
-);
-const visibleBootstrapWarningTooltip = computed(
-	() => bootstrapWarningUiState.value.tooltip,
-);
-const visibleBootstrapCapabilitySummaries = computed(
-	() => bootstrapWarningUiState.value.capabilitySummaries,
-);
+const visibleBootstrapWarningActive = computed(() => bootstrapWarningUiState.value.active);
+const visibleBootstrapWarningTooltip = computed(() => bootstrapWarningUiState.value.tooltip);
+const visibleBootstrapCapabilitySummaries = computed(() => bootstrapWarningUiState.value.capabilitySummaries);
 const visibleBootstrapWarningTitle = computed(() =>
 	visibleBootstrapWarningActive.value ? bootstrapWarningTitle.value : "",
 );
@@ -711,23 +670,9 @@ onMounted(() => {
 	setupNetworkListeners(); // Local function wrapper
 	setupEventListeners();
 	handleRefreshCacheUsage();
-
-	updateStore.initializeFromStorage();
-	if (BUILD_VERSION) {
-		updateStore.setCurrentVersion(BUILD_VERSION);
-	}
-	updateStore.checkForUpdates(true);
-	updateInterval = setInterval(
-		() => updateStore.checkForUpdates(),
-		24 * 60 * 60 * 1000,
-	);
 });
 
 onBeforeUnmount(() => {
-	if (updateInterval) {
-		clearInterval(updateInterval);
-		updateInterval = null;
-	}
 	if (removeBootstrapSnapshotListener) {
 		removeBootstrapSnapshotListener();
 		removeBootstrapSnapshotListener = null;
@@ -819,10 +764,7 @@ const initializeData = async () => {
 	await hydrateOfflineSyncResourceStates();
 	checkDbHealth().catch(() => {});
 	// Offline-first bootstrap: hydrate register state from IndexedDB before server checks.
-	const openingData = getValidCachedOpeningForCurrentUser(
-		getOpeningStorage(),
-		frappe?.session?.user,
-	);
+	const openingData = getValidCachedOpeningForCurrentUser(getOpeningStorage(), frappe?.session?.user);
 	if (openingData) {
 		uiStore.setRegisterData(openingData);
 		if (navigator.onLine) {
@@ -865,12 +807,7 @@ const initializeData = async () => {
 	markSourceLoaded("init");
 
 	// Trigger initial customer load only when POS profile is already available
-	if (
-		navigator.onLine &&
-		!isOffline() &&
-		posProfile.value &&
-		posProfile.value.name
-	) {
+	if (navigator.onLine && !isOffline() && posProfile.value && posProfile.value.name) {
 		customersStore.setPosProfile(posProfile.value);
 		customersStore.get_customer_names();
 	}
@@ -963,6 +900,12 @@ const handleNavClick = () => {
 
 const handleCloseShift = () => {
 	get_closing_data();
+};
+
+const profileSwitchDialog = ref(false);
+
+const handleSwitchProfile = () => {
+	profileSwitchDialog.value = true;
 };
 
 const handleSyncInvoices = async () => {
@@ -1085,17 +1028,14 @@ const handleOpenOfflineDiagnostics = () => {
 					lastRunSummary.succeeded,
 					lastRunSummary.failed,
 					lastRunSummary.skipped,
-			  ])
+				])
 			: __("No sync trigger has run yet in this session.");
 	toastStore.show({
 		title: __("Offline diagnostics"),
-		detail: `${__(
-			"Pending sales: {0} | Cache usage: {1}%",
-			[
+		detail: `${__("Pending sales: {0} | Cache usage: {1}%", [
 			pendingInvoicesCount.value || 0,
 			Math.round(cacheUsage.value || 0),
-			],
-		)}\n${syncSummary}`,
+		])}\n${syncSummary}`,
 		color: visibleBootstrapWarningActive.value ? "warning" : "info",
 	});
 };

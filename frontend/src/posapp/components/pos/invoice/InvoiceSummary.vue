@@ -16,10 +16,8 @@
 					variant="tonal"
 					class="summary-field summary-field--alert"
 				>
-					{{ __("Prorated return discount") }}:
-					{{ formatRatio(return_discount_meta.ratio) }} -
-					{{ __("Original") }}:
-					{{ formatCurrency(return_discount_meta.original_discount) }},
+					{{ __("Prorated return discount") }}: {{ formatRatio(return_discount_meta.ratio) }} -
+					{{ __("Original") }}: {{ formatCurrency(return_discount_meta.original_discount) }},
 					{{ __("Applied") }}:
 					{{ formatCurrency(return_discount_meta.prorated_discount) }}
 				</v-alert>
@@ -31,9 +29,13 @@
 							{{ currencySymbol(displayCurrency) }}{{ formatCurrency(subtotal) }}
 						</strong>
 						<div class="summary-hero__meta">
-							<span>{{ formatFloat(total_qty, hide_qty_decimals ? 0 : undefined) }} {{ __("qty") }}</span>
+							<span
+								>{{ formatFloat(total_qty, hide_qty_decimals ? 0 : undefined) }}
+								{{ __("qty") }}</span
+							>
 							<span>
-								{{ currencySymbol(displayCurrency) }}{{ formatCurrency(total_items_discount_amount) }}
+								{{ currencySymbol(displayCurrency)
+								}}{{ formatCurrency(combinedDiscountAmount) }}
 								{{ __("discount") }}
 							</span>
 						</div>
@@ -41,44 +43,44 @@
 
 					<div class="summary-hero__field-wrap">
 						<v-text-field
-							v-if="!pos_profile.posa_use_percentage_discount"
 							ref="additionalDiscountField"
 							v-model="additionalDiscountDisplay"
 							@update:model-value="handleAdditionalDiscountUpdate"
+							@change="$emit('commit_discount_amount')"
 							@focus="handleAdditionalDiscountFocus"
 							@blur="handleAdditionalDiscountBlur"
-							:label="frappe._('Additional Discount')"
+							:rules="[isNumber]"
+							:label="frappe._('Discount')"
 							prepend-inner-icon="mdi-cash-minus"
 							variant="solo"
 							density="compact"
 							color="warning"
+							hide-details="auto"
 							:prefix="currencySymbol(pos_profile.currency)"
-							:disabled="
-								!pos_profile.posa_allow_user_to_edit_additional_discount ||
-								!!discount_percentage_offer_name
-							"
+							:disabled="discountFieldsDisabled"
+							autocomplete="off"
+							name="posa-additional-discount"
 							class="summary-field summary-field--dock"
 						/>
 
 						<v-text-field
-							v-else
-							ref="additionalDiscountField"
+							ref="additionalDiscountPercentageField"
 							v-model="additionalDiscountPercentageDisplay"
 							@update:model-value="handleAdditionalDiscountPercentageUpdate"
 							@change="$emit('update_discount_umount')"
 							@focus="handleAdditionalDiscountPercentageFocus"
 							@blur="handleAdditionalDiscountPercentageBlur"
 							:rules="[isNumber]"
-							:label="frappe._('Additional Discount %')"
+							:label="frappe._('Discount %')"
 							suffix="%"
 							prepend-inner-icon="mdi-percent"
 							variant="solo"
 							density="compact"
 							color="warning"
-							:disabled="
-								!pos_profile.posa_allow_user_to_edit_additional_discount ||
-								!!discount_percentage_offer_name
-							"
+							hide-details="auto"
+							:disabled="discountFieldsDisabled"
+							autocomplete="off"
+							name="posa-additional-discount-percentage"
 							class="summary-field summary-field--dock"
 						/>
 					</div>
@@ -90,7 +92,6 @@
 					:pos_profile="pos_profile"
 					:saveLoading="saveLoading"
 					:loadDraftsLoading="loadDraftsLoading"
-					:selectOrderLoading="selectOrderLoading"
 					:selectPurchaseOrderLoading="selectPurchaseOrderLoading"
 					:cancelLoading="cancelLoading"
 					:invoiceManagementLoading="invoiceManagementLoading"
@@ -100,7 +101,6 @@
 					:customerDisplayLoading="customerDisplayLoading"
 					@save-and-clear="handleSaveAndClear"
 					@load-drafts="handleLoadDrafts"
-					@select-order="handleSelectOrder"
 					@cancel-sale="handleCancelSale"
 					@open-invoice-management="handleOpenInvoiceManagement"
 					@open-returns="handleOpenReturns"
@@ -193,9 +193,9 @@ const emit = defineEmits([
 	"update:additional_discount",
 	"update:additional_discount_percentage",
 	"update_discount_umount",
+	"commit_discount_amount",
 	"save-and-clear",
 	"load-drafts",
-	"select-order",
 	"cancel-sale",
 	"open-invoice-management",
 	"open-returns",
@@ -207,7 +207,6 @@ const emit = defineEmits([
 
 const saveLoading = ref(false);
 const loadDraftsLoading = ref(false);
-const selectOrderLoading = ref(false);
 const cancelLoading = ref(false);
 const invoiceManagementLoading = ref(false);
 const returnsLoading = ref(false);
@@ -217,6 +216,7 @@ const customerDisplayLoading = ref(false);
 const isEditingAdditionalDiscount = ref(false);
 const isEditingAdditionalDiscountPercentage = ref(false);
 const additionalDiscountField = ref(null);
+const additionalDiscountPercentageField = ref(null);
 const desktopDraftsDrawer = ref(false);
 const mobileDraftsDialog = ref(false);
 const responsive = useResponsive();
@@ -226,6 +226,16 @@ const { parkedOrders } = storeToRefs(uiStore);
 const additionalDiscountDisplay = ref(normalizeDiscountDisplay(props.additional_discount));
 const additionalDiscountPercentageDisplay = ref(
 	normalizeDiscountDisplay(props.additional_discount_percentage),
+);
+const combinedDiscountAmount = computed(
+	() =>
+		Math.abs(Number(props.total_items_discount_amount || 0)) +
+		Math.abs(Number(props.additional_discount || 0)),
+);
+const discountFieldsDisabled = computed(
+	() =>
+		!props.pos_profile?.posa_allow_user_to_edit_additional_discount ||
+		!!props.discount_percentage_offer_name,
 );
 const useCompactSaleDock = computed(() => responsive.windowWidth.value < 1100);
 const showDesktopDrafts = computed(() => Boolean(responsive.isDesktop.value));
@@ -277,6 +287,7 @@ function handleAdditionalDiscountFocus() {
 
 function handleAdditionalDiscountBlur() {
 	isEditingAdditionalDiscount.value = false;
+	emit("commit_discount_amount");
 }
 
 function handleAdditionalDiscountPercentageUpdate(value) {
@@ -289,10 +300,15 @@ function handleAdditionalDiscountPercentageFocus() {
 
 function handleAdditionalDiscountPercentageBlur() {
 	isEditingAdditionalDiscountPercentage.value = false;
+	emit("update_discount_umount");
 }
 
 function focusAdditionalDiscountField() {
-	const field = additionalDiscountField.value;
+	// Both boxes are always available; the shortcut lands on the one the profile treats
+	// as the primary way of entering a discount.
+	const field = props.pos_profile?.posa_use_percentage_discount
+		? additionalDiscountPercentageField.value
+		: additionalDiscountField.value;
 	field?.focus?.();
 	field?.$el?.querySelector?.("input")?.focus?.();
 }
@@ -342,15 +358,6 @@ function openDraftsSurface() {
 	}
 
 	mobileDraftsDialog.value = true;
-}
-
-async function handleSelectOrder() {
-	selectOrderLoading.value = true;
-	try {
-		await emit("select-order");
-	} finally {
-		selectOrderLoading.value = false;
-	}
 }
 
 async function handleCancelSale() {
@@ -499,7 +506,10 @@ defineExpose({
 }
 
 .summary-hero__field-wrap {
-	width: min(260px, 100%);
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+	gap: 8px;
+	width: min(340px, 100%);
 }
 
 .invoice-summary-actions {

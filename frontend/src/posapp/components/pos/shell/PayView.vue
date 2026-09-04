@@ -1,9 +1,6 @@
 <template>
 	<div fluid :class="rtlClasses">
-		<AppLoadingOverlay
-			:visible="isPaymentRouteLocked"
-			:message="paymentsLoadingMessage"
-		/>
+		<AppLoadingOverlay :visible="isPaymentRouteLocked" :message="paymentsLoadingMessage" />
 		<v-row v-show="!dialog">
 			<v-col md="8" cols="12" class="pb-2 pr-0">
 				<v-card
@@ -19,16 +16,10 @@
 								density="comfortable"
 								class="pay-mode-toggle pay-mode-toggle--entry"
 							>
-								<v-btn
-									value="Receive"
-									class="pay-mode-btn pay-mode-btn--receive"
-								>
+								<v-btn value="Receive" class="pay-mode-btn pay-mode-btn--receive">
 									{{ __("Receive") }}
 								</v-btn>
-								<v-btn
-									value="Pay"
-									class="pay-mode-btn pay-mode-btn--pay"
-								>
+								<v-btn value="Pay" class="pay-mode-btn pay-mode-btn--pay">
 									{{ __("Pay") }}
 								</v-btn>
 							</v-btn-toggle>
@@ -230,7 +221,10 @@ import { useRtl } from "../../../composables/core/useRtl";
 import { useCustomersStore } from "../../../stores/customersStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { useToastStore } from "../../../stores/toastStore.js";
-import { getValidCachedOpeningForCurrentUser } from "../../../utils/openingCache";
+import {
+	getActiveOpeningShiftName,
+	getValidCachedOpeningForCurrentUser,
+} from "../../../utils/openingCache";
 
 // Composables
 import { usePosPayData } from "../../../composables/pos/payments/usePosPayData";
@@ -544,23 +538,17 @@ export default {
 				postingDate.value = normalized || getTodayDate();
 			},
 		});
-		const allowedPartyTypes = computed(() =>
-			getAllowedPartyTypes(paymentEntryType.value),
-		);
+		const allowedPartyTypes = computed(() => getAllowedPartyTypes(paymentEntryType.value));
 		const resolvedPartyLabel = computed(() => {
 			if (partyType.value === "Supplier") return __("Supplier");
 			if (partyType.value === "Employee") return __("Employee");
 			return __("Customer");
 		});
 		const invoiceSectionTitle = computed(() =>
-			partyType.value === "Supplier"
-				? __("Supplier Invoices")
-				: __("Invoices"),
+			partyType.value === "Supplier" ? __("Supplier Invoices") : __("Invoices"),
 		);
 		const paymentSectionTitle = computed(() =>
-			partyType.value === "Supplier"
-				? __("Supplier Payments")
-				: __("Payments"),
+			partyType.value === "Supplier" ? __("Supplier Payments") : __("Payments"),
 		);
 		const invoices_headers = computed(() => [
 			{ title: "", align: "start", sortable: false, key: "actions", width: "50px" },
@@ -603,9 +591,7 @@ export default {
 				isCustomerBackgroundLoading: !!isCustomerBackgroundLoading.value,
 			}),
 		);
-		const paymentsLoadingMessage = computed(() =>
-			buildPaymentRouteLoadingMessage(loadProgress.value),
-		);
+		const paymentsLoadingMessage = computed(() => buildPaymentRouteLoadingMessage(loadProgress.value));
 
 		const { isSubmitting, processPayment } = usePosPaySubmission({
 			customerName: customer_name,
@@ -702,9 +688,7 @@ export default {
 
 		const loadPaymentMethodCurrencies = async () => {
 			if (!pos_profile.value?.payments?.length || !company.value) return;
-			const modes = pos_profile.value.payments
-				.map((p) => p.mode_of_payment)
-				.filter(Boolean);
+			const modes = pos_profile.value.payments.map((p) => p.mode_of_payment).filter(Boolean);
 			payment_method_currencies.value = await loadPaymentMethodCurrencyMap({
 				company: company.value,
 				offline: isOffline(),
@@ -725,8 +709,7 @@ export default {
 			pos_profile.value = data.pos_profile;
 			pos_opening_shift.value = data.pos_opening_shift;
 			company.value = data.company?.name || data.pos_profile?.company || "";
-			companyCurrency.value =
-				data.company?.default_currency || data.pos_profile?.currency || null;
+			companyCurrency.value = data.company?.default_currency || data.pos_profile?.currency || null;
 			uiStore.setRegisterData(data);
 			proxy?.eventBus?.emit("payments_register_pos_profile", data);
 			set_payment_methods();
@@ -749,6 +732,7 @@ export default {
 			try {
 				const r = await frappe.call("posawesome.posawesome.api.shifts.check_opening_shift", {
 					user: frappe.session.user,
+					preferred_shift: getActiveOpeningShiftName() || null,
 				});
 				if (r.message) {
 					await applyOpeningData(r.message);
@@ -766,10 +750,7 @@ export default {
 				console.error("Error checking opening entry", e);
 				const cached =
 					cachedOpening ||
-					getValidCachedOpeningForCurrentUser(
-						getOpeningStorage(),
-						frappe?.session?.user,
-					);
+					getValidCachedOpeningForCurrentUser(getOpeningStorage(), frappe?.session?.user);
 				if (cached) {
 					await applyOpeningData(cached);
 					return;
@@ -830,10 +811,7 @@ export default {
 						fields: ["name", "employee_name"],
 						filters: { status: ["!=", "Left"] },
 						or_filters: searchText
-							? [
-									{ name: ["like", likeValue] },
-									{ employee_name: ["like", likeValue] },
-							  ]
+							? [{ name: ["like", likeValue] }, { employee_name: ["like", likeValue] }]
 							: undefined,
 						limit_page_length: 20,
 						order_by: "employee_name asc",
@@ -973,19 +951,16 @@ export default {
 			{ immediate: true },
 		);
 
-		watch(
-			customer_name,
-			async (val, oldVal) => {
-				if (isPaymentRouteLocked.value || isCustomerPartyType.value) {
-					return;
-				}
-				const normalized = val || "";
-				if (normalized === (oldVal || "")) {
-					return;
-				}
-				await syncCustomerPaymentContext(normalized);
-			},
-		);
+		watch(customer_name, async (val, oldVal) => {
+			if (isPaymentRouteLocked.value || isCustomerPartyType.value) {
+				return;
+			}
+			const normalized = val || "";
+			if (normalized === (oldVal || "")) {
+				return;
+			}
+			await syncCustomerPaymentContext(normalized);
+		});
 
 		watch(refreshToken, () => {
 			if (isPaymentRouteLocked.value || !isCustomerPartyType.value) return;
@@ -996,10 +971,9 @@ export default {
 			isPaymentRouteLocked,
 			(locked) => {
 				if (locked) return;
-				void syncCustomerPaymentContext(
-					selectedCustomer.value || customer_name.value || "",
-					{ forceReload: true },
-				);
+				void syncCustomerPaymentContext(selectedCustomer.value || customer_name.value || "", {
+					forceReload: true,
+				});
 			},
 			{ immediate: true },
 		);
@@ -1007,10 +981,7 @@ export default {
 		watch(
 			paymentEntryType,
 			(newVal, oldVal) => {
-				const normalizedPartyType = normalizePartyTypeForPaymentType(
-					newVal,
-					partyType.value,
-				);
+				const normalizedPartyType = normalizePartyTypeForPaymentType(newVal, partyType.value);
 				if (normalizedPartyType !== partyType.value) {
 					partyType.value = normalizedPartyType;
 					return;
@@ -1025,10 +996,7 @@ export default {
 		watch(
 			partyType,
 			(newVal, oldVal) => {
-				const normalized = normalizePartyTypeForPaymentType(
-					paymentEntryType.value,
-					newVal,
-				);
+				const normalized = normalizePartyTypeForPaymentType(paymentEntryType.value, newVal);
 				if (normalized !== newVal) {
 					partyType.value = normalized;
 					return;
@@ -1047,12 +1015,8 @@ export default {
 			() => pos_profile.value?.posa_allow_reconcile_payments,
 			(enabled) => {
 				if (isPaymentRouteLocked.value) return;
-				if (
-					!enabled ||
-					!customer_name.value ||
-					!company.value ||
-					!showReconciliationSections.value
-				) return;
+				if (!enabled || !customer_name.value || !company.value || !showReconciliationSections.value)
+					return;
 				if (!unallocated_payments.value.length) {
 					get_unallocated_payments();
 				}

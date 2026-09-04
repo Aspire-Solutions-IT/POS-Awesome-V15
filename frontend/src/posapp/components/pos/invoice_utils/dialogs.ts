@@ -28,8 +28,11 @@ const isCollectionChargeSelected = (context: any): boolean => {
 	return flag === 1 || flag === "1" || flag === true;
 };
 
+const isPeterboroughProfile = (context: any): boolean =>
+	String(context?.pos_profile?.name || "").trim() === "Peterborough";
+
 const hasOnlyNsItemsForCollection = (context: any): boolean => {
-	if (!isCollectionChargeSelected(context)) {
+	if (!isCollectionChargeSelected(context) || isPeterboroughProfile(context)) {
 		return true;
 	}
 	const lines = Array.isArray(context?.items) ? context.items : [];
@@ -42,6 +45,19 @@ export async function show_payment(context: any) {
 		context._suppressClosePaymentsTimer = null;
 	}
 	context._suppressClosePayments = true;
+
+	// The posting date cache (context.invoiceStore.postingDate) is set once when the
+	// store is created and only reset after a successful submission - if the POS page
+	// is left open across midnight it keeps holding yesterday's date. When the cashier
+	// has no way to edit it (posa_allow_change_posting_date is off), always re-derive
+	// it from the real current date right before building the invoice/order, instead of
+	// only refreshing on page load.
+	if (!context.pos_profile?.posa_allow_change_posting_date && context.invoiceStore?.resetPostingDate) {
+		context.invoiceStore.resetPostingDate();
+		context.posting_date_display = context.formatDateForDisplay
+			? context.formatDateForDisplay(context.invoiceStore.postingDate)
+			: context.invoiceStore.postingDate;
+	}
 
 	try {
 		if (!context.customer) {
@@ -329,56 +345,6 @@ export async function change_price_list_rate(
 		}
 	};
 
-	const resolvePriceList = () => {
-		if (typeof context.get_price_list === "function") {
-			return context.get_price_list();
-		}
-		if (typeof context.get_effective_price_list === "function") {
-			return context.get_effective_price_list();
-		}
-		return (
-			context.selected_price_list ||
-			context.customer_info?.customer_price_list ||
-			context.customer_info?.customer_group_price_list ||
-			context.pos_profile?.selling_price_list ||
-			""
-		);
-	};
-
-	const persistRate = async (nextRate: number) => {
-		if (isOffline() || !frappe?.call) {
-			return;
-		}
-
-		const itemCode = item.item_code || item.name;
-		const priceList = resolvePriceList();
-		if (!itemCode || !priceList) {
-			return;
-		}
-
-		try {
-			await frappe.call({
-				method: "posawesome.posawesome.api.items.update_price_list_rate",
-				args: {
-					item_code: itemCode,
-					price_list: priceList,
-					rate: nextRate,
-					uom: item.uom || item.stock_uom || undefined,
-				},
-			});
-			item._price_list_rate_persisted = true;
-		} catch (error: any) {
-			console.error("Failed to persist price list rate:", error);
-			context.toastStore?.show?.({
-				title: __("Price list rate updated locally only"),
-				message:
-					error?.message ||
-					__("Unable to save the rate to the backend price list"),
-				color: "warning",
-			});
-		}
-	};
-
 	const currentRate = parseRate(item.price_list_rate ?? item.rate ?? 0) ?? 0;
 	let prompted: unknown = null;
 
@@ -406,5 +372,5 @@ export async function change_price_list_rate(
 	}
 
 	applyRate(nextRate);
-	await persistRate(nextRate);
+	item._price_list_rate_persisted = false;
 }

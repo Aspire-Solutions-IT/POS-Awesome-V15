@@ -260,6 +260,8 @@ export function useItemDetailFetcher() {
 							upd.rate = price;
 							upd.price_list_rate = price;
 							upd.original_rate = price;
+							upd.is_on_sale = det.is_on_sale;
+							upd.price_before_sale = det.price_before_sale;
 						}
 					}
 					if (det.currency) {
@@ -300,6 +302,8 @@ export function useItemDetailFetcher() {
 							upd.rate = price;
 							upd.price_list_rate = price;
 							upd.original_rate = price;
+							upd.is_on_sale = updItem.is_on_sale;
+							upd.price_before_sale = updItem.price_before_sale;
 						}
 					}
 					if (updItem.currency) {
@@ -404,6 +408,8 @@ export function useItemDetailFetcher() {
 						item.rate = price;
 						item.price_list_rate = price;
 						item.original_rate = price;
+						item.is_on_sale = det.is_on_sale;
+						item.price_before_sale = det.price_before_sale;
 					}
 				}
 				if (det.currency) {
@@ -555,6 +561,8 @@ export function useItemDetailFetcher() {
 										: updated_item.rate !== undefined
 											? updated_item.rate
 											: item.original_rate,
+								is_on_sale: updated_item.is_on_sale,
+								price_before_sale: updated_item.price_before_sale,
 								currency:
 									updated_item.currency || item.currency,
 								original_currency:

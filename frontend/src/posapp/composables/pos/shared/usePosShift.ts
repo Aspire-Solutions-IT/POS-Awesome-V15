@@ -1,6 +1,7 @@
 import { ref, getCurrentInstance, inject } from "vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
+import { useEmployeeStore } from "../../../stores/employeeStore";
 import {
 	initPromise,
 	checkDbHealth,
@@ -11,8 +12,14 @@ import {
 	isOffline,
 	getBootstrapSnapshot,
 	setBootstrapSnapshot,
+	getPendingOfflineInvoiceCount,
 } from "../../../../offline/index";
-import { getValidCachedOpeningForCurrentUser } from "../../../utils/openingCache";
+import {
+	clearActiveOpeningShiftName,
+	getActiveOpeningShiftName,
+	getValidCachedOpeningForCurrentUser,
+	setActiveOpeningShiftName,
+} from "../../../utils/openingCache";
 import { createBootstrapSnapshotFromRegisterData } from "../../../../offline/bootstrapSnapshot";
 
 declare const __BUILD_VERSION__: string;
@@ -32,6 +39,26 @@ type ClosingShiftPreparationResponse = {
 const translateMessage = (value: string) => (typeof window !== "undefined" && window.__
 	? window.__(value)
 	: value);
+
+/**
+ * Full reload is how this app re-scopes the register. The POS Profile is baked into
+ * the item cache scope, offline sync signatures, customer scope and a boot-only
+ * uiStore, so a reload is cheaper to get right than a live re-scope.
+ */
+export function reloadTerminal(delayMs = 0) {
+	const reload = () => {
+		try {
+			window.location.reload();
+		} catch (e) {
+			console.error("Failed to reload terminal", e);
+		}
+	};
+	if (delayMs > 0) {
+		setTimeout(reload, delayMs);
+		return;
+	}
+	reload();
+}
 
 export function buildSkippedClosingInvoicesPrompt(
 	skippedInvoices: SkippedPrintedInvoice[],
@@ -84,6 +111,7 @@ export function usePosShift(openDialog?: () => void) {
 		typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
 	const toastStore = useToastStore();
 	const uiStore = useUIStore();
+	const employeeStore = useEmployeeStore();
 
 	const pos_profile = ref<any>(null);
 	const pos_opening_shift = ref<any>(null);
@@ -95,6 +123,7 @@ export function usePosShift(openDialog?: () => void) {
 		pos_profile.value = data.pos_profile;
 		pos_opening_shift.value = data.pos_opening_shift;
 		uiStore.setRegisterData(data);
+		setActiveOpeningShiftName(data.pos_opening_shift?.name);
 		setBootstrapSnapshot(
 			createBootstrapSnapshotFromRegisterData(
 				data,
@@ -108,6 +137,10 @@ export function usePosShift(openDialog?: () => void) {
 		} catch (e) {
 			console.warn("Realtime emit failed", e);
 		}
+
+		// Always require a cashier PIN unlock after the opening balance is
+		// confirmed, rather than silently continuing as the logged-in browser user.
+		employeeStore.lockTerminal();
 	}
 
 	async function check_opening_entry() {
@@ -124,6 +157,7 @@ export function usePosShift(openDialog?: () => void) {
 		return frappe
 			.call("posawesome.posawesome.api.shifts.check_opening_shift", {
 				user: frappe.session.user,
+				preferred_shift: getActiveOpeningShiftName() || null,
 			})
 			.then((r: any) => {
 				if (r.message) {
@@ -153,6 +187,7 @@ export function usePosShift(openDialog?: () => void) {
 					}
 				} else {
 					console.info("No opening shift found, opening dialog");
+					clearActiveOpeningShiftName();
 					clearOpeningStorage();
 					openDialog && openDialog();
 				}
@@ -170,6 +205,7 @@ export function usePosShift(openDialog?: () => void) {
 					return;
 				}
 				if (!isOffline()) {
+					clearActiveOpeningShiftName();
 					clearOpeningStorage();
 				}
 				openDialog && openDialog();
@@ -215,6 +251,76 @@ export function usePosShift(openDialog?: () => void) {
 			});
 	}
 
+	/**
+	 * Move this terminal to another POS Profile without closing the current shift.
+	 *
+	 * The outgoing shift stays open server-side, so its invoices keep their own
+	 * reconciliation. Once the server hands back the new register payload we prime the
+	 * offline caches and reload: the profile is baked into the item cache scope, the
+	 * sync adapter signatures and the customer scope, and `ItemsSelector` refuses to
+	 * re-initialise once booted, so a reload is what actually re-scopes the terminal.
+	 */
+	async function switch_pos_profile(payload: {
+		target_profile: string;
+		balance_details?: any[];
+		supervisor_user?: string;
+		pin?: string;
+	}) {
+		if (isOffline()) {
+			toastStore.show({
+				title: translateMessage("Go online to switch POS profile."),
+				color: "error",
+			});
+			return { success: false, reason: "offline" };
+		}
+
+		if (getPendingOfflineInvoiceCount() > 0) {
+			toastStore.show({
+				title: translateMessage(
+					"Sync pending offline sales before switching POS profile.",
+				),
+				color: "error",
+			});
+			return { success: false, reason: "pending_invoices" };
+		}
+
+		const currentProfileName =
+			uiStore.posProfile?.name || pos_profile.value?.name || null;
+
+		try {
+			const r = await frappe.call(
+				"posawesome.posawesome.api.shifts.switch_pos_profile",
+				{
+					target_profile: payload.target_profile,
+					current_profile: currentProfileName,
+					balance_details: JSON.stringify(payload.balance_details || []),
+					supervisor_user: payload.supervisor_user || null,
+					pin: payload.pin || null,
+				},
+			);
+
+			if (!r?.message) {
+				return { success: false, reason: "empty_response" };
+			}
+
+			setOpeningStorage(r.message);
+			setActiveOpeningShiftName(r.message?.pos_opening_shift?.name);
+			setBootstrapSnapshot(
+				createBootstrapSnapshotFromRegisterData(
+					r.message,
+					getBootstrapSnapshot(),
+					{ buildVersion },
+				),
+			);
+
+			reloadTerminal();
+			return { success: true, register_data: r.message };
+		} catch (err: any) {
+			console.error("Failed to switch POS profile", err);
+			return { success: false, reason: "error", error: err };
+		}
+	}
+
 	function submit_closing_pos(data: any) {
 		console.log("Submitting closing shift", data);
 		frappe
@@ -229,12 +335,17 @@ export function usePosShift(openDialog?: () => void) {
 				if (r.message) {
 					pos_profile.value = null;
 					pos_opening_shift.value = null;
+					clearActiveOpeningShiftName();
 					clearOpeningStorage();
 					toastStore.show({
 						title: "POS Shift Closed",
 						color: "success",
 					});
-					check_opening_entry();
+					// The cashier may still hold an open shift on another profile. Reload
+					// rather than re-checking in place: uiStore cannot clear the outgoing
+					// profile and ItemsSelector will not re-scope without a fresh boot.
+					// Short delay so the confirmation toast is actually readable.
+					reloadTerminal(1200);
 				}
 			})
 			.catch((err: unknown) => {
@@ -248,5 +359,6 @@ export function usePosShift(openDialog?: () => void) {
 		check_opening_entry,
 		get_closing_data,
 		submit_closing_pos,
+		switch_pos_profile,
 	};
 }

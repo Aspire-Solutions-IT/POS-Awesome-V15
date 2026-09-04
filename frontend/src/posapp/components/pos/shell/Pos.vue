@@ -30,6 +30,10 @@
 		>
 			<Payments dialog-mode />
 		</v-dialog>
+		<!-- Rendered here, not inside Payments: submission unmounts that component
+		     (finishSubmissionNavigation runs before onSuccess), so the screen that
+		     follows a successful payment has to outlive it. -->
+		<OrderSuccessDialog />
 		<v-row
 			v-show="!dialog"
 			dense
@@ -70,7 +74,11 @@
 				<PosCoupons></PosCoupons>
 			</v-col>
 			<v-col
-				v-if="(!useCompactPosSwitcher || compactPanel === 'selector') && activeView === 'payment' && !usePaymentDialog"
+				v-if="
+					(!useCompactPosSwitcher || compactPanel === 'selector') &&
+					activeView === 'payment' &&
+					!usePaymentDialog
+				"
 				:xl="useCompactPosSwitcher ? 12 : 5"
 				:lg="useCompactPosSwitcher ? 12 : 5"
 				:md="useCompactPosSwitcher ? 12 : 5"
@@ -105,42 +113,35 @@
 				</div>
 				<div class="mobile-sale-dock__field">
 					<v-text-field
-						v-if="!posProfile?.posa_use_percentage_discount"
 						ref="additionalDiscountField"
 						v-model="additionalDiscountDisplay"
 						@update:model-value="handleAdditionalDiscountUpdate"
 						@focus="handleAdditionalDiscountFocus"
 						@blur="handleAdditionalDiscountBlur"
-						:label="__('Additional Discount')"
+						@change="commitAdditionalDiscount"
+						:label="__('Discount')"
 						prepend-inner-icon="mdi-cash-minus"
 						variant="solo"
 						density="compact"
 						color="warning"
 						:prefix="getCurrencySymbol(posProfile?.currency)"
-						:disabled="
-							!posProfile?.posa_allow_user_to_edit_additional_discount ||
-							!!discountPercentageOfferName
-						"
+						:disabled="discountFieldsDisabled"
 						hide-details
 					/>
 					<v-text-field
-						v-else
-						ref="additionalDiscountField"
+						ref="additionalDiscountPercentageField"
 						v-model="additionalDiscountPercentageDisplay"
 						@update:model-value="handleAdditionalDiscountPercentageUpdate"
 						@focus="handleAdditionalDiscountPercentageFocus"
 						@blur="handleAdditionalDiscountPercentageBlur"
 						@change="commitAdditionalDiscountPercentage"
-						:label="__('Additional Discount %')"
+						:label="__('Discount %')"
 						suffix="%"
 						prepend-inner-icon="mdi-percent"
 						variant="solo"
 						density="compact"
 						color="warning"
-						:disabled="
-							!posProfile?.posa_allow_user_to_edit_additional_discount ||
-							!!discountPercentageOfferName
-						"
+						:disabled="discountFieldsDisabled"
 						hide-details
 					/>
 				</div>
@@ -202,6 +203,7 @@ import ItemsSelector from "../items/ItemsSelector.vue";
 import Invoice from "../Invoice.vue";
 import OpeningDialog from "../shift/OpeningDialog.vue";
 import Payments from "../Payments.vue";
+import OrderSuccessDialog from "../payments/OrderSuccessDialog.vue";
 import PosOffers from "../offers/PosOffers.vue";
 import PosCoupons from "../offers/PosCoupons.vue";
 import Drafts from "../flows/Drafts.vue";
@@ -220,6 +222,7 @@ import { useResponsive } from "../../../composables/core/useResponsive";
 import { useRtl } from "../../../composables/core/useRtl";
 import { useCustomersStore } from "../../../stores/customersStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
+import { useEmployeeStore } from "../../../stores/employeeStore";
 import { useInvoiceStore } from "../../../stores/invoiceStore.js";
 import { useItemsStore } from "../../../stores/itemsStore.js";
 import { storeToRefs } from "pinia";
@@ -231,6 +234,7 @@ export default {
 		const dialog = ref(false);
 		const invoicePanel = ref(null);
 		const additionalDiscountField = ref(null);
+		const additionalDiscountPercentageField = ref(null);
 		const mobileDock = ref(null);
 		const responsive = useResponsive();
 		const rtl = useRtl();
@@ -239,6 +243,7 @@ export default {
 		});
 		const offers = useOffers();
 		const uiStore = useUIStore();
+		const employeeStore = useEmployeeStore();
 		const invoiceStore = useInvoiceStore();
 		const itemsStore = useItemsStore();
 		const __ = window.__;
@@ -256,9 +261,7 @@ export default {
 		const useCompactPosSwitcher = computed(() => responsive.windowWidth.value < 1100);
 		const compactPanel = ref("selector");
 		const isPhone = computed(() => responsive.isPhone.value);
-		const showBottomDock = computed(
-			() => !dialog.value && responsive.windowWidth.value < 1100,
-		);
+		const showBottomDock = computed(() => !dialog.value && responsive.windowWidth.value < 1100);
 		const bottomDockHeight = ref(0);
 		let mobileDockObserver = null;
 		const isEditingAdditionalDiscount = ref(false);
@@ -275,16 +278,13 @@ export default {
 			const numericValue = Number(rawValue);
 			return Number.isFinite(numericValue) ? numericValue : fallbackTotal;
 		});
-		const activeCurrency = computed(
-			() => invoiceDoc.value?.currency || posProfile.value?.currency || "",
-		);
+		const activeCurrency = computed(() => invoiceDoc.value?.currency || posProfile.value?.currency || "");
 		const formatCompactNumber = (value) =>
 			new Intl.NumberFormat(undefined, {
 				maximumFractionDigits: value % 1 === 0 ? 0 : 2,
 			}).format(Number(value || 0));
 		const getCurrencySymbol = (currency) => {
-			const resolver =
-				window.get_currency_symbol || globalThis.get_currency_symbol;
+			const resolver = window.get_currency_symbol || globalThis.get_currency_symbol;
 			if (typeof resolver === "function") {
 				return resolver(currency || activeCurrency.value || "") || "";
 			}
@@ -296,7 +296,10 @@ export default {
 		});
 		const formattedDiscountTotal = computed(() => {
 			const symbol = getCurrencySymbol(activeCurrency.value);
-			return `${symbol}${formatCompactNumber(discountTotal.value || 0)} ${__("discount")}`.trim();
+			const combinedDiscountTotal =
+				Math.abs(Number(discountTotal.value || 0)) +
+				Math.abs(Number(additionalDiscount.value || 0));
+			return `${symbol}${formatCompactNumber(combinedDiscountTotal)} ${__("discount")}`.trim();
 		});
 		const cartMetaLabel = computed(() => {
 			const qty = formatCompactNumber(totalQty.value || 0);
@@ -307,15 +310,18 @@ export default {
 		const discountPercentageOfferName = computed(
 			() => invoicePanel.value?.discount_percentage_offer_name || null,
 		);
+		const discountFieldsDisabled = computed(
+			() =>
+				!posProfile.value?.posa_allow_user_to_edit_additional_discount ||
+				!!discountPercentageOfferName.value,
+		);
 		const normalizeDiscountDisplay = (value) => {
 			if (value === 0 || value === "0") {
 				return "";
 			}
 			return value;
 		};
-		const additionalDiscountDisplay = ref(
-			normalizeDiscountDisplay(additionalDiscount.value),
-		);
+		const additionalDiscountDisplay = ref(normalizeDiscountDisplay(additionalDiscount.value));
 		const additionalDiscountPercentageDisplay = ref(
 			normalizeDiscountDisplay(additionalDiscountPercentage.value),
 		);
@@ -328,8 +334,7 @@ export default {
 
 		watch(additionalDiscountPercentage, (value) => {
 			if (!isEditingAdditionalDiscountPercentage.value) {
-				additionalDiscountPercentageDisplay.value =
-					normalizeDiscountDisplay(value);
+				additionalDiscountPercentageDisplay.value = normalizeDiscountDisplay(value);
 			}
 		});
 
@@ -393,8 +398,7 @@ export default {
 			}
 			showPaymentPanel();
 		};
-		const isSelectorViewActive = (view) =>
-			compactPanel.value === "selector" && activeView.value === view;
+		const isSelectorViewActive = (view) => compactPanel.value === "selector" && activeView.value === view;
 		const getFallbackBottomSpace = () => {
 			const rawValue = responsive.responsiveStyles.value["--bottom-safe-space"];
 			const parsed = Number.parseFloat(String(rawValue || "0"));
@@ -419,15 +423,23 @@ export default {
 		});
 		const handleAdditionalDiscountUpdate = (value) => {
 			invoiceStore.setAdditionalDiscount(value);
+			// Mirror the typed amount into the % box.
+			invoicePanel.value?.sync_discount_percentage_from_amount?.();
 		};
 		const handleAdditionalDiscountFocus = () => {
 			isEditingAdditionalDiscount.value = true;
 		};
+		const commitAdditionalDiscount = () => {
+			invoicePanel.value?.commit_discount_amount?.();
+		};
 		const handleAdditionalDiscountBlur = () => {
 			isEditingAdditionalDiscount.value = false;
+			commitAdditionalDiscount();
 		};
 		const handleAdditionalDiscountPercentageUpdate = (value) => {
 			invoiceStore.setAdditionalDiscountPercentage(value);
+			// Mirror the typed percentage into the amount box.
+			invoicePanel.value?.sync_discount_amount_from_percentage?.();
 		};
 		const handleAdditionalDiscountPercentageFocus = () => {
 			isEditingAdditionalDiscountPercentage.value = true;
@@ -440,7 +452,11 @@ export default {
 			commitAdditionalDiscountPercentage();
 		};
 		const focusAdditionalDiscountField = () => {
-			const field = additionalDiscountField.value;
+			// Both boxes are always available; the shortcut lands on the one the profile
+			// treats as the primary way of entering a discount.
+			const field = posProfile.value?.posa_use_percentage_discount
+				? additionalDiscountPercentageField.value
+				: additionalDiscountField.value;
 			field?.focus?.();
 			field?.$el?.querySelector?.("input")?.focus?.();
 		};
@@ -539,6 +555,7 @@ export default {
 			...shift,
 			...offers,
 			uiStore,
+			employeeStore,
 			invoiceStore,
 			itemsStore,
 			__,
@@ -550,6 +567,7 @@ export default {
 			cartMetaLabel,
 			posProfile,
 			additionalDiscountField,
+			additionalDiscountPercentageField,
 			additionalDiscountDisplay,
 			additionalDiscountPercentageDisplay,
 			activeView,
@@ -577,6 +595,8 @@ export default {
 			handlePaymentDialogUpdate,
 			handlePaymentDialogAfterLeave,
 			discountPercentageOfferName,
+			discountFieldsDisabled,
+			commitAdditionalDiscount,
 			getCurrencySymbol,
 			invoicePanel,
 			eventBus,
@@ -592,6 +612,7 @@ export default {
 		Invoice,
 		OpeningDialog,
 		Payments,
+		OrderSuccessDialog,
 		Drafts,
 		InvoiceManagement,
 
@@ -629,6 +650,10 @@ export default {
 
 			// Update Store
 			this.uiStore.setRegisterData(data);
+
+			// Always require a cashier PIN unlock after the opening balance is
+			// confirmed, rather than silently continuing as the logged-in browser user.
+			this.employeeStore.lockTerminal();
 		},
 		closeOpeningDialog() {
 			this.dialog = false;
@@ -723,7 +748,7 @@ export default {
 
 .mobile-sale-dock {
 	display: grid;
-	grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+	grid-template-columns: minmax(0, 1.2fr) minmax(240px, 0.9fr);
 	gap: 12px;
 	align-items: center;
 }
@@ -755,6 +780,12 @@ export default {
 	gap: 6px 12px;
 	font-size: 0.82rem;
 	color: var(--pos-text-secondary);
+}
+
+.mobile-sale-dock__field {
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+	gap: 8px;
 }
 
 .mobile-sale-dock__field :deep(.v-field) {

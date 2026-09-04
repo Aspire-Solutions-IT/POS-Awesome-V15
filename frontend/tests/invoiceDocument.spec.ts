@@ -247,4 +247,102 @@ describe("get_invoice_doc", () => {
 		expect(doc.posting_date).toBe("2026-03-20");
 		expect(doc.set_posting_time).toBe(1);
 	});
+
+	it("defaults sales orders to must be fully allocated", () => {
+		const context: any = {
+			invoiceType: "Order",
+			pos_profile: {
+				company: "Test Company",
+				name: "Main POS",
+				currency: "PKR",
+				posa_create_only_sales_order: 1,
+				payments: [{ mode_of_payment: "Cash", account: "Cash", type: "Cash", default: 1 }],
+			},
+			selected_currency: "PKR",
+			conversion_rate: 1,
+			company: { default_currency: "PKR" },
+			price_list_currency: "PKR",
+			get_price_list: () => "Standard Selling",
+			customer_info: {
+				customer: "CUST-001",
+				customer_name: "Walk-in Customer",
+			},
+			customer: "CUST-001",
+			isReturnInvoice: false,
+			items: [],
+			packed_items: [],
+			Total: 0,
+			subtotal: 0,
+			additional_discount: 0,
+			additional_discount_percentage: 0,
+			roundAmount: (value: number) => value,
+			pos_opening_shift: { name: "SHIFT-1" },
+			posa_offers: [],
+			posa_coupons: [],
+			selected_delivery_charge: null,
+			delivery_charges_rate: 0,
+			posting_date_display: "2026-03-28",
+			formatDateForBackend: (value: string) => value,
+			invoice_doc: {
+				payments: [],
+				taxes: [],
+				posa_split_delivery: 0,
+			},
+		};
+
+		const doc = get_invoice_doc(context);
+
+		expect(doc.doctype).toBe("Sales Order");
+		expect(doc.posa_split_delivery).toBe(0);
+		expect(doc.must_be_fully_allocated).toBe(1);
+	});
+
+	it("allows split delivery orders to skip full allocation", () => {
+		const context: any = {
+			invoiceType: "Order",
+			pos_profile: {
+				company: "Test Company",
+				name: "Main POS",
+				currency: "PKR",
+				posa_create_only_sales_order: 1,
+				payments: [{ mode_of_payment: "Cash", account: "Cash", type: "Cash", default: 1 }],
+			},
+			selected_currency: "PKR",
+			conversion_rate: 1,
+			company: { default_currency: "PKR" },
+			price_list_currency: "PKR",
+			get_price_list: () => "Standard Selling",
+			customer_info: {
+				customer: "CUST-001",
+				customer_name: "Walk-in Customer",
+			},
+			customer: "CUST-001",
+			isReturnInvoice: false,
+			items: [],
+			packed_items: [],
+			Total: 0,
+			subtotal: 0,
+			additional_discount: 0,
+			additional_discount_percentage: 0,
+			roundAmount: (value: number) => value,
+			pos_opening_shift: { name: "SHIFT-1" },
+			posa_offers: [],
+			posa_coupons: [],
+			selected_delivery_charge: null,
+			delivery_charges_rate: 0,
+			posting_date_display: "2026-03-28",
+			formatDateForBackend: (value: string) => value,
+			invoice_doc: {
+				payments: [],
+				taxes: [],
+				posa_split_delivery: 1,
+			},
+		};
+
+		const doc = get_invoice_doc(context);
+
+		expect(doc.doctype).toBe("Sales Order");
+		expect(doc.posa_split_delivery).toBe(1);
+		expect(doc.must_be_fully_allocated).toBe(0);
+	});
 });

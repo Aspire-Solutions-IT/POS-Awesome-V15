@@ -4,6 +4,7 @@
 
 from __future__ import unicode_literals
 import json
+import re
 import frappe
 from frappe.utils import nowdate, flt, cstr, get_datetime
 from frappe import _
@@ -13,6 +14,20 @@ from erpnext.accounts.doctype.loyalty_program.loyalty_program import (
 from frappe.utils.caching import redis_cache
 from .utils import fetch_sales_person_names
 from .stored_value import get_stored_value_summary
+
+EXCLUDED_POS_CUSTOMER_NAMES = {"13682"}
+
+
+def format_postcode(postcode):
+    """Normalise a UK postcode to the standard 'AA9 9AA' form (uppercase, single space before the inward code)."""
+    if not postcode:
+        return postcode
+
+    cleaned = re.sub(r"\s+", "", postcode).upper()
+    if len(cleaned) > 3:
+        cleaned = f"{cleaned[:-3]} {cleaned[-3:]}"
+
+    return cleaned
 
 
 def get_customer_groups(pos_profile):
@@ -53,6 +68,34 @@ def get_customer_group_condition(pos_profile):
         cond = " customer_group in ({})".format(", ".join(escaped_groups))
 
     return cond
+
+
+def _get_rfs_customer_filters(pos_profile, modified_after=None, start_after=None):
+    filters = {"disabled": 0, "rfs_customer": 1}
+
+    customer_groups = get_customer_groups(pos_profile)
+    if customer_groups:
+        filters["customer_group"] = ["in", customer_groups]
+
+    if modified_after:
+        try:
+            parsed_modified_after = get_datetime(modified_after)
+        except Exception:
+            frappe.throw(_("modified_after must be a valid ISO datetime"))
+        filters["modified"] = [">", parsed_modified_after.isoformat()]
+
+    if start_after:
+        filters["name"] = [">", start_after]
+
+    return filters
+
+
+def _exclude_hidden_pos_customers(rows):
+    return [
+        row
+        for row in (rows or [])
+        if cstr((row or {}).get("name")).strip() not in EXCLUDED_POS_CUSTOMER_NAMES
+    ]
 
 
 @frappe.whitelist()
@@ -96,21 +139,11 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
 
     def _get_customer_names(pos_profile, limit=None, offset=None, start_after=None, modified_after=None):
         pos_profile = json.loads(pos_profile)
-        filters = {"disabled": 0}
-
-        customer_groups = get_customer_groups(pos_profile)
-        if customer_groups:
-            filters["customer_group"] = ["in", customer_groups]
-
-        if modified_after:
-            try:
-                parsed_modified_after = get_datetime(modified_after)
-            except Exception:
-                frappe.throw(_("modified_after must be a valid ISO datetime"))
-            filters["modified"] = [">", parsed_modified_after.isoformat()]
-
-        if start_after:
-            filters["name"] = [">", start_after]
+        filters = _get_rfs_customer_filters(
+            pos_profile,
+            modified_after=modified_after,
+            start_after=start_after,
+        )
 
         customers = frappe.get_all(
             "Customer",
@@ -127,7 +160,7 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
             limit_start=None if start_after else offset,
             limit_page_length=limit,
         )
-        return customers
+        return _exclude_hidden_pos_customers(customers)
 
     if _pos_profile.get("posa_use_server_cache") and not (limit or offset or start_after or modified_after):
         return __get_customer_names(pos_profile, limit, offset, start_after, modified_after)
@@ -138,11 +171,107 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
 @frappe.whitelist()
 def get_customers_count(pos_profile):
     pos_profile = json.loads(pos_profile)
-    filters = {"disabled": 0}
+    filters = _get_rfs_customer_filters(pos_profile)
+    count = frappe.db.count("Customer", filters)
+    if not EXCLUDED_POS_CUSTOMER_NAMES:
+        return count
+
+    hidden_count = len(
+        frappe.get_all(
+            "Customer",
+            filters={**filters, "name": ["in", list(EXCLUDED_POS_CUSTOMER_NAMES)]},
+            pluck="name",
+        )
+        or []
+    )
+    return max(0, count - hidden_count)
+
+
+CUSTOMER_SEARCH_FIELDS = (
+    "name",
+    "customer_name",
+    "mobile_no",
+    "email_id",
+    "tax_id",
+)
+
+CUSTOMER_SEARCH_DEFAULT_LIMIT = 50
+CUSTOMER_SEARCH_MAX_LIMIT = 200
+
+
+def _escape_like_term(value):
+    """Escape LIKE wildcards so a typed % or _ is matched literally."""
+    return cstr(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _coerce_int(value, default, minimum, maximum=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(parsed, minimum)
+    if maximum is not None:
+        parsed = min(parsed, maximum)
+    return parsed
+
+
+@frappe.whitelist()
+def search_customers(pos_profile, search_term=None, limit=None, offset=0):
+    """Search customers directly against the database.
+
+    The POS customer dropdown calls this on every (debounced) keystroke so results
+    always reflect the server rather than the terminal's local cache. Matching
+    mirrors the old client-side search: each whitespace-separated word must appear
+    in at least one searchable field.
+    """
+    if isinstance(pos_profile, str):
+        pos_profile = json.loads(pos_profile)
+    pos_profile = pos_profile or {}
+
+    limit = _coerce_int(
+        limit, CUSTOMER_SEARCH_DEFAULT_LIMIT, 1, CUSTOMER_SEARCH_MAX_LIMIT
+    )
+    offset = _coerce_int(offset, 0, 0)
+
+    customer = frappe.qb.DocType("Customer")
+    query = (
+        frappe.qb.from_(customer)
+        .select(
+            customer.name,
+            customer.customer_name,
+            customer.mobile_no,
+            customer.email_id,
+            customer.tax_id,
+            customer.primary_address,
+        )
+        .where(customer.disabled == 0)
+        .where(customer.rfs_customer == 1)
+    )
+
     customer_groups = get_customer_groups(pos_profile)
     if customer_groups:
-        filters["customer_group"] = ["in", customer_groups]
-    return frappe.db.count("Customer", filters)
+        query = query.where(customer.customer_group.isin(customer_groups))
+
+    if EXCLUDED_POS_CUSTOMER_NAMES:
+        query = query.where(customer.name.notin(sorted(EXCLUDED_POS_CUSTOMER_NAMES)))
+
+    for word in cstr(search_term).split():
+        pattern = "%{0}%".format(_escape_like_term(word))
+        condition = None
+        for fieldname in CUSTOMER_SEARCH_FIELDS:
+            field_condition = getattr(customer, fieldname).like(pattern)
+            condition = (
+                field_condition if condition is None else (condition | field_condition)
+            )
+        query = query.where(condition)
+
+    return (
+        query.orderby(customer.customer_name)
+        .orderby(customer.name)
+        .limit(limit)
+        .offset(offset)
+        .run(as_dict=True)
+    )
 
 
 @frappe.whitelist()
@@ -262,7 +391,10 @@ def create_customer(
     gender=None,
     method="create",
     address_line1=None,
+    address_line2=None,
     city=None,
+    postcode=None,
+    county=None,
     country=None,
 ):
     pos_profile = json.loads(pos_profile_doc)
@@ -286,6 +418,8 @@ def create_customer(
     if method == "create":
         is_exist = frappe.db.exists("Customer", {"customer_name": customer_name})
         if pos_profile.get("posa_allow_duplicate_customer_names") or not is_exist:
+            resolved_customer_group = "Individual"
+            resolved_territory = "All Territories"
             customer = frappe.get_doc(
                 {
                     "doctype": "Customer",
@@ -298,29 +432,27 @@ def create_customer(
                     "posa_birthday": formatted_birthday,
                     "customer_type": customer_type,
                     "gender": gender,
+                    "rfs_customer": 1,
+                    "auto_allocate_sales_orders": 1,
+                    "customer_group": resolved_customer_group,
+                    "territory": resolved_territory,
                 }
             )
-            if customer_group:
-                customer.customer_group = customer_group
-            else:
-                customer.customer_group = "All Customer Groups"
-            if territory:
-                customer.territory = territory
-            else:
-                customer.territory = "All Territories"
 
             customer.save()
 
-            if address_line1 or city:
+            if address_line1 or city or postcode or county:
                 args = {
                     "name": f"{customer.customer_name} - Shipping",
                     "doctype": "Customer",
                     "customer": customer.name,
                     "address_line1": address_line1 or "",
-                    "address_line2": "",
+                    "address_line2": address_line2 or "",
                     "city": city or "",
-                    "state": "",
-                    "pincode": "",
+                    "state": county or "",
+                    "pincode": postcode or "",
+                    "email_id": email_id or "",
+                    "phone": mobile_no or "",
                     "country": country or "",
                 }
                 make_address(json.dumps(args))
@@ -360,20 +492,27 @@ def create_customer(
         if existing_address_name:
             address_doc = frappe.get_doc("Address", existing_address_name)
             address_doc.address_line1 = address_line1 or ""
+            address_doc.address_line2 = address_line2 or ""
             address_doc.city = city or ""
+            address_doc.pincode = format_postcode(postcode) or ""
+            address_doc.state = county or ""
+            address_doc.email_id = email_id or ""
+            address_doc.phone = mobile_no or ""
             address_doc.country = country or ""
             address_doc.save()
         else:
-            if address_line1 or city:
+            if address_line1 or city or postcode or county:
                 args = {
                     "name": f"{customer_doc.customer_name} - Shipping",
                     "doctype": "Customer",
                     "customer": customer_doc.name,
                     "address_line1": address_line1 or "",
-                    "address_line2": "",
+                    "address_line2": address_line2 or "",
                     "city": city or "",
-                    "state": "",
-                    "pincode": "",
+                    "state": county or "",
+                    "pincode": postcode or "",
+                    "email_id": email_id or "",
+                    "phone": mobile_no or "",
                     "country": country or "",
                 }
                 make_address(json.dumps(args))
@@ -446,6 +585,222 @@ def get_customer_addresses(customer):
 
 
 @frappe.whitelist()
+def get_store_collection_addresses():
+    return frappe.get_all(
+        "Address",
+        filters={
+            "disabled": 0,
+            "posa_is_store_collection_point": 1,
+        },
+        fields=[
+            "name",
+            "address_line1",
+            "address_line2",
+            "address_title",
+            "city",
+            "state",
+            "country",
+            "pincode",
+            "email_id",
+            "phone",
+            "address_type",
+            "posa_is_store_collection_point",
+        ],
+        order_by="address_title asc, name asc",
+    )
+
+
+def _validate_store_collection_address(address_name):
+    if not address_name:
+        frappe.throw(_("Store collection address is required"))
+
+    is_store_collection_point = frappe.db.get_value(
+        "Address", address_name, "posa_is_store_collection_point"
+    )
+    if not is_store_collection_point:
+        frappe.throw(_("Selected address is not a store collection point"))
+
+
+def _first_value(*values):
+    for value in values:
+        normalized = cstr(value or "").strip()
+        if normalized:
+            return normalized
+    return ""
+
+
+def _get_customer_contact_details(customer):
+    """Best-effort (phone, email) for a customer: the customer's primary
+    address/contact first, falling back to any other linked address/contact
+    that has a value."""
+    phone = ""
+    email = ""
+
+    customer_fields = (
+        frappe.db.get_value(
+            "Customer",
+            customer,
+            ["customer_primary_address", "customer_primary_contact"],
+            as_dict=True,
+        )
+        or {}
+    )
+
+    primary_address = customer_fields.get("customer_primary_address")
+    if primary_address:
+        address_phone, address_email = frappe.db.get_value(
+            "Address", primary_address, ["phone", "email_id"]
+        ) or ("", "")
+        phone = _first_value(phone, address_phone)
+        email = _first_value(email, address_email)
+
+    primary_contact = customer_fields.get("customer_primary_contact")
+    if primary_contact and (not phone or not email):
+        contact_phone, contact_email = frappe.db.get_value(
+            "Contact", primary_contact, ["phone", "email_id"]
+        ) or ("", "")
+        phone = _first_value(phone, contact_phone)
+        email = _first_value(email, contact_email)
+
+    if not phone or not email:
+        for linked_address in frappe.get_all(
+            "Dynamic Link",
+            filters={
+                "parenttype": "Address",
+                "link_doctype": "Customer",
+                "link_name": customer,
+            },
+            pluck="parent",
+        ):
+            if phone and email:
+                break
+            address_phone, address_email = frappe.db.get_value(
+                "Address", linked_address, ["phone", "email_id"]
+            ) or ("", "")
+            phone = _first_value(phone, address_phone)
+            email = _first_value(email, address_email)
+
+    if not phone or not email:
+        for linked_contact in frappe.get_all(
+            "Dynamic Link",
+            filters={
+                "parenttype": "Contact",
+                "link_doctype": "Customer",
+                "link_name": customer,
+            },
+            pluck="parent",
+        ):
+            if phone and email:
+                break
+            contact_phone, contact_email = frappe.db.get_value(
+                "Contact", linked_contact, ["phone", "email_id"]
+            ) or ("", "")
+            phone = _first_value(phone, contact_phone)
+            email = _first_value(email, contact_email)
+
+    return phone, email
+
+
+def _get_existing_store_collection_copy(customer, source_address_name):
+    """An Address previously cloned from source_address_name and already
+    linked to this customer, if one exists."""
+    rows = frappe.db.sql(
+        """
+        SELECT address.name AS address_name
+        FROM `tabAddress` AS address
+        INNER JOIN `tabDynamic Link` AS link
+                ON link.parent = address.name
+                AND link.parenttype = 'Address'
+        WHERE address.posa_source_address = %s
+            AND link.link_doctype = 'Customer'
+            AND link.link_name = %s
+        LIMIT 1
+        """,
+        (source_address_name, customer),
+        as_dict=True,
+    )
+    return rows[0].address_name if rows else None
+
+
+@frappe.whitelist()
+def link_store_collection_address_to_customer(customer, address_name):
+    """Link a customer to a store collection point without mutating the
+    shared store Address record. A personal copy of the store address is
+    created (carrying the customer's own name/phone/email where available) and
+    that copy is linked to the customer instead."""
+    customer = cstr(customer or "").strip()
+    address_name = cstr(address_name or "").strip()
+
+    if not customer:
+        frappe.throw(_("Customer is required"))
+
+    _validate_store_collection_address(address_name)
+
+    existing_copy = _get_existing_store_collection_copy(customer, address_name)
+    if existing_copy:
+        return {
+            "address_name": existing_copy,
+            "source_address": address_name,
+            "customer": customer,
+            "linked": False,
+            "already_linked": True,
+        }
+
+    source_address = frappe.db.get_value(
+        "Address",
+        address_name,
+        [
+            "address_title",
+            "address_line1",
+            "address_line2",
+            "city",
+            "state",
+            "country",
+            "pincode",
+            "address_type",
+            "phone",
+            "email_id",
+        ],
+        as_dict=True,
+    ) or {}
+
+    customer_phone, customer_email = _get_customer_contact_details(customer)
+    phone = _first_value(customer_phone, source_address.get("phone"))
+    email = _first_value(customer_email, source_address.get("email_id"))
+    customer_name = _first_value(
+        frappe.db.get_value("Customer", customer, "customer_name"), customer
+    )
+
+    copy_doc = frappe.get_doc(
+        {
+            "doctype": "Address",
+            "address_title": customer_name or source_address.get("address_title"),
+            "address_line1": source_address.get("address_line1"),
+            "address_line2": source_address.get("address_line2"),
+            "city": source_address.get("city"),
+            "state": source_address.get("state"),
+            "country": source_address.get("country"),
+            "pincode": source_address.get("pincode"),
+            "address_type": source_address.get("address_type") or "Shipping",
+            "phone": phone,
+            "email_id": email,
+            "posa_is_store_collection_point": 0,
+            "posa_source_address": address_name,
+            "links": [{"link_doctype": "Customer", "link_name": customer}],
+        }
+    )
+    copy_doc.insert()
+
+    return {
+        "address_name": copy_doc.name,
+        "source_address": address_name,
+        "customer": customer,
+        "linked": True,
+        "already_linked": False,
+    }
+
+
+@frappe.whitelist()
 def make_address(args):
     if isinstance(args, str):
         args = json.loads(args)
@@ -458,7 +813,7 @@ def make_address(args):
             "address_line2": args.get("address_line2"),
             "city": args.get("city"),
             "state": args.get("state"),
-            "pincode": args.get("pincode"),
+            "pincode": format_postcode(args.get("pincode")),
             "email_id": args.get("email_id"),
             "phone": args.get("phone"),
             "country": args.get("country"),

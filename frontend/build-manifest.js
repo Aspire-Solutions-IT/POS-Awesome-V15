@@ -2,9 +2,7 @@ const DIST_BASE_URL = "/assets/posawesome/dist/js/";
 const STATIC_ENTRY_NAMES = new Set(["posawesome", "loader"]);
 
 export function getEntryFileName(chunkInfo) {
-	return STATIC_ENTRY_NAMES.has(chunkInfo?.name)
-		? "[name].js"
-		: "[name]-[hash].js";
+	return STATIC_ENTRY_NAMES.has(chunkInfo?.name) ? "[name].js" : "[name]-[hash].js";
 }
 
 function toPublicAssetUrl(fileName) {

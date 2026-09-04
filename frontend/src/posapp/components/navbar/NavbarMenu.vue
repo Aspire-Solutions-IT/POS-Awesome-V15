@@ -73,7 +73,11 @@
 						</div>
 
 						<div class="quick-actions-grid">
-							<div v-for="(row, rowIndex) in quickActionRows" :key="`quick-row-${rowIndex}`" class="quick-actions-row">
+							<div
+								v-for="(row, rowIndex) in quickActionRows"
+								:key="`quick-row-${rowIndex}`"
+								class="quick-actions-row"
+							>
 								<button
 									v-for="action in row"
 									:key="action.id"
@@ -127,7 +131,10 @@
 							<div class="menu-section-subtitle">{{ section.description }}</div>
 						</div>
 
-						<div class="settings-actions-list" :class="{ 'settings-actions-list--danger': section.danger }">
+						<div
+							class="settings-actions-list"
+							:class="{ 'settings-actions-list--danger': section.danger }"
+						>
 							<button
 								v-for="action in section.actions"
 								:key="action.id"
@@ -415,14 +422,14 @@ export default {
 							handler: "printLastInvoiceAction",
 						}
 					: null,
-						{
-							id: "sync-offline-sales",
-							label: __("Sync Offline Sales"),
-							subtitle: __("Upload pending transactions"),
-							icon: "mdi-sync",
-							tone: "info",
-							handler: "syncInvoices",
-						},
+				{
+					id: "sync-offline-sales",
+					label: __("Sync Offline Sales"),
+					subtitle: __("Upload pending transactions"),
+					icon: "mdi-sync",
+					tone: "info",
+					handler: "syncInvoices",
+				},
 				!this.posProfile?.posa_hide_closing_shift
 					? {
 							id: "close-shift",
@@ -558,6 +565,14 @@ export default {
 							tone: "primary",
 							handler: "openDashboard",
 						},
+						{
+							id: "switch-profile",
+							label: __("Switch POS Profile"),
+							subtitle: __("Change till without closing the shift"),
+							icon: "mdi-swap-horizontal",
+							tone: "primary",
+							handler: "switchProfile",
+						},
 					],
 				},
 			];
@@ -631,6 +646,10 @@ export default {
 				case "closeShift":
 					this.closeMenu();
 					this.$emit("close-shift");
+					break;
+				case "switchProfile":
+					this.closeMenu();
+					this.$emit("switch-profile");
 					break;
 				case "openLanguageDialog":
 					this.closeMenu();
@@ -845,6 +864,7 @@ export default {
 	},
 	emits: [
 		"close-shift",
+		"switch-profile",
 		"sync-invoices",
 		"open-employee-switch",
 		"lock-pos",
@@ -1119,7 +1139,10 @@ export default {
 	align-items: center;
 	gap: 12px;
 	width: 100%;
-	transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+	transition:
+		transform 0.18s ease,
+		box-shadow 0.18s ease,
+		border-color 0.18s ease;
 }
 
 .quick-action-card:hover,

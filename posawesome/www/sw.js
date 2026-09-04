@@ -19,10 +19,7 @@ function getPrecacheUrls(version, assets = {}) {
 	const offlineIndexUrl =
 		typeof assets.offlineIndex === "string" && assets.offlineIndex
 			? assets.offlineIndex
-			: buildVersionedAssetUrl(
-					"/assets/posawesome/dist/js/offline/index.js",
-					version,
-				);
+			: buildVersionedAssetUrl("/assets/posawesome/dist/js/offline/index.js", version);
 	return [
 		buildVersionedAssetUrl("/assets/posawesome/dist/js/loader.js", version),
 		buildVersionedAssetUrl("/assets/posawesome/dist/js/posawesome.css", version),
@@ -74,15 +71,11 @@ function postVersionMessage(target) {
 
 function extractBuildVersion(payload) {
 	const version = payload?.version || payload?.buildVersion;
-	return typeof version === "string" && version.trim().length
-		? version.trim()
-		: DEFAULT_CACHE_VERSION;
+	return typeof version === "string" && version.trim().length ? version.trim() : DEFAULT_CACHE_VERSION;
 }
 
 function extractBuildAssets(payload) {
-	return payload?.assets && typeof payload.assets === "object"
-		? payload.assets
-		: {};
+	return payload?.assets && typeof payload.assets === "object" ? payload.assets : {};
 }
 
 // Listen for version check messages
@@ -153,8 +146,7 @@ async function getCacheName(forceRefresh = false, resolvedMetadata = null) {
 		return cacheNameInFlight;
 	}
 	cacheNameInFlight = (async () => {
-		const metadata =
-			resolvedMetadata || (await resolveBuildMetadata(forceRefresh));
+		const metadata = resolvedMetadata || (await resolveBuildMetadata(forceRefresh));
 		const version = metadata?.version || DEFAULT_CACHE_VERSION;
 		const name = `${CACHE_PREFIX}${version}`;
 		if (version !== DEFAULT_CACHE_VERSION) {
@@ -216,11 +208,7 @@ self.addEventListener("activate", (event) => {
 		(async () => {
 			const metadata = await resolveBuildMetadata();
 			const activeCacheName = await getCacheName(false, metadata);
-			await precacheUrls(
-				activeCacheName,
-				metadata.version,
-				metadata.assets,
-			);
+			await precacheUrls(activeCacheName, metadata.version, metadata.assets);
 			await cleanupObsoleteCaches(activeCacheName);
 			const cache = await caches.open(activeCacheName);
 			await enforceCacheLimit(cache);

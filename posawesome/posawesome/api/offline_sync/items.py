@@ -3,6 +3,7 @@ import json
 import frappe
 
 from posawesome.posawesome.api.items import get_delta_items, get_items
+from posawesome.posawesome.api.item_processing.search import _item_has_custom_exclude_from_pos
 from posawesome.posawesome.api.utils import (
 	expand_item_groups,
 	get_active_pos_profile,
@@ -94,6 +95,8 @@ def _is_item_allowed(item_row, allowed_groups):
 		return False
 	if item_row.get("is_fixed_asset"):
 		return False
+	if item_row.get("custom_exclude_from_pos"):
+		return False
 	if allowed_groups and item_row.get("item_group") not in allowed_groups:
 		return False
 	return True
@@ -103,18 +106,22 @@ def _collect_deleted_items(profile, watermark, limit):
 	if not watermark:
 		return []
 
+	fields = [
+		"item_code",
+		"modified",
+		"disabled",
+		"is_sales_item",
+		"is_fixed_asset",
+		"item_group",
+		"variant_of",
+	]
+	if _item_has_custom_exclude_from_pos():
+		fields.append("custom_exclude_from_pos")
+
 	rows = frappe.get_all(
 		"Item",
 		filters={"modified": [">", watermark]},
-		fields=[
-			"item_code",
-			"modified",
-			"disabled",
-			"is_sales_item",
-			"is_fixed_asset",
-			"item_group",
-			"variant_of",
-		],
+		fields=fields,
 		order_by="item_code asc",
 		limit_page_length=limit,
 	) or []

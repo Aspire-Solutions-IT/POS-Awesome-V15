@@ -33,6 +33,15 @@ function resolveOrderDeliveryDate(context: any, sourceDoc: any): string | null {
 	);
 }
 
+function resolvePreferredDeliveryDate(context: any, sourceDoc: any): string | null {
+	return normalizeBackendDate(
+		context,
+		sourceDoc?.prefered_earliest_delivery_date ||
+			sourceDoc?.preferred_earliest_delivery_date ||
+			context.preferred_delivery_date,
+	);
+}
+
 function resolveTodayDate(context: any): string | null {
 	const fallbackToday = new Date().toISOString().slice(0, 10);
 	const rawToday =
@@ -170,6 +179,13 @@ export function get_invoice_doc(context: any) {
 	doc.ignore_pricing_rule = 0;
 	doc.company = doc.company || context.pos_profile?.company || null;
 	doc.pos_profile = doc.pos_profile || context.pos_profile?.name || null;
+	if (doc.doctype === "Sales Order") {
+		doc.pos_sales_person =
+			doc.pos_sales_person ||
+			context.currentCashier?.user ||
+			window.frappe?.session?.user ||
+			null;
+	}
 	doc.posa_show_custom_name_marker_on_print =
 		context.pos_profile?.posa_show_custom_name_marker_on_print ?? null;
 
@@ -282,6 +298,17 @@ export function get_invoice_doc(context: any) {
 		discountPercentage = Math.abs(discountPercentage);
 	} else if (isReturn && discountPercentage > 0) {
 		discountPercentage = -Math.abs(discountPercentage);
+	}
+
+	// The amount and % boxes mirror each other, but only the box the operator actually
+	// typed into is sent as authoritative. ERPNext recalculates `discount_amount` from a
+	// non-zero `additional_discount_percentage` server-side (against `apply_discount_on`),
+	// so shipping a derived percentage would override the amount that was entered.
+	const percentageIsAuthoritative = context.discount_input_mode
+		? context.discount_input_mode === "percentage"
+		: Boolean(context.pos_profile?.posa_use_percentage_discount);
+	if (!percentageIsAuthoritative) {
+		discountPercentage = 0;
 	}
 
 	doc.additional_discount_percentage = discountPercentage;
@@ -421,13 +448,41 @@ export function get_invoice_doc(context: any) {
 	doc.posa_delivery_charges_rate = context.delivery_charges_rate || 0;
 	doc.posa_notes = sourceDoc.posa_notes ?? null;
 	doc.posa_authorization_code = sourceDoc.posa_authorization_code ?? null;
+	doc.customer_order_ref = sourceDoc.customer_order_ref ?? null;
 	doc.posa_return_valid_upto = sourceDoc.posa_return_valid_upto ?? null;
-	doc.posting_date = normalizeBackendDate(
+	doc.posa_split_delivery =
+		sourceDoc.posa_split_delivery === 1 ||
+		sourceDoc.posa_split_delivery === "1" ||
+		sourceDoc.posa_split_delivery === true
+			? 1
+			: 0;
+	doc.posa_split_groups = doc.posa_split_delivery
+		? (sourceDoc.posa_split_groups || []).map((group: any) => ({
+				group_id: group.group_id,
+				label: group.label,
+				row_ids: Array.isArray(group.row_ids) ? [...group.row_ids] : [],
+		  }))
+		: [];
+	const resolvedPostingDate = normalizeBackendDate(
 		context,
 		context.posting_date_display ?? context.posting_date,
 	);
-	if (shouldEnableManualPostingDate(context, sourceDoc, doc.posting_date)) {
-		doc.set_posting_time = 1;
+	if (doc.doctype === "Sales Order" || doc.doctype === "Quotation") {
+		// Sales Order/Quotation use `transaction_date`, not `posting_date`. Setting
+		// `posting_date` here would still land on the in-memory doc (Frappe assigns
+		// any payload key as an attribute even if it isn't a real field) and leak
+		// into ERPNext's set_payment_schedule(), which prefers `posting_date` over
+		// `transaction_date` when computing payment term due dates. That can desync
+		// the due date from the `transaction_date` actually used for validation -
+		// e.g. after the POS page sits open overnight and `posting_date` still holds
+		// yesterday's date while `transaction_date` defaults to the new day.
+		doc.transaction_date = resolvedPostingDate;
+		delete doc.posting_date;
+	} else {
+		doc.posting_date = resolvedPostingDate;
+		if (shouldEnableManualPostingDate(context, sourceDoc, doc.posting_date)) {
+			doc.set_posting_time = 1;
+		}
 	}
 
 	// Sales Order/Quotation require delivery dates at validation time.
@@ -437,6 +492,12 @@ export function get_invoice_doc(context: any) {
 		if (orderDeliveryDate) {
 			doc.delivery_date = orderDeliveryDate;
 		}
+	}
+	if (doc.doctype === "Sales Order") {
+		const preferredDeliveryDate = resolvePreferredDeliveryDate(context, sourceDoc);
+		doc.prefered_earliest_delivery_date = preferredDeliveryDate;
+		doc.preferred_earliest_delivery_date = preferredDeliveryDate;
+		doc.must_be_fully_allocated = doc.posa_split_delivery ? 0 : 1;
 	}
 
 	// Add flags to ensure proper rate handling
@@ -540,6 +601,7 @@ export function get_invoice_items(context: any) {
 			qty: flt(item.qty),
 			uom: item.uom,
 			conversion_factor: item.conversion_factor,
+			warehouse: item.warehouse,
 			serial_no: item.serial_no,
 			// Link to original invoice item when doing returns
 			// Needed for backend validation that the item exists in
@@ -639,6 +701,7 @@ export function get_order_items(context: any) {
 			rate: flt(item.rate),
 			uom: item.uom,
 			amount: flt(item.qty) * flt(item.rate),
+			warehouse: item.warehouse,
 			conversion_factor: item.conversion_factor,
 			serial_no: item.serial_no,
 			discount_percentage: flt(item.discount_percentage),

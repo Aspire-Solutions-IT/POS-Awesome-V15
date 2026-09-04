@@ -1,384 +1,423 @@
 <template>
 	<tr class="posa-cart-item-row" v-memo="memoDeps">
 		<template v-for="column in visibleColumns" :key="column.key">
-		<!-- Item Name Column -->
-		<td v-if="column.key === 'item_name'" class="text-start" :data-column-key="'item_name'">
-			<div class="d-flex align-center">
-				<span>{{ item.item_name }}</span>
-				<v-chip v-if="item.is_bundle" color="secondary" size="x-small" class="ml-1">
-					{{ __("Bundle") }}
-				</v-chip>
-				<v-chip v-if="item.name_overridden" color="primary" size="x-small" class="ml-1">
-					{{ __("Edited") }}
-				</v-chip>
-				<v-chip
-					v-if="item.batch_no_is_expired"
-					color="error"
-					size="x-small"
-					variant="flat"
-					class="ml-1"
-				>
-					{{ __("Expired") }}
-				</v-chip>
-				<v-chip
-					v-if="item.has_batch_no && item.batch_no"
-					color="info"
-					size="x-small"
-					variant="tonal"
-					class="ml-1"
-				>
-					{{ __("Batch") }}: {{ item.batch_no }}
-				</v-chip>
-				<v-chip
-					v-if="item.posa_is_offer || item.is_free_item"
-					color="success"
-					size="x-small"
-					variant="flat"
-					class="me-1"
-				>
-					{{ __("Offer Item") }}
-				</v-chip>
-				<v-tooltip v-if="item.pricing_rule_badge" location="bottom">
-					<template #activator="{ props }">
-						<v-chip v-bind="props" color="primary" size="x-small" class="ml-1">
-							{{ item.pricing_rule_badge.label }}
-						</v-chip>
-					</template>
-					<span>{{ item.pricing_rule_badge.tooltip }}</span>
-				</v-tooltip>
-				<v-btn
-					v-if="posProfile.posa_allow_line_item_name_override && !item.posa_is_replace"
-					icon
-					size="x-small"
-					variant="text"
-					class="ml-1"
-					@click.stop="$emit('open-name-dialog', item)"
-					:aria-label="__('Edit item name')"
-				>
-					<v-icon size="small">mdi-pencil</v-icon>
-				</v-btn>
-				<v-btn
-					v-if="item.name_overridden"
-					icon
-					size="x-small"
-					variant="text"
-					class="ml-1"
-					@click.stop="$emit('reset-item-name', item)"
-					:aria-label="__('Reset item name')"
-				>
-					<v-icon size="small">mdi-undo</v-icon>
-				</v-btn>
-			</div>
-		</td>
-
-		<!-- Quantity Column -->
-		<td v-else-if="column.key === 'qty'" class="text-center" :data-column-key="'qty'">
-			<div class="posa-cart-table__qty-counter" :class="{ 'rtl-layout': isRTL }">
-				<v-btn
-					:disabled="disableDecrement"
-					size="small"
-					variant="flat"
-					class="posa-cart-table__qty-btn posa-cart-table__qty-btn--minus minus-btn qty-control-btn"
-					@click.stop="handleMinusClick"
-					:aria-label="__('Decrease quantity')"
-				>
-					<v-icon size="small">mdi-minus</v-icon>
-				</v-btn>
-				<div
-					v-if="!isEditingQty"
-					class="posa-cart-table__qty-display amount-value number-field-rtl"
-					:class="{
-						'negative-number': isNegative(item.qty),
-						'large-number': qtyLength > 6,
-					}"
-					:data-length="qtyLength"
-					:title="formatFloat(item.qty, hideQtyDecimals ? 0 : undefined)"
-					@click.stop="openQtyEdit"
-					tabindex="0"
-					role="button"
-					:aria-label="__('Edit quantity')"
-					@keydown.enter.prevent="openQtyEdit"
-					@keydown.space.prevent="openQtyEdit"
-				>
-					{{ formatFloat(item.qty, hideQtyDecimals ? 0 : undefined) }}
+			<!-- Item Name Column -->
+			<td
+				v-if="column.key === 'item_name'"
+				class="text-start posa-cart-item-name-cell"
+				:data-column-key="'item_name'"
+			>
+				<div class="d-flex align-center posa-cart-item-name-content">
+					<span class="posa-cart-item-name-text">{{ item.item_name }}</span>
+					<v-chip v-if="item.is_bundle" color="secondary" size="x-small" class="ml-1">
+						{{ __("Bundle") }}
+					</v-chip>
+					<v-chip v-if="item.name_overridden" color="primary" size="x-small" class="ml-1">
+						{{ __("Edited") }}
+					</v-chip>
+					<v-chip
+						v-if="item.batch_no_is_expired"
+						color="error"
+						size="x-small"
+						variant="flat"
+						class="ml-1"
+					>
+						{{ __("Expired") }}
+					</v-chip>
+					<v-chip
+						v-if="item.has_batch_no && item.batch_no"
+						color="info"
+						size="x-small"
+						variant="tonal"
+						class="ml-1"
+					>
+						{{ __("Batch") }}: {{ item.batch_no }}
+					</v-chip>
+					<v-chip
+						v-if="item.posa_is_offer || item.is_free_item"
+						color="success"
+						size="x-small"
+						variant="flat"
+						class="me-1"
+					>
+						{{ __("Offer Item") }}
+					</v-chip>
+					<v-tooltip v-if="item.pricing_rule_badge" location="bottom">
+						<template #activator="{ props }">
+							<v-chip v-bind="props" color="primary" size="x-small" class="ml-1">
+								{{ item.pricing_rule_badge.label }}
+							</v-chip>
+						</template>
+						<span>{{ item.pricing_rule_badge.tooltip }}</span>
+					</v-tooltip>
+					<v-btn
+						v-if="posProfile.posa_allow_line_item_name_override && !item.posa_is_replace"
+						icon
+						size="x-small"
+						variant="text"
+						class="ml-1"
+						@click.stop="$emit('open-name-dialog', item)"
+						:aria-label="__('Edit item name')"
+					>
+						<v-icon size="small">mdi-pencil</v-icon>
+					</v-btn>
+					<v-btn
+						v-if="item.name_overridden"
+						icon
+						size="x-small"
+						variant="text"
+						class="ml-1"
+						@click.stop="$emit('reset-item-name', item)"
+						:aria-label="__('Reset item name')"
+					>
+						<v-icon size="small">mdi-undo</v-icon>
+					</v-btn>
 				</div>
-				<v-text-field
-					v-else
-					v-model="editingQtyValue"
-					density="compact"
-					variant="outlined"
-					class="posa-cart-table__qty-input"
-					@blur="closeQtyEdit"
-					@keydown.enter.prevent="closeQtyEdit"
-					@click.stop
-					ref="qtyInput"
-					:autofocus="true"
-					type="number"
-					:disabled="disableInput"
-				></v-text-field>
-				<v-btn
-					:disabled="disableIncrement"
-					size="small"
-					variant="flat"
-					class="posa-cart-table__qty-btn posa-cart-table__qty-btn--plus plus-btn qty-control-btn"
-					@click.stop="$emit('add-one', item)"
-					:aria-label="__('Increase quantity')"
-				>
-					<v-icon size="small">mdi-plus</v-icon>
-				</v-btn>
-			</div>
-		</td>
+			</td>
 
-		<!-- UOM Column (Optional) -->
-		<td v-else-if="column.key === 'uom'" class="text-center" :data-column-key="'uom'">
-			<div class="posa-cart-table__editor-box uom-editor" @click.stop>
-				<v-btn
-					size="x-small"
-					variant="flat"
-					class="posa-cart-table__editor-btn uom-arrow"
-					@click.stop="changeUom(-1)"
-					:aria-label="__('Previous unit of measure')"
-					:disabled="disableUomEdit || !item.item_uoms || item.item_uoms.length <= 1"
-				>
-					<v-icon size="small">mdi-chevron-left</v-icon>
-				</v-btn>
-
-				<div
-					v-if="!isEditingUom"
-					class="posa-cart-table__editor-display"
-					@click.stop="openUomEdit"
-					tabindex="0"
-					role="button"
-					:aria-label="__('Edit unit of measure')"
-				>
-					<span>{{ item.uom }}</span>
+			<!-- Quantity Column -->
+			<td v-else-if="column.key === 'qty'" class="text-center" :data-column-key="'qty'">
+				<div class="posa-cart-table__qty-counter" :class="{ 'rtl-layout': isRTL }">
+					<v-btn
+						:disabled="disableDecrement"
+						size="small"
+						variant="flat"
+						class="posa-cart-table__qty-btn posa-cart-table__qty-btn--minus minus-btn qty-control-btn"
+						@click.stop="handleMinusClick"
+						:aria-label="__('Decrease quantity')"
+					>
+						<v-icon size="small">mdi-minus</v-icon>
+					</v-btn>
+					<div
+						v-if="!isEditingQty"
+						class="posa-cart-table__qty-display amount-value number-field-rtl"
+						:class="{
+							'negative-number': isNegative(item.qty),
+							'large-number': qtyLength > 6,
+						}"
+						:data-length="qtyLength"
+						:title="formatFloat(item.qty, hideQtyDecimals ? 0 : undefined)"
+						@click.stop="openQtyEdit"
+						tabindex="0"
+						role="button"
+						:aria-label="__('Edit quantity')"
+						@keydown.enter.prevent="openQtyEdit"
+						@keydown.space.prevent="openQtyEdit"
+					>
+						{{ formatFloat(item.qty, hideQtyDecimals ? 0 : undefined) }}
+					</div>
+					<v-text-field
+						v-else
+						v-model="editingQtyValue"
+						density="compact"
+						variant="outlined"
+						class="posa-cart-table__qty-input"
+						@blur="closeQtyEdit"
+						@keydown.enter.prevent="closeQtyEdit"
+						@click.stop
+						ref="qtyInput"
+						:autofocus="true"
+						type="number"
+						:disabled="disableInput"
+					></v-text-field>
+					<v-btn
+						:disabled="disableIncrement"
+						size="small"
+						variant="flat"
+						class="posa-cart-table__qty-btn posa-cart-table__qty-btn--plus plus-btn qty-control-btn"
+						@click.stop="$emit('add-one', item)"
+						:aria-label="__('Increase quantity')"
+					>
+						<v-icon size="small">mdi-plus</v-icon>
+					</v-btn>
 				</div>
+			</td>
 
+			<!-- UOM Column (Optional) -->
+			<td v-else-if="column.key === 'uom'" class="text-center" :data-column-key="'uom'">
+				<div class="posa-cart-table__editor-box uom-editor" @click.stop>
+					<v-btn
+						size="x-small"
+						variant="flat"
+						class="posa-cart-table__editor-btn uom-arrow"
+						@click.stop="changeUom(-1)"
+						:aria-label="__('Previous unit of measure')"
+						:disabled="disableUomEdit || !item.item_uoms || item.item_uoms.length <= 1"
+					>
+						<v-icon size="small">mdi-chevron-left</v-icon>
+					</v-btn>
+
+					<div
+						v-if="!isEditingUom"
+						class="posa-cart-table__editor-display"
+						@click.stop="openUomEdit"
+						tabindex="0"
+						role="button"
+						:aria-label="__('Edit unit of measure')"
+					>
+						<span>{{ item.uom }}</span>
+					</div>
+
+					<v-select
+						v-else
+						ref="uomSelect"
+						:model-value="item.uom"
+						@update:model-value="handleUomSelect"
+						:items="item.item_uoms"
+						item-title="uom"
+						item-value="uom"
+						density="compact"
+						variant="outlined"
+						class="posa-cart-table__editor-input uom-select"
+						hide-details
+						menu-icon=""
+						:autofocus="true"
+						:disabled="disableUomEdit"
+						@blur="isEditingUom = false"
+					></v-select>
+
+					<v-btn
+						size="x-small"
+						variant="flat"
+						class="posa-cart-table__editor-btn uom-arrow"
+						@click.stop="changeUom(1)"
+						:aria-label="__('Next unit of measure')"
+						:disabled="disableUomEdit || !item.item_uoms || item.item_uoms.length <= 1"
+					>
+						<v-icon size="small">mdi-chevron-right</v-icon>
+					</v-btn>
+				</div>
+			</td>
+
+			<!-- Warehouse Column (Optional) -->
+			<td
+				v-else-if="column.key === 'warehouse'"
+				class="text-center"
+				:data-column-key="'warehouse'"
+			>
 				<v-select
-					v-else
-					ref="uomSelect"
-					:model-value="item.uom"
-					@update:model-value="handleUomSelect"
-					:items="item.item_uoms"
-					item-title="uom"
-					item-value="uom"
+					v-if="isNsItem && warehouseOptions.length && !hideWarehouseSelector"
+					:model-value="item.warehouse"
+					@update:model-value="handleWarehouseSelect"
+					:items="warehouseOptions"
+					item-title="label"
+					item-value="value"
 					density="compact"
 					variant="outlined"
-					class="posa-cart-table__editor-input uom-select"
+					class="posa-cart-table__editor-input"
 					hide-details
-					menu-icon=""
-					:autofocus="true"
-					:disabled="disableUomEdit"
-					@blur="isEditingUom = false"
+					:loading="warehouseLoading"
+					menu-icon="mdi-chevron-down"
 				></v-select>
+				<div
+					v-else
+					class="posa-cart-table__editor-display posa-cart-table__editor-display--warehouse"
+					:title="item.warehouse || ''"
+				>
+					<span class="posa-cart-table__warehouse-text">{{ item.warehouse || "-" }}</span>
+				</div>
+			</td>
 
+			<!-- Price List Rate (Optional) -->
+			<td
+				v-else-if="column.key === 'price_list_rate'"
+				class="text-end"
+				:data-column-key="'price_list_rate'"
+			>
+				<div class="currency-display right-aligned">
+					<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
+					<span
+						class="amount-value"
+						:class="{ 'negative-number': isNegative(item.price_list_rate) }"
+					>
+						{{ formatCurrency(item.price_list_rate) }}
+					</span>
+				</div>
+			</td>
+
+			<!-- Discount % (Optional) -->
+			<td
+				v-else-if="column.key === 'discount_percentage'"
+				class="text-center"
+				:data-column-key="'discount_percentage'"
+			>
+				<div class="posa-cart-table__editor-box">
+					<div
+						v-if="!isEditingDiscountPercent"
+						class="posa-cart-table__editor-display"
+						@click.stop="openDiscountPercentEdit"
+						tabindex="0"
+						role="button"
+						:aria-label="__('Edit discount percentage')"
+						@keydown.enter.prevent="openDiscountPercentEdit"
+						@keydown.space.prevent="openDiscountPercentEdit"
+					>
+						<span class="amount-value">
+							{{
+								formatFloat(
+									Math.abs(
+										item.discount_percentage ||
+											(item.price_list_rate
+												? (item.discount_amount / item.price_list_rate) * 100
+												: 0),
+									),
+								)
+							}}%
+						</span>
+					</div>
+					<v-text-field
+						v-else
+						v-model="editingDiscountPercentValue"
+						density="compact"
+						variant="outlined"
+						class="posa-cart-table__editor-input"
+						@blur="closeDiscountPercentEdit"
+						@keydown.enter.prevent="closeDiscountPercentEdit"
+						@click.stop
+						ref="discountPercentInput"
+						:autofocus="true"
+						type="number"
+						:disabled="disableDiscountEdit"
+					></v-text-field>
+				</div>
+			</td>
+
+			<!-- Discount Amount (Optional) -->
+			<td
+				v-else-if="column.key === 'discount_amount'"
+				class="text-center"
+				:data-column-key="'discount_amount'"
+			>
+				<div class="posa-cart-table__editor-box">
+					<div
+						v-if="!isEditingDiscountAmount"
+						class="posa-cart-table__editor-display"
+						@click.stop="openDiscountAmountEdit"
+						tabindex="0"
+						role="button"
+						:aria-label="__('Edit discount amount')"
+						@keydown.enter.prevent="openDiscountAmountEdit"
+						@keydown.space.prevent="openDiscountAmountEdit"
+					>
+						<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
+						<span class="amount-value">{{
+							formatCurrency(Math.abs(item.discount_amount || 0))
+						}}</span>
+					</div>
+					<v-text-field
+						v-else
+						v-model="editingDiscountAmountValue"
+						density="compact"
+						variant="outlined"
+						class="posa-cart-table__editor-input"
+						@blur="closeDiscountAmountEdit"
+						@keydown.enter.prevent="closeDiscountAmountEdit"
+						@click.stop
+						ref="discountAmountInput"
+						:autofocus="true"
+						type="number"
+						:disabled="disableDiscountEdit"
+					></v-text-field>
+				</div>
+			</td>
+
+			<!-- Rate Column -->
+			<td v-else-if="column.key === 'rate'" class="text-center" :data-column-key="'rate'">
+				<div class="posa-cart-table__editor-box">
+					<div
+						v-if="!isEditingRate"
+						class="posa-cart-table__editor-display"
+						@click.stop="openRateEdit"
+						tabindex="0"
+						role="button"
+						:aria-label="__('Edit rate')"
+						@keydown.enter.prevent="openRateEdit"
+						@keydown.space.prevent="openRateEdit"
+					>
+						<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
+						<span class="amount-value" :class="{ 'negative-number': isNegative(item.rate) }">
+							{{ formatCurrency(item.rate) }}
+						</span>
+					</div>
+					<v-text-field
+						v-else
+						v-model="editingRateValue"
+						density="compact"
+						variant="outlined"
+						class="posa-cart-table__editor-input"
+						@blur="closeRateEdit"
+						@keydown.enter.prevent="closeRateEdit"
+						@click.stop
+						ref="rateInput"
+						:autofocus="true"
+						type="number"
+						:disabled="disableRateEdit"
+					></v-text-field>
+				</div>
+			</td>
+
+			<!-- Amount Column -->
+			<td v-else-if="column.key === 'amount'" class="text-center" :data-column-key="'amount'">
+				<div class="currency-display right-aligned">
+					<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
+					<span
+						class="amount-value"
+						:class="{ 'negative-number': isNegative(item.qty * item.rate) }"
+					>
+						{{ formatCurrency(item.qty * item.rate) }}
+					</span>
+				</div>
+			</td>
+
+			<!-- Offer Toggle (Optional) -->
+			<td
+				v-else-if="column.key === 'posa_is_offer'"
+				class="text-center"
+				:data-column-key="'posa_is_offer'"
+			>
 				<v-btn
 					size="x-small"
-					variant="flat"
-					class="posa-cart-table__editor-btn uom-arrow"
-					@click.stop="changeUom(1)"
-					:aria-label="__('Next unit of measure')"
-					:disabled="disableUomEdit || !item.item_uoms || item.item_uoms.length <= 1"
+					color="primary"
+					variant="tonal"
+					class="ma-0 pa-0"
+					@click.stop="$emit('toggle-offer', item)"
 				>
-					<v-icon size="small">mdi-chevron-right</v-icon>
+					{{ item.posa_offer_applied ? __("Remove Offer") : __("Apply Offer") }}
 				</v-btn>
-			</div>
-		</td>
+			</td>
 
-		<!-- Price List Rate (Optional) -->
-		<td
-			v-else-if="column.key === 'price_list_rate'"
-			class="text-end"
-			:data-column-key="'price_list_rate'"
-		>
-			<div class="currency-display right-aligned">
-				<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
-				<span class="amount-value" :class="{ 'negative-number': isNegative(item.price_list_rate) }">
-					{{ formatCurrency(item.price_list_rate) }}
-				</span>
-			</div>
-		</td>
-
-		<!-- Discount % (Optional) -->
-		<td
-			v-else-if="column.key === 'discount_percentage'"
-			class="text-center"
-			:data-column-key="'discount_percentage'"
-		>
-			<div class="posa-cart-table__editor-box">
-				<div
-					v-if="!isEditingDiscountPercent"
-					class="posa-cart-table__editor-display"
-					@click.stop="openDiscountPercentEdit"
-					tabindex="0"
-					role="button"
-					:aria-label="__('Edit discount percentage')"
-					@keydown.enter.prevent="openDiscountPercentEdit"
-					@keydown.space.prevent="openDiscountPercentEdit"
+			<!-- Actions -->
+			<td v-else-if="column.key === 'actions'" class="text-center" :data-column-key="'actions'">
+				<v-btn
+					:disabled="!!item.posa_is_replace"
+					size="small"
+					variant="flat"
+					class="posa-cart-table__delete-btn delete-action-btn"
+					@click.stop="$emit('remove-item', item)"
+					:aria-label="__('Remove item')"
 				>
-					<span class="amount-value">
-						{{
-							formatFloat(
-								Math.abs(
-									item.discount_percentage ||
-										(item.price_list_rate
-											? (item.discount_amount / item.price_list_rate) * 100
-											: 0),
-								),
-							)
-						}}%
-					</span>
-				</div>
-				<v-text-field
-					v-else
-					v-model="editingDiscountPercentValue"
-					density="compact"
-					variant="outlined"
-					class="posa-cart-table__editor-input"
-					@blur="closeDiscountPercentEdit"
-					@keydown.enter.prevent="closeDiscountPercentEdit"
-					@click.stop
-					ref="discountPercentInput"
-					:autofocus="true"
-					type="number"
-					:disabled="disableDiscountEdit"
-				></v-text-field>
-			</div>
-		</td>
+					<v-icon size="small">mdi-delete-outline</v-icon>
+				</v-btn>
+			</td>
 
-		<!-- Discount Amount (Optional) -->
-		<td
-			v-else-if="column.key === 'discount_amount'"
-			class="text-center"
-			:data-column-key="'discount_amount'"
-		>
-			<div class="posa-cart-table__editor-box">
-				<div
-					v-if="!isEditingDiscountAmount"
-					class="posa-cart-table__editor-display"
-					@click.stop="openDiscountAmountEdit"
-					tabindex="0"
-					role="button"
-					:aria-label="__('Edit discount amount')"
-					@keydown.enter.prevent="openDiscountAmountEdit"
-					@keydown.space.prevent="openDiscountAmountEdit"
+			<td
+				v-else-if="column.key === 'data-table-expand'"
+				class="text-center"
+				:data-column-key="'data-table-expand'"
+			>
+				<v-btn
+					icon
+					size="small"
+					variant="text"
+					class="posa-cart-table__expand-btn"
+					@click.stop="$emit('toggle-expand')"
+					:aria-label="isExpanded ? __('Close item details') : __('Open item details')"
 				>
-					<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
-					<span class="amount-value">{{
-						formatCurrency(Math.abs(item.discount_amount || 0))
-					}}</span>
-				</div>
-				<v-text-field
-					v-else
-					v-model="editingDiscountAmountValue"
-					density="compact"
-					variant="outlined"
-					class="posa-cart-table__editor-input"
-					@blur="closeDiscountAmountEdit"
-					@keydown.enter.prevent="closeDiscountAmountEdit"
-					@click.stop
-					ref="discountAmountInput"
-					:autofocus="true"
-					type="number"
-					:disabled="disableDiscountEdit"
-				></v-text-field>
-			</div>
-		</td>
-
-		<!-- Rate Column -->
-		<td v-else-if="column.key === 'rate'" class="text-center" :data-column-key="'rate'">
-			<div class="posa-cart-table__editor-box">
-				<div
-					v-if="!isEditingRate"
-					class="posa-cart-table__editor-display"
-					@click.stop="openRateEdit"
-					tabindex="0"
-					role="button"
-					:aria-label="__('Edit rate')"
-					@keydown.enter.prevent="openRateEdit"
-					@keydown.space.prevent="openRateEdit"
-				>
-					<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
-					<span class="amount-value" :class="{ 'negative-number': isNegative(item.rate) }">
-						{{ formatCurrency(item.rate) }}
-					</span>
-				</div>
-				<v-text-field
-					v-else
-					v-model="editingRateValue"
-					density="compact"
-					variant="outlined"
-					class="posa-cart-table__editor-input"
-					@blur="closeRateEdit"
-					@keydown.enter.prevent="closeRateEdit"
-					@click.stop
-					ref="rateInput"
-					:autofocus="true"
-					type="number"
-					:disabled="disableRateEdit"
-				></v-text-field>
-			</div>
-		</td>
-
-		<!-- Amount Column -->
-		<td v-else-if="column.key === 'amount'" class="text-center" :data-column-key="'amount'">
-			<div class="currency-display right-aligned">
-				<span class="currency-symbol">{{ currencySymbol(displayCurrency) }}</span>
-				<span class="amount-value" :class="{ 'negative-number': isNegative(item.qty * item.rate) }">
-					{{ formatCurrency(item.qty * item.rate) }}
-				</span>
-			</div>
-		</td>
-
-		<!-- Offer Toggle (Optional) -->
-		<td
-			v-else-if="column.key === 'posa_is_offer'"
-			class="text-center"
-			:data-column-key="'posa_is_offer'"
-		>
-			<v-btn
-				size="x-small"
-				color="primary"
-				variant="tonal"
-				class="ma-0 pa-0"
-				@click.stop="$emit('toggle-offer', item)"
-			>
-				{{ item.posa_offer_applied ? __("Remove Offer") : __("Apply Offer") }}
-			</v-btn>
-		</td>
-
-		<!-- Actions -->
-		<td v-else-if="column.key === 'actions'" class="text-center" :data-column-key="'actions'">
-			<v-btn
-				:disabled="!!item.posa_is_replace"
-				size="small"
-				variant="flat"
-				class="posa-cart-table__delete-btn delete-action-btn"
-				@click.stop="$emit('remove-item', item)"
-				:aria-label="__('Remove item')"
-			>
-				<v-icon size="small">mdi-delete-outline</v-icon>
-			</v-btn>
-		</td>
-
-		<td
-			v-else-if="column.key === 'data-table-expand'"
-			class="text-center"
-			:data-column-key="'data-table-expand'"
-		>
-			<v-btn
-				icon
-				size="small"
-				variant="text"
-				class="posa-cart-table__expand-btn"
-				@click.stop="$emit('toggle-expand')"
-				:aria-label="isExpanded ? __('Collapse item details') : __('Expand item details')"
-			>
-				<v-icon size="small">
-					{{ isExpanded ? "mdi-chevron-up" : "mdi-chevron-down" }}
-				</v-icon>
-			</v-btn>
-		</td>
+					<v-icon size="small">
+						{{ isExpanded ? "mdi-chevron-up" : "mdi-chevron-down" }}
+					</v-icon>
+				</v-btn>
+			</td>
 		</template>
 	</tr>
 </template>
@@ -406,6 +445,13 @@ const props = defineProps({
 	isReturnInvoice: Boolean,
 	invoiceType: String,
 	displayCurrency: String,
+	warehouseOptions: {
+		type: Array,
+		default: () => [],
+	},
+	warehouseLoading: Boolean,
+	hideWarehouseSelector: Boolean,
+	updateItemDetail: Function,
 	formatFloat: Function,
 	formatCurrency: Function,
 	currencySymbol: Function,
@@ -457,6 +503,7 @@ const memoDeps = computed(() => {
 		props.item.discount_amount,
 		props.item.discount_percentage,
 		props.item.uom,
+		props.item.warehouse,
 		props.item.item_name,
 		props.item.name_overridden,
 		props.item.pricing_rule_badge,
@@ -467,6 +514,8 @@ const memoDeps = computed(() => {
 		props.item.is_free_item,
 		props.item.price_list_rate,
 		props.isExpanded,
+		props.hideWarehouseSelector,
+		props.warehouseOptions.length,
 		props.visibleColumns.map((column) => column?.key).join("|"),
 		// Include edit states to ensure UI updates when switching modes
 		isEditingQty.value,
@@ -485,6 +534,12 @@ const memoDeps = computed(() => {
 });
 
 const qtyLength = computed(() => String(Math.abs(props.item.qty || 0)).replace(".", "").length);
+const isNsItem = computed(() =>
+	String(props.item?.item_code || "")
+		.trim()
+		.toLowerCase()
+		.startsWith("ns"),
+);
 
 const disableDecrement = computed(
 	() =>
@@ -507,15 +562,10 @@ const disableInput = computed(
 		(props.item.is_free_item || props.item.posa_is_offer || props.item.posa_is_replace),
 );
 
-const disableUomEdit = computed(
-	() =>
-		!!props.item.posa_is_replace,
-);
+const disableUomEdit = computed(() => !!props.item.posa_is_replace);
 
 const disableRateEdit = computed(
-	() =>
-		!props.posProfile.posa_allow_user_to_edit_rate ||
-		!!props.item.posa_is_replace,
+	() => !props.posProfile.posa_allow_user_to_edit_rate || !!props.item.posa_is_replace,
 );
 
 const disableDiscountEdit = computed(
@@ -666,6 +716,19 @@ function closeDiscountAmountEdit() {
 		editingDiscountAmountValue.value = "";
 	}
 }
+
+function handleWarehouseSelect(warehouse) {
+	props.item.warehouse = warehouse;
+	props.item._warehouse_selected_manually = true;
+	props.item._preserve_rate_on_warehouse_change = true;
+	props.item.batch_no = null;
+	props.item.serial_no = null;
+	props.item.serial_no_selected = [];
+	props.item.serial_no_selected_count = 0;
+	if (typeof props.updateItemDetail === "function") {
+		void props.updateItemDetail(props.item, true);
+	}
+}
 </script>
 
 <style scoped>
@@ -716,10 +779,28 @@ function closeDiscountAmountEdit() {
 td {
 	padding: 16px 12px;
 	vertical-align: middle;
-	height: 60px;
+	height: auto;
+	min-height: var(--cell-height, 60px);
 	text-align: center;
 	color: var(--pos-text-primary);
 	position: relative;
+}
+
+.posa-cart-item-name-content {
+	height: auto;
+	min-height: calc(var(--cell-height, 60px) - 28px);
+	flex-wrap: wrap;
+	justify-content: flex-start;
+	align-content: center;
+	gap: 4px;
+}
+
+.posa-cart-item-name-text {
+	flex: 1 1 12rem;
+	min-width: 0;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	line-height: 1.35;
 }
 
 /* Keyboard focus styles */

@@ -1,16 +1,9 @@
 import { setActivePinia } from "pinia";
 import { pinia, useUpdateStore } from "./posapp/stores/index.js";
+import { fetchBuildInfo, primeBuildInfoCache } from "./posapp/utils/buildInfo";
 
-const VERSION_ENDPOINT = "/assets/posawesome/dist/js/version.json";
 const SERVICE_WORKER_SCOPE = "/sw.js";
-const VERSION_CACHE_TTL = 30 * 1000;
-
-let cachedVersionInfo: {
-	version: string | null;
-	timestamp: number | null;
-} | null = null;
-let cachedVersionTimestamp = 0;
-let pendingVersionRequest: Promise<any> | null = null;
+const RELOAD_WATCHDOG_MS = 6000;
 
 export interface ActiveVersionTransitionInput {
 	version: string;
@@ -88,10 +81,41 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 	let lastKnownActiveVersion = updateStore.currentVersion || null;
 	let hasRequestedInitialVersion = false;
 	let reloadScheduled = false;
+	let reloadWatchdog: number | null = null;
 
 	function clearReloadState() {
 		reloadScheduled = false;
 		updateStore.reloading = false;
+		cancelReloadWatchdog();
+	}
+
+	function forceReload() {
+		try {
+			window.location.reload();
+		} catch (err) {
+			console.warn("Failed to reload the POS window", err);
+		}
+	}
+
+	/**
+	 * Every branch of an explicit apply is meant to end in a reload. If the
+	 * worker never gets there — nothing registered on this origin, a waiting
+	 * worker that ignores SKIP_WAITING, an install that stalls — reload anyway
+	 * so "Reload Now" is never a no-op.
+	 */
+	function startReloadWatchdog() {
+		cancelReloadWatchdog();
+		reloadWatchdog = window.setTimeout(() => {
+			reloadWatchdog = null;
+			forceReload();
+		}, RELOAD_WATCHDOG_MS);
+	}
+
+	function cancelReloadWatchdog() {
+		if (reloadWatchdog !== null) {
+			window.clearTimeout(reloadWatchdog);
+			reloadWatchdog = null;
+		}
 	}
 
 	function warnVersionFailure(message: string, err: unknown) {
@@ -110,14 +134,7 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 			return;
 		}
 
-		try {
-			window.location.reload();
-		} catch (reloadErr) {
-			console.warn(
-				"Failed to reload after service worker updater fallback",
-				reloadErr,
-			);
-		}
+		forceReload();
 	}
 
 	function parseVersionInfoPayload(payload: any) {
@@ -287,61 +304,9 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 		lastKnownActiveVersion = lastKnownActiveVersion || info.version;
 	}
 
-	async function fetchBuildInfo(force = false) {
-		if (pendingVersionRequest) {
-			return pendingVersionRequest;
-		}
-		const now = Date.now();
-		if (
-			!force &&
-			cachedVersionInfo &&
-			now - cachedVersionTimestamp < VERSION_CACHE_TTL
-		) {
-			return cachedVersionInfo;
-		}
-		pendingVersionRequest = (async () => {
-			try {
-				const response = await fetch(VERSION_ENDPOINT, {
-					cache: "no-store",
-					headers: {
-						"Cache-Control": "no-cache",
-						Pragma: "no-cache",
-						Expires: "0",
-					},
-				});
-
-				if (!response.ok) {
-					return null;
-				}
-				const data: any = await response.json();
-				const version = data.version || data.buildVersion || null;
-				const timestamp = Number(data.timestamp || data.buildTimestamp);
-				const parsed = {
-					version,
-					timestamp: Number.isNaN(timestamp) ? null : timestamp,
-				};
-				cachedVersionInfo = parsed;
-				cachedVersionTimestamp = Date.now();
-				return parsed;
-			} catch (err) {
-				console.warn("Failed to fetch build info", err);
-				return null;
-			} finally {
-				pendingVersionRequest = null;
-			}
-		})();
-		return pendingVersionRequest;
-	}
-
 	function handleActiveVersion(version: string, timestamp: number | null) {
 		if (!version) return;
-		if (timestamp) {
-			cachedVersionInfo = {
-				version,
-				timestamp,
-			};
-			cachedVersionTimestamp = Date.now();
-		}
+		primeBuildInfoCache(version, timestamp);
 		const decision = resolveActiveVersionTransition({
 			version,
 			runtimeVersion: updateStore.currentVersion || null,
@@ -369,7 +334,8 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 
 		if (decision.reloadWindow) {
 			reloadScheduled = false;
-			setTimeout(() => window.location.reload(), 50);
+			cancelReloadWatchdog();
+			setTimeout(forceReload, 50);
 		}
 	}
 
@@ -378,12 +344,17 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 			reloadScheduled = true;
 			updateStore.reloading = true;
 			updateStore.resetSnooze();
+			startReloadWatchdog();
 			const registration =
 				await navigator.serviceWorker.getRegistration(
 					SERVICE_WORKER_SCOPE,
 				);
 			if (!registration) {
-				updateStore.reloading = false;
+				// No worker owns this origin, so there is nothing to activate.
+				// A plain reload still picks up the new build: the worker's
+				// asset handler is network-first, and without one the browser
+				// goes to the network regardless.
+				forceReload();
 				return;
 			}
 			if (registration.waiting) {
@@ -431,6 +402,7 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
 		} catch (err) {
 			console.warn("Failed to trigger service worker update", err);
 			clearReloadState();
+			forceReload();
 		}
 	}
 }

@@ -196,6 +196,11 @@ export async function _performItemDetailUpdate(
 					: null,
 				item: {
 					item_code: item.item_code,
+					// ERPNext's get_item_details is called with overwrite_warehouse=False,
+					// so it only keeps the row's warehouse when the args carry one. Without
+					// this the response comes back with the profile/item default warehouse
+					// and clobbers the operator's choice for NS- items.
+					warehouse: item.warehouse || context.pos_profile.warehouse,
 					customer: context.customer,
 					doctype: currentDoc.doctype,
 					name: currentDoc.name || `New ${currentDoc.doctype} 1`,
@@ -253,6 +258,17 @@ export function _applyItemDetailPayload(
 	options: any = {},
 ) {
 	const { forceUpdate = false } = options;
+	const itemCode = String(item.item_code || "").trim().toLowerCase();
+	const isNsItem = itemCode.startsWith("ns");
+	// `_warehouse_selected_manually` only survives while the row object stays alive:
+	// `load_invoice` replaces `context.items` with the server's rows, which carry no
+	// underscore-prefixed flags, so a reopened draft/held order would lose the flag and
+	// snap back to the default warehouse on the next detail refresh. For NS- items an
+	// existing warehouse on the row is therefore authoritative on its own.
+	const preserveManualWarehouse =
+		isNsItem && Boolean(String(item.warehouse || "").trim());
+	const selectedWarehouse = preserveManualWarehouse ? String(item.warehouse || "").trim() : "";
+	const preserveRateOnWarehouseChange = item?._preserve_rate_on_warehouse_change === true;
 	const currentDoc = context.get_invoice_doc
 		? context.get_invoice_doc()
 		: context.invoice_doc;
@@ -262,7 +278,9 @@ export function _applyItemDetailPayload(
 	const preserveLockedPrice = item?.locked_price === true || lockReturnPricing;
 
 	if (!item.warehouse) {
-		item.warehouse = context.pos_profile.warehouse;
+		item.warehouse =
+			(isNsItem && context.pos_profile?.default_ns_warehouse) ||
+			context.pos_profile.warehouse;
 	}
 	if (data.price_list_currency) {
 		context.price_list_currency = data.price_list_currency;
@@ -305,7 +323,9 @@ export function _applyItemDetailPayload(
 	if (!lockReturnPricing) {
 		item.discount_percentage = data.discount_percentage;
 	}
-	item.warehouse = data.warehouse || item.warehouse;
+	item.warehouse = preserveManualWarehouse
+		? selectedWarehouse
+		: data.warehouse || item.warehouse;
 	item.has_batch_no = data.has_batch_no;
 	item.has_serial_no = data.has_serial_no;
 	item.allow_negative_stock = data.allow_negative_stock;
@@ -370,7 +390,7 @@ export function _applyItemDetailPayload(
 		if (context.set_batch_qty) context.set_batch_qty(item, null, false);
 	}
 
-	if (!item.locked_price) {
+	if (!item.locked_price && !preserveRateOnWarehouseChange) {
 		if (forceUpdate || !item.base_rate) {
 			const plcConversionRate = context._getPlcConversionRate
 				? context._getPlcConversionRate()
@@ -410,6 +430,7 @@ export function _applyItemDetailPayload(
 	// Preserve existing discounts, but apply server percentage when no explicit discount is present.
 	if (
 		!item.locked_price &&
+		!preserveRateOnWarehouseChange &&
 		!hasExistingDiscount &&
 		Number.isFinite(incomingDiscountPct) &&
 		incomingDiscountPct > 0
@@ -437,6 +458,10 @@ export function _applyItemDetailPayload(
 			item.base_amount = fmt(baseRate * (Number(item.qty) || 0));
 			item.amount = fmt(item.rate * (Number(item.qty) || 0));
 		}
+	}
+
+	if (preserveRateOnWarehouseChange) {
+		item._preserve_rate_on_warehouse_change = false;
 	}
 }
 

@@ -80,7 +80,9 @@
 							class="invoice-section-card pos-themed-card"
 						>
 							<div class="invoice-section-heading">
-								<h3 class="invoice-section-heading__title">{{ __("Posting and Price List") }}</h3>
+								<h3 class="invoice-section-heading__title">
+									{{ __("Posting and Price List") }}
+								</h3>
 							</div>
 							<PostingDateRow
 								ref="postingDateComponent"
@@ -181,6 +183,7 @@
 								:setSerialNo="set_serial_no"
 								:setBatchQty="set_batch_qty"
 								:validateDueDate="validate_due_date"
+								:updateItemDetail="update_item_detail"
 								:removeItem="remove_item"
 								:subtractOne="subtract_one"
 								:addOne="add_one"
@@ -190,7 +193,9 @@
 								@update:expanded="handleExpandedUpdate"
 								@reorder-items="handleItemReorder"
 								@add-item-from-drag="handleItemDrop"
-								@show-drop-feedback="(isDragging) => showDropFeedback(isDragging, itemsTableRef)"
+								@show-drop-feedback="
+									(isDragging) => showDropFeedback(isDragging, itemsTableRef)
+								"
 								@item-dropped="showDropFeedback(false, itemsTableRef)"
 								@view-packed="openPackedItems"
 							/>
@@ -241,12 +246,12 @@
 			:discount_percentage_offer_name="discount_percentage_offer_name"
 			:isNumber="isNumber"
 			:return_discount_meta="return_discount_meta"
-			@update:additional_discount="(val) => (additional_discount = val)"
-			@update:additional_discount_percentage="(val) => (additional_discount_percentage = val)"
+			@update:additional_discount="set_additional_discount_input"
+			@update:additional_discount_percentage="set_additional_discount_percentage_input"
+			@commit_discount_amount="commit_discount_amount"
 			@update_discount_umount="update_discount_umount"
 			@save-and-clear="save_and_clear_invoice"
 			@load-drafts="get_draft_invoices"
-			@select-order="get_draft_orders"
 			@cancel-sale="cancel_dialog = true"
 			@open-invoice-management="open_invoice_management"
 			@open-returns="open_returns"
@@ -277,6 +282,7 @@ import invoiceWatchers from "./invoice/invoiceWatchers";
 import shortcutMethods from "./invoice/invoiceShortcuts";
 import { useInvoiceStore } from "../../stores/invoiceStore.js";
 import { useCustomersStore } from "../../stores/customersStore.js";
+import { useEmployeeStore } from "../../stores/employeeStore.js";
 import { useToastStore } from "../../stores/toastStore.js";
 import { useUIStore } from "../../stores/uiStore.js";
 import { storeToRefs } from "pinia";
@@ -308,11 +314,13 @@ export default {
 		const uiStore = useUIStore();
 		const invoiceStore = useInvoiceStore();
 		const customersStore = useCustomersStore();
+		const employeeStore = useEmployeeStore();
 		const toastStore = useToastStore();
 		const { isOnline } = useOnlineStatus();
 
 		const { activeView, posProfile: livePosProfile } = storeToRefs(uiStore);
 		const { selectedCustomer, refreshToken: customerRefreshToken } = storeToRefs(customersStore);
+		const { currentCashier } = storeToRefs(employeeStore);
 		const {
 			items,
 			packedItems: packed_items,
@@ -352,6 +360,8 @@ export default {
 			toastStore,
 			invoiceStore,
 			customersStore,
+			employeeStore,
+			currentCashier,
 			selectedCustomer,
 			customerRefreshToken,
 			invoiceType,
@@ -377,7 +387,7 @@ export default {
 			packed_dialog_items: [],
 			show_packed_dialog: false,
 			invoiceTypes: ["Order"],
-			itemsPerPage: 1000,
+			itemsPerPage: 10,
 			itemSearch: "",
 			expanded: [],
 			singleExpand: true,
@@ -471,6 +481,14 @@ export default {
 				this.invoiceStore.setAdditionalDiscountPercentage(val);
 			},
 		},
+		discount_input_mode: {
+			get() {
+				return this.invoiceStore.discountInputMode;
+			},
+			set(val) {
+				this.invoiceStore.setDiscountInputMode(val);
+			},
+		},
 		posting_date: {
 			get() {
 				return this.invoiceStore.postingDate;
@@ -480,22 +498,14 @@ export default {
 			},
 		},
 		return_discount_meta() {
-			if (
-				!this.isReturnInvoice ||
-				!this.return_doc ||
-				this.pos_profile?.posa_use_percentage_discount
-			) {
+			if (!this.isReturnInvoice || !this.return_doc || this.pos_profile?.posa_use_percentage_discount) {
 				return null;
 			}
 
-			const originalDiscount = Math.abs(
-				Number(this.return_discount_base_amount || 0),
-			);
+			const originalDiscount = Math.abs(Number(this.return_discount_base_amount || 0));
 			if (!originalDiscount) return null;
 
-			const originalTotal = Math.abs(
-				Number(this.return_discount_base_total || 0),
-			);
+			const originalTotal = Math.abs(Number(this.return_discount_base_total || 0));
 			if (!originalTotal) return null;
 
 			const returnTotal = Math.abs(Number(this.Total || 0));
@@ -524,6 +534,19 @@ export default {
 		},
 		...shortcutMethods,
 		...invoiceItemMethods,
+
+		// The additional-discount amount and % boxes are both editable and mirror each
+		// other; whichever one is typed into becomes the authoritative value on save.
+		set_additional_discount_input(val) {
+			this.additional_discount = val;
+			this.sync_discount_percentage_from_amount();
+		},
+
+		set_additional_discount_percentage_input(val) {
+			this.additional_discount_percentage = val;
+			this.sync_discount_amount_from_percentage();
+		},
+
 		focusCustomerSearchField() {
 			const customerSection = this.$refs.customerSection;
 			if (customerSection && typeof customerSection.focusCustomerSearch === "function") {
@@ -586,12 +609,8 @@ export default {
 				return;
 			}
 
-			const originalDiscount = Math.abs(
-				Number(this.return_discount_base_amount || 0),
-			);
-			const originalTotal = Math.abs(
-				Number(this.return_discount_base_total || 0),
-			);
+			const originalDiscount = Math.abs(Number(this.return_discount_base_amount || 0));
+			const originalTotal = Math.abs(Number(this.return_discount_base_total || 0));
 			const returnTotal = Math.abs(Number(this.Total || 0));
 
 			if (!originalDiscount || !originalTotal || !returnTotal) {
@@ -612,6 +631,7 @@ export default {
 			this.discount_amount = prorated;
 			this.additional_discount = prorated;
 			this.additional_discount_percentage = 0;
+			this.discount_input_mode = "amount";
 		},
 
 		async set_delivery_charges(options = {}) {
@@ -644,17 +664,11 @@ export default {
 						(charge) => Number(charge.is_default) === 1,
 					);
 					this.selected_delivery_charge = defaultDeliveryCharge || null;
-					this.update_delivery_charges(
-						this.conversion_rate,
-						this.currency_precision,
-					);
+					this.update_delivery_charges(this.conversion_rate, this.currency_precision);
 				} else {
 					this.delivery_charges = [];
 					this.selected_delivery_charge = null;
-					this.update_delivery_charges(
-						this.conversion_rate,
-						this.currency_precision,
-					);
+					this.update_delivery_charges(this.conversion_rate, this.currency_precision);
 				}
 			} catch (error) {
 				console.error("Failed to fetch delivery charges", error);
@@ -781,18 +795,11 @@ export default {
 		calcProratedReturnDiscount(returnDoc) {
 			if (!returnDoc) return 0;
 
-			const originalDiscount = Math.abs(
-				Number(returnDoc.discount_amount || 0),
-			);
+			const originalDiscount = Math.abs(Number(returnDoc.discount_amount || 0));
 			if (!originalDiscount) return 0;
 
 			const originalTotal = Math.abs(
-				Number(
-					returnDoc.total ??
-						returnDoc.net_total ??
-						returnDoc.grand_total ??
-						0,
-				),
+				Number(returnDoc.total ?? returnDoc.net_total ?? returnDoc.grand_total ?? 0),
 			);
 			if (!originalTotal) return 0;
 
@@ -834,9 +841,7 @@ export default {
 			if (data.return_doc) {
 				this.return_doc = data.return_doc;
 				this.invoice_doc.return_against = data.return_doc.name;
-				this.return_discount_base_amount = Math.abs(
-					Number(data.return_doc.discount_amount || 0),
-				);
+				this.return_discount_base_amount = Math.abs(Number(data.return_doc.discount_amount || 0));
 				this.return_discount_base_total = Math.abs(
 					Number(
 						data.return_doc.total ??
@@ -847,40 +852,34 @@ export default {
 				);
 				console.log("[POSA][Returns] Loaded return doc", {
 					return_against: data.return_doc.name,
-					is_percentage:
-						!!this.pos_profile?.posa_use_percentage_discount,
+					is_percentage: !!this.pos_profile?.posa_use_percentage_discount,
 					discount_amount: data.return_doc.discount_amount,
-					discount_percentage:
-						data.return_doc.additional_discount_percentage,
+					discount_percentage: data.return_doc.additional_discount_percentage,
 					original_total:
-						data.return_doc.total ??
-						data.return_doc.net_total ??
-						data.return_doc.grand_total,
+						data.return_doc.total ?? data.return_doc.net_total ?? data.return_doc.grand_total,
 					base_total: this.return_discount_base_total,
 					base_discount: this.return_discount_base_amount,
 				});
 
 				if (this.pos_profile?.posa_use_percentage_discount) {
-					if (
-						data.return_doc.additional_discount_percentage !==
-						undefined
-					) {
+					if (data.return_doc.additional_discount_percentage !== undefined) {
 						this.additional_discount_percentage =
 							data.return_doc.additional_discount_percentage || 0;
 					}
+					this.discount_input_mode = "percentage";
 					this.update_discount_umount();
 				} else {
-					const prorated = this.calcProratedReturnDiscount(
-						data.return_doc,
-					);
+					const prorated = this.calcProratedReturnDiscount(data.return_doc);
 					this.discount_amount = prorated;
 					this.additional_discount = prorated;
 					this.additional_discount_percentage = 0;
+					this.discount_input_mode = "amount";
 				}
 			} else {
 				this.discount_amount = 0;
 				this.additional_discount = 0;
 				this.additional_discount_percentage = 0;
+				this.discount_input_mode = "amount";
 			}
 		},
 		handleSetNewLine(data) {
@@ -916,11 +915,8 @@ export default {
 				this.price_list_rate_dialog_resolver(null);
 			}
 
-			this.price_list_rate_dialog_initial_rate =
-				initialRate == null ? "" : String(initialRate);
-			this.price_list_rate_dialog_item_label = String(
-				item?.item_name || item?.item_code || "",
-			);
+			this.price_list_rate_dialog_initial_rate = initialRate == null ? "" : String(initialRate);
+			this.price_list_rate_dialog_item_label = String(item?.item_name || item?.item_code || "");
 			this.price_list_rate_dialog_open = true;
 
 			return new Promise((resolve) => {
@@ -1026,8 +1022,7 @@ export default {
 			load_return_invoice: this.handleLoadReturnInvoice,
 			set_new_line: this.handleSetNewLine,
 			calc_uom: this.calc_uom,
-			recalculate_return_discount: (payload) =>
-				this.applyReturnDiscountProration(payload),
+			recalculate_return_discount: (payload) => this.applyReturnDiscountProration(payload),
 			reset_invoice_type_to_invoice: () => {
 				this.invoiceType = "Order";
 				this.invoiceTypes = ["Order"];
@@ -1096,20 +1091,14 @@ export default {
 		this._shortcutHandlers.handleInvoiceShortcut = createInvoiceShortcutListeners(
 			this.handleInvoiceShortcut.bind(this),
 		);
-		registerInvoiceShortcutListener(
-			document,
-			this._shortcutHandlers.handleInvoiceShortcut,
-		);
+		registerInvoiceShortcutListener(document, this._shortcutHandlers.handleInvoiceShortcut);
 	},
 	unmounted() {
 		if (!this._shortcutHandlers) {
 			return;
 		}
 
-		unregisterInvoiceShortcutListener(
-			document,
-			this._shortcutHandlers.handleInvoiceShortcut,
-		);
+		unregisterInvoiceShortcutListener(document, this._shortcutHandlers.handleInvoiceShortcut);
 
 		this._shortcutHandlers = {};
 	},
