@@ -938,6 +938,19 @@ def _get_managed_sales_order_ns_default_warehouse(doc):
     return cstr(frappe.db.get_value("POS Profile", pos_profile, "default_ns_warehouse") or "").strip()
 
 
+def _get_managed_sales_order_revolut_link(doc):
+    """Whether this order already has a pending Revolut payment link, so the client
+    can offer Resend/Delete instead of Send. A local lookup only (no Revolut API
+    call) -- safe to include on every list/detail fetch.
+    """
+    if cint(frappe.db.get_single_value("Revolut Settings", "enabled")) != 1:
+        return None
+
+    from customer_due_dates.revolut.payment_link import get_active_payment_link
+
+    return get_active_payment_link("Sales Order", doc.name)
+
+
 def _serialize_managed_sales_order(doc):
     items = []
     latest_component_due_date = None
@@ -1041,6 +1054,7 @@ def _serialize_managed_sales_order(doc):
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "receipt_email": _managed_sales_order_receipt_email_state(doc),
+        "revolut_payment_link": _get_managed_sales_order_revolut_link(doc),
         "items": items,
     }
 
@@ -2093,6 +2107,79 @@ def pay_managed_sales_order_balance(
         "sales_order": _serialize_managed_sales_order(doc),
         "payment_entry": payment_entry.name,
     }
+
+
+@frappe.whitelist()
+def create_managed_sales_order_payment_link(sales_order, amount=None, email=None, send_email=1):
+    """Create a Revolut hosted-checkout payment link for this order's outstanding balance
+    and email it to the customer.
+
+    Unlike pay_managed_sales_order_balance, this does not record a payment itself -- it
+    only creates and sends the link. The Payment Entry is created later, when the
+    customer actually pays, by customer_due_dates' Revolut webhook handler. See
+    customer_due_dates.revolut.payment_link.create_payment_link for the rest of that flow.
+    """
+    sales_order_name = cstr(sales_order or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    order_total = flt(getattr(doc, "grand_total", None) or 0)
+    advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
+    outstanding_balance = max(flt(order_total - advance_paid), 0)
+    if outstanding_balance <= 0.001:
+        frappe.throw(_("This Sales Order is already fully paid."))
+
+    payment_amount = flt(amount) if amount else outstanding_balance
+    if payment_amount <= 0:
+        frappe.throw(_("Payment amount must be greater than zero."))
+    if payment_amount - outstanding_balance > 0.001:
+        frappe.throw(_("Payment amount cannot exceed the remaining balance."))
+
+    # Same resolution the receipt resend uses, so the link defaults to wherever this
+    # order's paperwork already goes rather than asking the till operator to know it.
+    recipient = cstr(email or "").strip() or _resolve_customer_email(doc)
+
+    from customer_due_dates.revolut.payment_link import create_payment_link
+
+    result = create_payment_link(
+        reference_doctype="Sales Order",
+        reference_name=doc.name,
+        amount=payment_amount,
+        email_to=recipient or None,
+        send_email=cint(send_email),
+    )
+
+    doc.reload()
+    return {
+        "sales_order": _serialize_managed_sales_order(doc),
+        "payment_request": result.get("payment_request"),
+        "checkout_url": result.get("checkout_url"),
+        "already_paid": result.get("already_paid"),
+    }
+
+
+@frappe.whitelist()
+def delete_managed_sales_order_payment_link(sales_order):
+    """Cancel this order's pending Revolut payment link, on Revolut's side and ours.
+    Refuses if Revolut already completed it -- create_managed_sales_order_payment_link
+    is what reconciles a completed-but-unrecorded payment, not this.
+    """
+    sales_order_name = cstr(sales_order or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    from customer_due_dates.revolut.payment_link import delete_payment_link
+
+    delete_payment_link(reference_doctype="Sales Order", reference_name=doc.name)
+
+    doc.reload()
+    return {"sales_order": _serialize_managed_sales_order(doc)}
 
 
 def _map_delivery_dates(data):

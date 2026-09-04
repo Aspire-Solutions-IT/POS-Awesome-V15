@@ -177,6 +177,36 @@
 								{{ __("Pay Remaining Balance") }}
 							</v-btn>
 							<v-btn
+								v-if="canSendRevolutLink"
+								color="success"
+								variant="tonal"
+								prepend-icon="mdi-credit-card-outline"
+								:disabled="revolutLoading"
+								@click="openRevolutDialog"
+							>
+								{{ __("Send Payment Link") }}
+							</v-btn>
+							<template v-if="canResendRevolutLink">
+								<v-btn
+									color="success"
+									variant="tonal"
+									prepend-icon="mdi-credit-card-refresh-outline"
+									:disabled="revolutLoading"
+									@click="openRevolutDialog"
+								>
+									{{ __("Resend Payment Link") }}
+								</v-btn>
+								<v-btn
+									color="error"
+									variant="text"
+									icon="mdi-delete-outline"
+									:disabled="revolutLoading"
+									:title="__('Delete Payment Link')"
+									:aria-label="__('Delete Payment Link')"
+									@click="openDeleteRevolutDialog"
+								/>
+							</template>
+							<v-btn
 								v-if="selectedOrder"
 								color="primary"
 								variant="tonal"
@@ -664,6 +694,161 @@
 			</v-card>
 		</v-dialog>
 
+		<!-- Two steps in one dialog: the form, then -- once the link exists -- its
+		     checkout URL. Money only ever moves later, when the customer pays and the
+		     Revolut webhook creates the Payment Entry; this dialog just gets a link
+		     created and sent. -->
+		<v-dialog v-model="revolutDialogOpen" max-width="480">
+			<v-card class="pos-themed-card">
+				<v-card-title>
+					{{ isRevolutResendMode ? __("Resend Payment Link") : __("Send Payment Link") }}
+				</v-card-title>
+				<v-card-text class="pt-2">
+					<v-alert
+						v-if="revolutError"
+						type="error"
+						variant="tonal"
+						density="compact"
+						border="start"
+						class="mb-4"
+					>
+						{{ revolutError }}
+					</v-alert>
+
+					<template v-if="!revolutResult">
+						<template v-if="isRevolutResendMode">
+							<p class="mb-4">
+								{{
+									__(
+										"A payment link for this order is already active. Resending emails the same link again -- the amount is unchanged.",
+									)
+								}}
+							</p>
+						</template>
+						<template v-else>
+							<div class="payment-balance-copy mb-4">
+								<span class="payment-balance-copy__label">{{ __("Remaining Balance") }}</span>
+								<strong class="payment-balance-copy__amount">
+									{{ formatCurrency(selectedOrder?.outstanding_balance, selectedOrder?.currency) }}
+								</strong>
+							</div>
+							<v-text-field
+								v-model="revolutForm.amount"
+								:label="__('Amount')"
+								density="compact"
+								hide-details
+								type="number"
+								step="0.01"
+								min="0"
+								class="pos-themed-input mb-4"
+							/>
+						</template>
+						<v-text-field
+							v-model="revolutForm.email"
+							:label="__('Send To')"
+							density="compact"
+							hide-details
+							type="email"
+							class="pos-themed-input mb-2"
+						/>
+						<v-checkbox
+							v-model="revolutForm.sendEmail"
+							:label="__('Email the link to the customer')"
+							density="compact"
+							hide-details
+							class="mt-2"
+						/>
+					</template>
+
+					<template v-else>
+						<p class="mb-4">
+							{{ __("Share this link with the customer, or it has already been emailed to them.") }}
+						</p>
+						<v-text-field
+							:model-value="revolutResult.checkout_url"
+							:label="__('Checkout URL')"
+							density="compact"
+							hide-details
+							readonly
+							class="pos-themed-input"
+						/>
+					</template>
+				</v-card-text>
+				<v-card-actions class="justify-end">
+					<template v-if="!revolutResult">
+						<v-btn variant="text" :disabled="revolutLoading" @click="closeRevolutDialog">
+							{{ __("Cancel") }}
+						</v-btn>
+						<v-btn
+							color="success"
+							variant="flat"
+							:loading="revolutLoading"
+							:disabled="
+								revolutLoading ||
+								(!isRevolutResendMode && !revolutForm.amount) ||
+								(revolutForm.sendEmail && !revolutForm.email)
+							"
+							@click="submitRevolutPaymentLink"
+						>
+							{{ isRevolutResendMode ? __("Resend Link") : __("Create Link") }}
+						</v-btn>
+					</template>
+					<template v-else>
+						<v-btn variant="text" @click="copyRevolutLink">
+							{{ __("Copy Link") }}
+						</v-btn>
+						<v-btn color="primary" variant="flat" @click="closeRevolutDialog">
+							{{ __("Done") }}
+						</v-btn>
+					</template>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+
+		<!-- A separate confirmation rather than folding this into the send/resend
+		     dialog: deleting cancels the order on Revolut's side too, so it needs its
+		     own deliberate "are you sure" rather than sharing a button with a
+		     non-destructive action. -->
+		<v-dialog v-model="deleteRevolutDialogOpen" max-width="440">
+			<v-card class="pos-themed-card">
+				<v-card-title>{{ __("Delete Payment Link") }}</v-card-title>
+				<v-card-text class="pt-2">
+					<v-alert
+						v-if="deleteRevolutError"
+						type="error"
+						variant="tonal"
+						density="compact"
+						border="start"
+						class="mb-4"
+					>
+						{{ deleteRevolutError }}
+					</v-alert>
+					<p>
+						{{
+							__(
+								"This cancels the pending Revolut checkout link for {0}. The customer will no longer be able to pay using it.",
+								[selectedOrder?.name || ""],
+							)
+						}}
+					</p>
+				</v-card-text>
+				<v-card-actions class="justify-end">
+					<v-btn variant="text" :disabled="deleteRevolutLoading" @click="closeDeleteRevolutDialog">
+						{{ __("Cancel") }}
+					</v-btn>
+					<v-btn
+						color="error"
+						variant="flat"
+						:loading="deleteRevolutLoading"
+						:disabled="deleteRevolutLoading"
+						@click="confirmDeleteRevolutLink"
+					>
+						{{ __("Delete Link") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+
 		<!-- Resending is a deliberate act, so the recipient is shown and editable before
 		     anything is queued rather than the receipt silently going wherever the order
 		     happens to point. -->
@@ -995,6 +1180,12 @@ type ManagedSalesOrderPaymentType = {
 	amount?: number | null;
 };
 
+type ManagedSalesOrderRevolutLink = {
+	payment_request: string;
+	checkout_url?: string | null;
+	order_state?: string | null;
+};
+
 type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	delivery_charge?: string | null;
 	delivery_charge_rate?: number | null;
@@ -1007,6 +1198,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
 	receipt_email?: ManagedSalesOrderReceiptEmail | null;
+	revolut_payment_link?: ManagedSalesOrderRevolutLink | null;
 	delivery_charge_collection?: number | null;
 	company?: string | null;
 	default_ns_warehouse?: string | null;
@@ -1057,6 +1249,20 @@ const listError = ref("");
 const detailError = ref("");
 const paymentDialogOpen = ref(false);
 const paymentError = ref("");
+
+const revolutDialogOpen = ref(false);
+const revolutLoading = ref(false);
+const revolutError = ref("");
+const revolutResult = ref<{ payment_request?: string | null; checkout_url?: string | null } | null>(null);
+const revolutForm = reactive({
+	amount: "",
+	email: "",
+	sendEmail: true,
+});
+
+const deleteRevolutDialogOpen = ref(false);
+const deleteRevolutLoading = ref(false);
+const deleteRevolutError = ref("");
 
 // Payment-before-save flow: an edit that raises the order total must be paid for
 // before the rows are written, so a cancelled payment leaves nothing saved.
@@ -1200,6 +1406,28 @@ const paymentModeOptions = computed(() =>
 const canPayRemainingBalance = computed(
 	() => Number(selectedOrder.value?.outstanding_balance || 0) > 0.001 && paymentModeOptions.value.length > 0,
 );
+
+// Gated on the boot flag, not just the balance: Revolut Settings can exist without
+// being enabled, and this button would otherwise try to create a link the server
+// refuses with "Revolut integration is disabled" from create_payment_link.
+const canManageRevolutLink = computed(
+	() =>
+		Boolean(frappe.boot?.revolut_enabled) &&
+		Number(selectedOrder.value?.outstanding_balance || 0) > 0.001,
+);
+
+const activeRevolutLink = computed(() => selectedOrder.value?.revolut_payment_link || null);
+
+// One already exists -> offer Resend/Delete instead of a second "Send", which the
+// server would just reuse anyway (see create_payment_link's retry handling) but
+// showing "Send" again here would read as if nothing had happened yet.
+const canSendRevolutLink = computed(() => canManageRevolutLink.value && !activeRevolutLink.value);
+const canResendRevolutLink = computed(() => canManageRevolutLink.value && Boolean(activeRevolutLink.value));
+
+// Drives the dialog's own content, not just the button that opened it: it reads
+// selectedOrder's current link state live, so if a link is created and the same
+// dialog is reopened without navigating away, it correctly switches modes.
+const isRevolutResendMode = computed(() => Boolean(activeRevolutLink.value));
 
 const sortByItems = computed(() => [
 	{ title: __("Order Date (newest first)"), value: "transaction_date" },
@@ -1486,6 +1714,132 @@ const closePaymentDialog = () => {
 	paymentForm.amount = "";
 	paymentForm.mode_of_payment = "";
 	paymentForm.reference_no = "";
+};
+
+const openRevolutDialog = () => {
+	if (!selectedOrder.value) return;
+	revolutError.value = "";
+	revolutResult.value = null;
+	revolutForm.amount = String(selectedOrder.value.outstanding_balance || "");
+	revolutForm.email = String(selectedOrder.value.receipt_email?.recipient || "");
+	revolutForm.sendEmail = true;
+	revolutDialogOpen.value = true;
+};
+
+const closeRevolutDialog = () => {
+	revolutDialogOpen.value = false;
+	revolutError.value = "";
+	revolutResult.value = null;
+};
+
+const submitRevolutPaymentLink = async () => {
+	if (!selectedOrder.value || revolutLoading.value) return;
+
+	revolutLoading.value = true;
+	revolutError.value = "";
+
+	try {
+		const message = await api.call<{
+			sales_order: ManagedSalesOrderDetail;
+			payment_request?: string | null;
+			checkout_url?: string | null;
+			already_paid?: boolean;
+		}>(
+			"posawesome.posawesome.api.sales_orders.create_managed_sales_order_payment_link",
+			{
+				sales_order: selectedOrder.value.name,
+				amount: revolutForm.amount,
+				email: revolutForm.sendEmail ? revolutForm.email : null,
+				send_email: revolutForm.sendEmail ? 1 : 0,
+			},
+			{ freeze: true, freeze_message: __("Creating payment link...") },
+		);
+
+		if (message?.sales_order) {
+			selectedOrder.value = message.sales_order;
+			syncSelectedListRow(selectedOrder.value);
+		}
+
+		if (message?.already_paid) {
+			// Revolut already had this order marked paid -- create_payment_link
+			// recorded the payment instead of sending out a pointless second link.
+			toastStore.show({
+				title: __("Revolut shows this order was already paid. The payment has been recorded."),
+				color: "success",
+			});
+			closeRevolutDialog();
+			return;
+		}
+
+		revolutResult.value = {
+			payment_request: message?.payment_request,
+			checkout_url: message?.checkout_url,
+		};
+
+		toastStore.show({
+			title: revolutForm.sendEmail
+				? __("Payment link created and emailed to the customer.")
+				: __("Payment link created."),
+			color: "success",
+		});
+	} catch (error: any) {
+		console.error("Failed to create Revolut payment link", error);
+		revolutError.value = getErrorMessage(error, __("Unable to create the payment link"));
+	} finally {
+		revolutLoading.value = false;
+	}
+};
+
+const copyRevolutLink = async () => {
+	const url = revolutResult.value?.checkout_url;
+	if (!url) return;
+	try {
+		await navigator.clipboard.writeText(url);
+		toastStore.show({ title: __("Link copied to clipboard."), color: "success" });
+	} catch {
+		// Clipboard access can be denied (permissions, non-HTTPS context); the URL is
+		// still right there in the read-only field for the operator to select by hand.
+		revolutError.value = __("Could not copy automatically -- select and copy the link above.");
+	}
+};
+
+const openDeleteRevolutDialog = () => {
+	if (!selectedOrder.value) return;
+	deleteRevolutError.value = "";
+	deleteRevolutDialogOpen.value = true;
+};
+
+const closeDeleteRevolutDialog = () => {
+	deleteRevolutDialogOpen.value = false;
+	deleteRevolutError.value = "";
+};
+
+const confirmDeleteRevolutLink = async () => {
+	if (!selectedOrder.value || deleteRevolutLoading.value) return;
+
+	deleteRevolutLoading.value = true;
+	deleteRevolutError.value = "";
+
+	try {
+		const message = await api.call<{ sales_order: ManagedSalesOrderDetail }>(
+			"posawesome.posawesome.api.sales_orders.delete_managed_sales_order_payment_link",
+			{ sales_order: selectedOrder.value.name },
+			{ freeze: true, freeze_message: __("Deleting payment link...") },
+		);
+
+		if (message?.sales_order) {
+			selectedOrder.value = message.sales_order;
+			syncSelectedListRow(selectedOrder.value);
+		}
+
+		toastStore.show({ title: __("Payment link deleted."), color: "success" });
+		deleteRevolutDialogOpen.value = false;
+	} catch (error: any) {
+		console.error("Failed to delete Revolut payment link", error);
+		deleteRevolutError.value = getErrorMessage(error, __("Unable to delete the payment link"));
+	} finally {
+		deleteRevolutLoading.value = false;
+	}
 };
 
 const receiptState = computed(() => selectedOrder.value?.receipt_email || null);
