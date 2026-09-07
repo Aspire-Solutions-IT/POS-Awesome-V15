@@ -386,7 +386,107 @@ def _queue_receipt_email(doc, revised=False):
 
 
 def on_submit(doc, method):
+    _apply_amendment_carryover_credit(doc)
     _queue_receipt_email(doc, revised=False)
+
+
+def on_cancel(doc, method):
+    _release_pos_sales_order_advances_on_cancel(doc)
+    _cancel_pos_sales_order_payment_requests(doc)
+
+
+def _release_pos_sales_order_advances_on_cancel(doc):
+    """Free a cancelled POS order's advance payments to on-account credit.
+
+    ERPNext only unlinks a cancelled Sales Order's advance Payment Entries when
+    ``Accounts Settings.unlink_advance_payment_on_cancelation_of_order`` is on.
+    Where it is off the money stays pinned to the dead order and the customer
+    cannot spend it - not on an amendment, not on anything. This runs the same
+    ERPNext unlink for POS orders only, so a later amendment (or the customer's
+    next order) can pick the money up as credit.
+
+    A no-op when ERPNext already did it, or when nothing is linked.
+    """
+    if not cint(getattr(doc, "is_pos", 0)):
+        return
+    if frappe.db.get_single_value(
+        "Accounts Settings", "unlink_advance_payment_on_cancelation_of_order"
+    ):
+        return
+    if not frappe.db.exists(
+        "Payment Entry Reference",
+        {"reference_doctype": "Sales Order", "reference_name": doc.name, "docstatus": 1},
+    ):
+        return
+
+    from erpnext.accounts.utils import unlink_ref_doc_from_payment_entries
+
+    unlink_ref_doc_from_payment_entries(doc)
+
+
+def _cancel_pos_sales_order_payment_requests(doc):
+    """Cancel the Inward Payment Requests left behind by a cancelled POS order.
+
+    The generic cancel cascade is told to skip Payment Request (see so_kit.js)
+    because ``PaymentRequest.on_cancel`` throws "Payment Entry already exists"
+    while a Payment Entry stands against the order. By the time this runs the
+    advance has already been unlinked to on-account credit, so that guard no
+    longer protects anything - drop the request out of "Paid" so it cancels
+    cleanly. ``on_cancel`` overwrites the status to "Cancelled" immediately.
+    """
+    if not cint(getattr(doc, "is_pos", 0)):
+        return
+
+    names = frappe.get_all(
+        "Payment Request",
+        filters={
+            "reference_doctype": "Sales Order",
+            "reference_name": doc.name,
+            "docstatus": 1,
+        },
+        pluck="name",
+    )
+    for name in names:
+        pr = frappe.get_doc("Payment Request", name)
+        if pr.status == "Paid":
+            pr.db_set("status", "Requested", update_modified=False)
+            pr.reload()
+        pr.flags.ignore_permissions = True
+        pr.cancel()
+
+
+def _apply_amendment_carryover_credit(doc):
+    """Spend the customer's on-account credit on a freshly submitted amendment.
+
+    When a paid POS order is cancelled its payment becomes on-account credit
+    (see ``_release_pos_sales_order_advances_on_cancel``). Amending that order
+    creates a new Sales Order with ``amended_from`` set; without this it would
+    start at ``advance_paid = 0`` and ask the customer to pay again for money
+    they have already handed over. Any of the customer's unallocated payments
+    are eligible, oldest first - matching ``_apply_new_sales_order_customer_credit``.
+
+    The amount is capped at what the order still needs; a shortfall is logged,
+    never thrown - the amendment has already submitted.
+    """
+    if cint(getattr(doc, "docstatus", 0)) != 1 or not cint(getattr(doc, "is_pos", 0)):
+        return
+    if not cstr(getattr(doc, "amended_from", "") or "").strip():
+        return
+
+    doc.reload()
+    outstanding = flt(
+        flt(getattr(doc, "grand_total", 0)) - flt(getattr(doc, "advance_paid", 0))
+    )
+    if outstanding < 0.01:
+        return
+
+    applied = _apply_managed_sales_order_credit(doc, outstanding)
+    frappe.logger().info(
+        "POSAwesome amendment carryover: Sales Order %s outstanding=%s applied=%s",
+        doc.name,
+        outstanding,
+        applied,
+    )
 
 
 def _send_receipt_email_job(
