@@ -101,6 +101,7 @@ after_migrate = [
 doc_events = {
     "Sales Order": {
         "on_submit": "posawesome.posawesome.api.sales_orders.on_submit",
+        "on_cancel": "posawesome.posawesome.api.sales_orders.on_cancel",
     },
     "Sales Invoice": {
         "validate": "posawesome.posawesome.api.invoice.validate",

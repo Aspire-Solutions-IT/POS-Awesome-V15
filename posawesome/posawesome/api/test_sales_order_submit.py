@@ -38,6 +38,7 @@ def _install_stub_modules():
     frappe_module.db = types.SimpleNamespace(
         exists=lambda *args, **kwargs: False,
         get_value=lambda *args, **kwargs: None,
+        get_single_value=lambda *args, **kwargs: None,
         has_column=lambda *args, **kwargs: True,
         sql=lambda *args, **kwargs: [],
     )
@@ -57,6 +58,9 @@ def _install_stub_modules():
 
     erpnext_accounts_party = types.ModuleType("erpnext.accounts.party")
     erpnext_accounts_party.get_party_account = lambda *args, **kwargs: None
+
+    erpnext_accounts_utils = types.ModuleType("erpnext.accounts.utils")
+    erpnext_accounts_utils.unlink_ref_doc_from_payment_entries = lambda *args, **kwargs: None
 
     erpnext_sales_order = types.ModuleType("erpnext.selling.doctype.sales_order.sales_order")
     erpnext_sales_order.make_delivery_note = lambda *args, **kwargs: None
@@ -82,6 +86,7 @@ def _install_stub_modules():
     sys.modules["frappe"] = frappe_module
     sys.modules["frappe.utils"] = frappe_utils
     sys.modules["erpnext.accounts.party"] = erpnext_accounts_party
+    sys.modules["erpnext.accounts.utils"] = erpnext_accounts_utils
     sys.modules["erpnext.selling.doctype.sales_order.sales_order"] = erpnext_sales_order
     sys.modules["posawesome.posawesome.api.payment_entry"] = payment_entry_module
     sys.modules["customer_due_dates"] = types.ModuleType("customer_due_dates")
@@ -2212,3 +2217,134 @@ class TestSalesOrderSubmit(TestCase):
             )
 
         self.assertIn("Taken on Day", so_doc.tags)
+
+    # --- Amendment credit carry-over -------------------------------------
+
+    def _amendment_doc(self, **overrides):
+        values = dict(
+            name="SO-AMEND-1",
+            doctype="Sales Order",
+            docstatus=1,
+            is_pos=1,
+            amended_from="SO-ORIG-1",
+            grand_total=500,
+            advance_paid=200,
+            reload=lambda: None,
+        )
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_amendment_carryover_applies_outstanding_as_the_cap(self):
+        captured = {}
+
+        def fake_apply(doc, max_amount):
+            captured["doc"] = doc
+            captured["max_amount"] = max_amount
+            return max_amount
+
+        with patch.object(sales_orders, "_apply_managed_sales_order_credit", side_effect=fake_apply):
+            sales_orders._apply_amendment_carryover_credit(self._amendment_doc())
+
+        self.assertEqual(captured["max_amount"], 300)
+
+    def test_amendment_carryover_skips_non_amendment(self):
+        with patch.object(sales_orders, "_apply_managed_sales_order_credit") as apply_credit:
+            sales_orders._apply_amendment_carryover_credit(self._amendment_doc(amended_from=""))
+
+        apply_credit.assert_not_called()
+
+    def test_amendment_carryover_skips_non_pos(self):
+        with patch.object(sales_orders, "_apply_managed_sales_order_credit") as apply_credit:
+            sales_orders._apply_amendment_carryover_credit(self._amendment_doc(is_pos=0))
+
+        apply_credit.assert_not_called()
+
+    def test_amendment_carryover_skips_when_already_fully_paid(self):
+        with patch.object(sales_orders, "_apply_managed_sales_order_credit") as apply_credit:
+            sales_orders._apply_amendment_carryover_credit(
+                self._amendment_doc(advance_paid=500)
+            )
+
+        apply_credit.assert_not_called()
+
+    def test_on_submit_runs_carryover_before_the_receipt_email(self):
+        calls = []
+
+        with patch.object(
+            sales_orders, "_apply_amendment_carryover_credit", side_effect=lambda doc: calls.append("credit")
+        ), patch.object(
+            sales_orders, "_queue_receipt_email", side_effect=lambda *a, **k: calls.append("email")
+        ):
+            sales_orders.on_submit(SimpleNamespace(name="SO-1"), "on_submit")
+
+        self.assertEqual(calls, ["credit", "email"])
+
+    # --- Cancel -> release advances to on-account credit ----------------
+
+    def _cancel_doc(self, **overrides):
+        values = dict(name="SO-ORIG-1", doctype="Sales Order", is_pos=1)
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def _unlink_util(self):
+        return patch.object(
+            sys.modules["erpnext.accounts.utils"], "unlink_ref_doc_from_payment_entries"
+        )
+
+    def test_on_cancel_releases_pos_advances_when_setting_disabled(self):
+        with patch.object(sales_orders.frappe.db, "get_single_value", return_value=0), patch.object(
+            sales_orders.frappe.db, "exists", return_value=True
+        ), self._unlink_util() as unlink:
+            sales_orders.on_cancel(self._cancel_doc(), "on_cancel")
+
+        unlink.assert_called_once()
+
+    def test_on_cancel_noop_when_setting_enabled(self):
+        with patch.object(sales_orders.frappe.db, "get_single_value", return_value=1), self._unlink_util() as unlink:
+            sales_orders.on_cancel(self._cancel_doc(), "on_cancel")
+
+        unlink.assert_not_called()
+
+    def test_on_cancel_noop_when_no_linked_payment(self):
+        with patch.object(sales_orders.frappe.db, "get_single_value", return_value=0), patch.object(
+            sales_orders.frappe.db, "exists", return_value=False
+        ), self._unlink_util() as unlink:
+            sales_orders.on_cancel(self._cancel_doc(), "on_cancel")
+
+        unlink.assert_not_called()
+
+    def test_on_cancel_skips_non_pos_orders(self):
+        with patch.object(sales_orders.frappe.db, "get_single_value") as get_single_value, patch.object(
+            sales_orders.frappe, "get_all"
+        ) as get_all:
+            sales_orders.on_cancel(self._cancel_doc(is_pos=0), "on_cancel")
+
+        get_single_value.assert_not_called()
+        get_all.assert_not_called()
+
+    def test_on_cancel_cancels_linked_payment_requests_dropping_paid_status(self):
+        class FakePR:
+            def __init__(self):
+                self.status = "Paid"
+                self.flags = SimpleNamespace(ignore_permissions=False)
+                self.calls = []
+
+            def db_set(self, field, value, update_modified=True):
+                self.calls.append(("db_set", field, value))
+                setattr(self, field, value)
+
+            def reload(self):
+                self.calls.append(("reload",))
+
+            def cancel(self):
+                self.calls.append(("cancel",))
+
+        pr = FakePR()
+        with patch.object(sales_orders.frappe.db, "get_single_value", return_value=1), patch.object(
+            sales_orders.frappe, "get_all", return_value=["ACC-PRQ-0001"]
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=pr):
+            sales_orders.on_cancel(self._cancel_doc(), "on_cancel")
+
+        self.assertIn(("db_set", "status", "Requested"), pr.calls)
+        self.assertIn(("cancel",), pr.calls)
+        self.assertLess(pr.calls.index(("db_set", "status", "Requested")), pr.calls.index(("cancel",)))
