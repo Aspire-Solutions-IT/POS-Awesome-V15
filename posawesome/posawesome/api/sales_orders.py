@@ -2052,6 +2052,23 @@ def resend_managed_sales_order_receipt(sales_order, address=None, email=None, in
     }
 
 
+def _release_managed_sales_order_from_hold(sales_order_name, source=None):
+    """Best-effort: take a payment-held Sales Order off hold now that a payment has
+    landed. A payment must never fail because the hold release did, so this
+    swallows and logs any error."""
+    try:
+        from customer_due_dates.kit_items.overrides.sales_order import (
+            release_sales_order_from_hold_if_paid,
+        )
+
+        release_sales_order_from_hold_if_paid(sales_order_name, source=source)
+    except Exception:
+        frappe.log_error(
+            title="POS: release Sales Order from hold failed",
+            message=f"Sales Order {sales_order_name}\n\n{frappe.get_traceback()}",
+        )
+
+
 @frappe.whitelist()
 def pay_managed_sales_order_balance(
     sales_order, mode_of_payment, amount=None, reference_no=None, reference_date=None
@@ -2101,6 +2118,9 @@ def pay_managed_sales_order_balance(
     frappe.flags.ignore_account_permission = True
     payment_entry.save()
     payment_entry.submit()
+
+    doc.reload()
+    _release_managed_sales_order_from_hold(doc.name, source="POS balance payment")
 
     doc.reload()
     return {
