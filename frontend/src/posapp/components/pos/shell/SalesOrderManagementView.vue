@@ -146,78 +146,92 @@
 								: __("Sales Order Details")
 						}}</span>
 						<div class="panel-actions">
-							<template v-if="streamPickLists.length">
-								<v-select
-									v-model="selectedStreamPickList"
-									:items="streamPickListItems"
-									item-title="title"
-									item-value="value"
-									:label="__('Stream Pick List')"
-									density="compact"
-									hide-details
-									class="pos-themed-input stream-select"
-								/>
-								<v-btn
-									color="primary"
-									variant="tonal"
-									:disabled="!selectedStreamPickListLink"
-									@click="openStreamLink"
-								>
-									{{ __("Open Stream") }}
-								</v-btn>
-							</template>
-							<v-btn
-								v-if="canPayRemainingBalance"
-								color="success"
-								variant="flat"
-								:loading="paymentLoading"
-								:disabled="paymentLoading"
-								@click="openPaymentDialog"
-							>
-								{{ __("Pay Remaining Balance") }}
-							</v-btn>
-							<v-btn
-								v-if="canSendRevolutLink"
-								color="success"
-								variant="tonal"
-								prepend-icon="mdi-credit-card-outline"
-								:class="{ 'revolut-flash': flashRevolutButton }"
-								:disabled="revolutLoading"
-								@click="openRevolutDialog"
-							>
-								{{ __("Send Payment Link") }}
-							</v-btn>
-							<template v-if="canResendRevolutLink">
-								<v-btn
-									color="success"
-									variant="tonal"
-									prepend-icon="mdi-credit-card-refresh-outline"
-									:class="{ 'revolut-flash': flashRevolutButton }"
-									:disabled="revolutLoading"
-									@click="openRevolutDialog"
-								>
-									{{ __("Resend Payment Link") }}
-								</v-btn>
-								<v-btn
-									color="error"
-									variant="text"
-									icon="mdi-delete-outline"
-									:disabled="revolutLoading"
-									:title="__('Delete Payment Link')"
-									:aria-label="__('Delete Payment Link')"
-									@click="openDeleteRevolutDialog"
-								/>
-							</template>
-							<v-btn
-								v-if="selectedOrder"
-								color="primary"
-								variant="tonal"
-								prepend-icon="mdi-email-outline"
-								:disabled="receiptLoading"
-								@click="openReceiptDialog"
-							>
-								{{ __("Email Receipt") }}
-							</v-btn>
+							<v-select
+								v-if="streamPickLists.length"
+								v-model="selectedStreamPickList"
+								:items="streamPickListItems"
+								item-title="title"
+								item-value="value"
+								:label="__('Stream Pick List')"
+								density="compact"
+								hide-details
+								class="pos-themed-input stream-select"
+							/>
+							<v-menu v-model="takePaymentOpen" location="bottom end" :close-on-content-click="true">
+								<template #activator="{ props }">
+									<v-btn
+										v-if="hasTakePaymentOptions"
+										v-bind="props"
+										color="success"
+										variant="flat"
+										prepend-icon="mdi-cash-register"
+										append-icon="mdi-chevron-down"
+										:class="{ 'revolut-flash': flashRevolutButton }"
+									>
+										{{ __("Take Payment") }}
+									</v-btn>
+								</template>
+								<v-list density="compact" class="pos-themed-card">
+									<v-list-item
+										v-if="canPayRemainingBalance"
+										:disabled="paymentLoading"
+										prepend-icon="mdi-cash"
+										:title="__('Pay Remaining Balance')"
+										@click="openPaymentDialog"
+									/>
+									<v-list-item
+										v-if="canSendRevolutLink"
+										:disabled="revolutLoading"
+										prepend-icon="mdi-credit-card-outline"
+										:title="__('Send Payment Link')"
+										@click="openRevolutDialog"
+									/>
+									<v-list-item
+										v-if="canResendRevolutLink"
+										:disabled="revolutLoading"
+										prepend-icon="mdi-credit-card-refresh-outline"
+										:title="__('Resend Payment Link')"
+										@click="openRevolutDialog"
+									/>
+									<v-list-item
+										v-if="canResendRevolutLink"
+										:disabled="revolutLoading"
+										prepend-icon="mdi-delete-outline"
+										base-color="error"
+										:title="__('Delete Payment Link')"
+										@click="openDeleteRevolutDialog"
+									/>
+								</v-list>
+							</v-menu>
+							<v-menu v-model="otherOptionsOpen" location="bottom end" :close-on-content-click="true">
+								<template #activator="{ props }">
+									<v-btn
+										v-if="hasOtherOptions"
+										v-bind="props"
+										color="primary"
+										variant="tonal"
+										append-icon="mdi-chevron-down"
+									>
+										{{ __("Other Options") }}
+									</v-btn>
+								</template>
+								<v-list density="compact" class="pos-themed-card">
+									<v-list-item
+										v-if="streamPickLists.length"
+										:disabled="!selectedStreamPickListLink"
+										prepend-icon="mdi-open-in-new"
+										:title="__('Open Stream')"
+										@click="openStreamLink"
+									/>
+									<v-list-item
+										v-if="selectedOrder"
+										:disabled="receiptLoading"
+										prepend-icon="mdi-email-outline"
+										:title="__('Email Receipt')"
+										@click="openReceiptDialog"
+									/>
+								</v-list>
+							</v-menu>
 							<v-btn
 								color="primary"
 								:loading="saveLoading"
@@ -1054,7 +1068,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
@@ -1243,6 +1257,8 @@ const router = useRouter();
 const deepLinkedOrder = String(route.query.order || "").trim();
 const pendingPaymentLinkFlash = ref(String(route.query.prompt || "") === "payment-link");
 const flashRevolutButton = ref(false);
+const takePaymentOpen = ref(false);
+const otherOptionsOpen = ref(false);
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
 if (deepLinkedOrder) {
 	searchTerm.value = deepLinkedOrder;
@@ -1464,8 +1480,9 @@ const canResendRevolutLink = computed(() => canManageRevolutLink.value && Boolea
 // dialog is reopened without navigating away, it correctly switches modes.
 const isRevolutResendMode = computed(() => Boolean(activeRevolutLink.value));
 
-// Fire the flash once the deep-linked order is loaded and its Send/Resend button is
-// actually rendered (both depend on the order's outstanding balance + boot flag).
+// Fire the flash once the deep-linked order is loaded and a Send/Resend payment-link
+// option is available (both depend on the order's outstanding balance + boot flag).
+// The actions live in the "Take Payment" menu, so open it and flash its button.
 watch(
 	() => [
 		pendingPaymentLinkFlash.value,
@@ -1479,6 +1496,9 @@ watch(
 		pendingPaymentLinkFlash.value = false;
 		if (flashGiveUpTimer) clearTimeout(flashGiveUpTimer);
 		flashRevolutButton.value = true;
+		void nextTick(() => {
+			takePaymentOpen.value = true;
+		});
 		if (flashTimer) clearTimeout(flashTimer);
 		flashTimer = setTimeout(() => {
 			flashRevolutButton.value = false;
@@ -1540,6 +1560,15 @@ const openStreamLink = () => {
 	if (!link) return;
 	window.open(link, "_blank", "noopener,noreferrer");
 };
+
+// Header actions split across two menus: "Take Payment" (collect money) and
+// "Other Options" (everything else). "Save" stays a standalone button.
+const hasTakePaymentOptions = computed(
+	() => canPayRemainingBalance.value || canSendRevolutLink.value || canResendRevolutLink.value,
+);
+const hasOtherOptions = computed(
+	() => Boolean(selectedOrder.value) || streamPickLists.value.length > 0,
+);
 
 const deliveryChargeDisplay = computed(() => {
 	const label = String(selectedOrder.value?.delivery_charge || "").trim();
