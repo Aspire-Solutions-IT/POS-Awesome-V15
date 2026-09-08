@@ -181,6 +181,7 @@
 								color="success"
 								variant="tonal"
 								prepend-icon="mdi-credit-card-outline"
+								:class="{ 'revolut-flash': flashRevolutButton }"
 								:disabled="revolutLoading"
 								@click="openRevolutDialog"
 							>
@@ -191,6 +192,7 @@
 									color="success"
 									variant="tonal"
 									prepend-icon="mdi-credit-card-refresh-outline"
+									:class="{ 'revolut-flash': flashRevolutButton }"
 									:disabled="revolutLoading"
 									@click="openRevolutDialog"
 								>
@@ -1052,7 +1054,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
 import { useToastStore } from "../../../stores/toastStore.js";
@@ -1231,6 +1234,38 @@ const statusOptions = ref<string[]>([]);
 const selectedStatus = ref("");
 const selectedStreamPickList = ref("");
 const detailTab = ref("details");
+
+// Deep link from the "Order Placed" dialog (submit-without-payment): preselect the
+// order and, once its payment-link button is on screen, flash it a few times so the
+// till is nudged to actually send the link.
+const route = useRoute();
+const router = useRouter();
+const deepLinkedOrder = String(route.query.order || "").trim();
+const pendingPaymentLinkFlash = ref(String(route.query.prompt || "") === "payment-link");
+const flashRevolutButton = ref(false);
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+if (deepLinkedOrder) {
+	searchTerm.value = deepLinkedOrder;
+	selectedOrderName.value = deepLinkedOrder;
+}
+let flashGiveUpTimer: ReturnType<typeof setTimeout> | undefined;
+onMounted(() => {
+	if (deepLinkedOrder || route.query.prompt) {
+		// Drop the params so a refresh or later navigation doesn't re-trigger this.
+		void router.replace({ path: "/sales-orders", query: {} });
+	}
+	if (pendingPaymentLinkFlash.value) {
+		// Stop waiting if the button never appears (order already paid, Revolut off, …)
+		// so it can't fire later against an unrelated order the user clicks.
+		flashGiveUpTimer = setTimeout(() => {
+			pendingPaymentLinkFlash.value = false;
+		}, 15000);
+	}
+});
+onBeforeUnmount(() => {
+	if (flashTimer) clearTimeout(flashTimer);
+	if (flashGiveUpTimer) clearTimeout(flashGiveUpTimer);
+});
 const editableItems = ref<EditableSalesOrderItem[]>([]);
 const itemSelectorOpen = ref(false);
 const addItemLoading = ref(false);
@@ -1428,6 +1463,29 @@ const canResendRevolutLink = computed(() => canManageRevolutLink.value && Boolea
 // selectedOrder's current link state live, so if a link is created and the same
 // dialog is reopened without navigating away, it correctly switches modes.
 const isRevolutResendMode = computed(() => Boolean(activeRevolutLink.value));
+
+// Fire the flash once the deep-linked order is loaded and its Send/Resend button is
+// actually rendered (both depend on the order's outstanding balance + boot flag).
+watch(
+	() => [
+		pendingPaymentLinkFlash.value,
+		selectedOrderName.value,
+		canSendRevolutLink.value,
+		canResendRevolutLink.value,
+	],
+	([pending, selectedName, canSend, canResend]) => {
+		if (!pending || !(canSend || canResend)) return;
+		if (deepLinkedOrder && selectedName !== deepLinkedOrder) return;
+		pendingPaymentLinkFlash.value = false;
+		if (flashGiveUpTimer) clearTimeout(flashGiveUpTimer);
+		flashRevolutButton.value = true;
+		if (flashTimer) clearTimeout(flashTimer);
+		flashTimer = setTimeout(() => {
+			flashRevolutButton.value = false;
+		}, 2600);
+	},
+	{ immediate: true },
+);
 
 const sortByItems = computed(() => [
 	{ title: __("Order Date (newest first)"), value: "transaction_date" },
@@ -2397,6 +2455,23 @@ watch(
 </script>
 
 <style scoped>
+/* Nudge: the till arrived here from the "Order Placed" dialog to send a payment link. */
+.revolut-flash {
+	animation: revolut-flash 0.62s ease-in-out 3;
+}
+
+@keyframes revolut-flash {
+	0%,
+	100% {
+		transform: scale(1);
+		box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.55);
+	}
+	50% {
+		transform: scale(1.05);
+		box-shadow: 0 0 0 10px rgba(var(--v-theme-success), 0);
+	}
+}
+
 .sales-order-management {
 	padding: 20px;
 	height: calc(100dvh - 32px);

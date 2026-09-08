@@ -2628,6 +2628,9 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 					uiStore.showOrderSuccess({
 						orders: submittedOrderNames,
 						profile: pos_profile.value,
+						// "Submit without payment" -> the dialog reads "Order Placed" and
+						// offers a shortcut into Sales Order Management to send a payment link.
+						noPayment: Boolean(options.allowNoPaymentOrderSubmit),
 					});
 				}
 			},
