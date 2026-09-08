@@ -46,6 +46,7 @@ export interface Frappe {
 		pos_profile?: {
 			use_western_numerals?: boolean | number;
 		};
+		revolut_enabled?: boolean | number;
 	};
 	realtime?: {
 		socket?: {
