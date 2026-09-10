@@ -1764,7 +1764,10 @@ def preview_managed_sales_order_items(data):
     current_total = flt(getattr(doc, "grand_total", 0))
     projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
     advance_paid = flt(getattr(doc, "advance_paid", 0))
-    amount_due = max(flt(projected_total - advance_paid), 0.0)
+    # Currency precision, so the figure shown to the cashier matches the one the
+    # payment endpoint will allocate (raw float subtraction drifts a fraction of a
+    # penny and ERPNext's SQL-derived outstanding does not).
+    amount_due = max(flt(projected_total - advance_paid, doc.precision("grand_total")), 0.0)
     customer_credit = _get_managed_sales_order_customer_credit(doc)
 
     return {
@@ -1847,7 +1850,12 @@ def update_managed_sales_order_items_with_payment(data):
     normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
     _validate_managed_sales_order_item_mutations(doc, normalized_items)
     projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
-    amount_due = max(flt(projected_total - flt(getattr(doc, "advance_paid", 0))), 0.0)
+    # Round to the order's currency precision: the raw subtraction carries float noise
+    # (e.g. 480.66 - 303.96 == 176.70000000000005), and that value becomes the Payment
+    # Entry's allocated_amount. ERPNext then re-derives the reference outstanding in SQL
+    # (exact decimal), so an unrounded allocation trips "Allocated Amount cannot be
+    # greater than outstanding amount" by a fraction of a penny.
+    amount_due = max(flt(projected_total - flt(getattr(doc, "advance_paid", 0)), doc.precision("grand_total")), 0.0)
 
     expected = payment.get("expected_amount")
     if expected is not None and abs(flt(expected) - amount_due) > 0.01:
@@ -1866,7 +1874,7 @@ def update_managed_sales_order_items_with_payment(data):
     # Spend the customer's own money first, if the cashier offered it. How much is
     # decided here, never by the client - it is capped at what the order still needs.
     credit_applied = _apply_managed_sales_order_credit(doc, amount_due) if use_credit else 0.0
-    amount_due = flt(amount_due - credit_applied)
+    amount_due = flt(amount_due - credit_applied, doc.precision("grand_total"))
 
     if amount_due <= 0.001:
         # Credit covered the lot, so there is nothing to take at the till.
