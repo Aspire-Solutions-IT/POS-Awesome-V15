@@ -40,6 +40,15 @@ const routes = [
 		},
 	},
 	{
+		path: "/claims",
+		component: () => import("../components/pos/claims/ClaimsView.vue"),
+		meta: {
+			title: "Customer Claims",
+			layout: "default",
+			loadingMessage: "Loading claims...",
+		},
+	},
+	{
 		path: "/gift-cards",
 		component: () => import("../components/pos/wallet/GiftCardsView.vue"),
 		meta: {

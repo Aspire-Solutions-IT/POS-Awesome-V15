@@ -187,6 +187,24 @@
 								{{ __("Email Receipt") }}
 							</v-btn>
 							<v-btn
+								v-if="selectedOrder && claimsEnabled && claimCount > 0"
+								color="warning"
+								variant="text"
+								prepend-icon="mdi-clipboard-list-outline"
+								@click="showClaims"
+							>
+								{{ __("Show Claims ({0})", [claimCount]) }}
+							</v-btn>
+							<v-btn
+								v-if="selectedOrder && claimsEnabled"
+								color="warning"
+								variant="tonal"
+								prepend-icon="mdi-clipboard-alert-outline"
+								@click="raiseClaimOpen = true"
+							>
+								{{ __("Raise Claim") }}
+							</v-btn>
+							<v-btn
 								color="primary"
 								:loading="saveLoading"
 								:disabled="!selectedOrder || !isDirty"
@@ -778,6 +796,14 @@
 			</div>
 		</v-navigation-drawer>
 
+		<RaiseClaimDialog
+			v-if="selectedOrder && claimsEnabled"
+			v-model="raiseClaimOpen"
+			:sales-order="selectedOrder.name"
+			:customer-name="selectedOrder.customer_name || selectedOrder.customer || ''"
+			@created="loadClaimSummary(selectedOrder?.name)"
+		/>
+
 		<!-- Payment before save: the rows are only written once this succeeds, so
 		     cancelling leaves the edits staged and the order untouched. -->
 		<v-dialog v-model="itemPaymentDialogOpen" max-width="480" persistent>
@@ -867,9 +893,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
+import RaiseClaimDialog from "../claims/RaiseClaimDialog.vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { storeToRefs } from "pinia";
@@ -1027,11 +1055,53 @@ const { posProfile } = storeToRefs(uiStore);
 
 const profileReady = computed(() => Boolean(posProfile.value?.name));
 const canAccess = computed(() => Number(posProfile.value?.custom_allow_select_sales_order || 0) === 1);
+const claimsEnabled = computed(
+	() => Number(posProfile.value?.posa_allow_customer_claims || 0) === 1,
+);
+const raiseClaimOpen = ref(false);
+const claimCount = ref(0);
+const router = useRouter();
+const route = useRoute();
+
+const loadClaimSummary = async (salesOrder?: string | null) => {
+	claimCount.value = 0;
+	if (!salesOrder || !claimsEnabled.value) return;
+	try {
+		const summary = await api.call<{ count?: number }>(
+			"posawesome.posawesome.api.claims.get_sales_order_claim_summary",
+			{ sales_order: salesOrder },
+		);
+		if (selectedOrder.value?.name === salesOrder) {
+			claimCount.value = Number(summary?.count || 0);
+		}
+	} catch (error) {
+		console.error("Failed to load claim summary", error);
+	}
+};
+
+const showClaims = () => {
+	if (!selectedOrder.value) return;
+	void router.push({ path: "/claims", query: { sales_order: selectedOrder.value.name } });
+};
 
 const orders = ref<ManagedSalesOrderListRow[]>([]);
 const selectedOrder = ref<ManagedSalesOrderDetail | null>(null);
 const selectedOrderName = ref("");
 const searchTerm = ref("");
+
+// Deep link from the Claims screen: land with this order searched for and selected.
+const requestedSalesOrder =
+	typeof route.query.sales_order === "string" ? route.query.sales_order.trim() : "";
+if (requestedSalesOrder) {
+	searchTerm.value = requestedSalesOrder;
+	selectedOrderName.value = requestedSalesOrder;
+}
+onMounted(() => {
+	// The search box now shows the order, so the query param has done its job.
+	if (route.query.sales_order) {
+		void router.replace({ path: "/sales-orders", query: {} });
+	}
+});
 const posProfileOptions = ref<ManagedSalesOrderPosProfile[]>([]);
 const selectedPosProfile = ref("");
 const selectedSortBy = ref<ManagedSalesOrderSortKey>("transaction_date");
@@ -1753,6 +1823,7 @@ const selectOrder = async (name: string) => {
 		selectedOrder.value = message || null;
 		resetForm(selectedOrder.value);
 		void loadWarehouseOptions(selectedOrder.value?.company);
+		void loadClaimSummary(selectedOrder.value?.name);
 	} catch (error) {
 		console.error("Failed to load Sales Order detail", error);
 		detailError.value = __("Unable to load the selected Sales Order");
