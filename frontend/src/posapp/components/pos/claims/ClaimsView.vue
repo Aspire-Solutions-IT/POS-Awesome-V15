@@ -180,7 +180,22 @@
 						<span class="claims-view__badge" :class="badgeClass(detail.claim.workflow_state)">
 							{{ detail.claim.workflow_state }}
 						</span>
-						<span class="text-medium-emphasis">{{ __("Progress: {0}", [detail.claim.progress]) }}</span>
+						<span class="claims-view__badge claims-view__badge--progress">
+							{{ detail.claim.progress }}
+						</span>
+					</div>
+					<div v-if="(detail.progress_actions || []).length" class="claims-view__progress-actions">
+						<span class="text-medium-emphasis">{{ __("Move progress:") }}</span>
+						<v-btn
+							v-for="step in detail.progress_actions"
+							:key="step"
+							size="x-small"
+							variant="tonal"
+							:disabled="progressBusy"
+							@click="moveProgress(step)"
+						>
+							{{ step }}
+						</v-btn>
 					</div>
 
 					<h3 class="mt-2">{{ detail.claim.customer }}</h3>
@@ -256,30 +271,104 @@
 						</tbody>
 					</v-table>
 
-					<h4 class="mt-4">
-						{{ __("Resolution actions") }}
-						<span class="text-medium-emphasis">({{ (detail.actions || []).length }})</span>
-					</h4>
-					<p v-if="!(detail.actions || []).length" class="text-medium-emphasis">
-						{{ __("No actions yet.") }}
+					<div class="claims-view__section-head mt-4">
+						<h4>
+							{{ __("Resolution decisions") }}
+							<span class="text-medium-emphasis">({{ (detail.decisions || []).length }})</span>
+						</h4>
+						<v-btn
+							v-if="detail.can_add_decision"
+							size="small"
+							color="primary"
+							variant="tonal"
+							@click="showProposeDecision = true"
+						>
+							{{ __("Propose decision") }}
+						</v-btn>
+					</div>
+					<p v-if="!(detail.decisions || []).length" class="text-medium-emphasis">
+						{{
+							detail.claim.workflow_state !== "Approved"
+								? __("The claim must be accepted before a decision can be recorded.")
+								: __("No decisions yet.")
+						}}
 					</p>
 					<article
-						v-for="action in detail.actions"
-						:key="action.name"
-						class="claims-view__action"
+						v-for="decision in detail.decisions"
+						:key="decision.name"
+						class="claims-view__decision"
 					>
 						<div class="claims-view__row-top">
 							<strong>
-								{{ action.action_type }}
-								<template v-if="action.service_call_type"> · {{ action.service_call_type }}</template>
+								{{ decision.outcome }}
+								<template v-if="decision.service_call_type"> · {{ decision.service_call_type }}</template>
 							</strong>
-							<span class="claims-view__badge" :class="badgeClass(action.workflow_state)">
-								{{ action.workflow_state }}
+							<span class="claims-view__badge" :class="badgeClass(decision.workflow_state)">
+								{{ decision.workflow_state }}
 							</span>
 						</div>
-						<p>{{ action.description }}</p>
-						<p class="text-medium-emphasis">{{ __("Execution: {0}", [action.execution_status]) }}</p>
-						<p v-if="action.amount">{{ action.currency }} {{ action.amount }}</p>
+						<p>{{ decision.reasoning }}</p>
+						<p v-if="decision.differs_from_preference" class="claims-view__notice">
+							{{ __("Differs from the customer's preferred outcome.") }}
+						</p>
+						<p v-if="decision.amount" class="text-medium-emphasis">
+							{{ __("Amount: {0} {1}", [detail.claim.currency, decision.amount]) }}
+						</p>
+						<p v-if="decision.collection_required" class="text-medium-emphasis">
+							{{ __("Collection required") }}
+						</p>
+						<p v-if="decision.rejection_reason" class="claims-view__notice">
+							{{ __("Rejection reason: {0}", [decision.rejection_reason]) }}
+						</p>
+						<p v-if="decision.superseded_by" class="claims-view__notice">
+							{{ __("Superseded by {0}", [decision.superseded_by]) }}
+						</p>
+						<ul class="claims-view__item-list">
+							<li v-for="item in decision.items" :key="item.name">
+								{{ item.item_code }} × {{ item.qty
+								}}<template v-if="item.replacement_item">
+									→ {{ item.replacement_item }} × {{ item.replacement_qty }}</template
+								>
+							</li>
+						</ul>
+						<div
+							v-if="(decision.available_actions || []).length"
+							class="claims-view__toolbar"
+						>
+							<v-btn
+								v-for="choice in decision.available_actions"
+								:key="choice"
+								size="x-small"
+								:color="choice === 'Reject' ? undefined : 'primary'"
+								:variant="choice === 'Reject' ? 'text' : 'tonal'"
+								:disabled="decisionBusy"
+								@click="decisionTransition(decision, choice)"
+							>
+								{{ choice }}
+							</v-btn>
+						</div>
+						<div v-if="(decision.actions || []).length" class="claims-view__decision-actions">
+							<article
+								v-for="action in decision.actions"
+								:key="action.name"
+								class="claims-view__action"
+							>
+								<div class="claims-view__row-top">
+									<strong>
+										{{ action.action_type }}
+										<template v-if="action.service_call_type"> · {{ action.service_call_type }}</template>
+									</strong>
+									<span
+										class="claims-view__badge"
+										:class="progressBadgeClass(action.execution_status)"
+									>
+										{{ action.execution_status }}
+									</span>
+								</div>
+								<p>{{ action.description }}</p>
+								<p v-if="action.amount">{{ action.currency }} {{ action.amount }}</p>
+							</article>
+						</div>
 					</article>
 				</template>
 
@@ -288,6 +377,42 @@
 				</div>
 			</section>
 		</div>
+
+		<ProposeDecisionDialog
+			v-if="detail"
+			v-model="showProposeDecision"
+			:claim="detail.claim"
+			@created="onDecisionCreated"
+		/>
+
+		<v-dialog v-model="rejectDialogOpen" max-width="420">
+			<v-card class="pos-themed-card">
+				<v-card-title>{{ __("Reject decision") }}</v-card-title>
+				<v-card-text class="pt-2">
+					<v-textarea
+						v-model="rejectReason"
+						:label="__('Reason')"
+						rows="3"
+						auto-grow
+						class="pos-themed-input"
+					/>
+				</v-card-text>
+				<v-card-actions class="justify-end">
+					<v-btn variant="text" :disabled="decisionBusy" @click="rejectDialogOpen = false">
+						{{ __("Cancel") }}
+					</v-btn>
+					<v-btn
+						color="error"
+						variant="flat"
+						:loading="decisionBusy"
+						:disabled="decisionBusy || !rejectReason.trim()"
+						@click="submitReject"
+					>
+						{{ __("Confirm rejection") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
 	</v-card>
 </template>
 
@@ -295,6 +420,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
+import ProposeDecisionDialog from "./ProposeDecisionDialog.vue";
 
 declare const __: (value: string, args?: any[]) => string;
 
@@ -317,11 +443,21 @@ type OverviewResponse = {
 	claim_types: Array<{ name: string }>;
 };
 
+type ClaimDecision = Record<string, any> & {
+	name: string;
+	actions?: Array<Record<string, any>>;
+	available_actions?: string[];
+	can_add_action?: boolean;
+};
+
 type ClaimDetail = {
-	claim: Record<string, any> & { items?: Array<Record<string, any>> };
+	claim: Record<string, any> & { name: string; items?: Array<Record<string, any>> };
+	decisions: ClaimDecision[];
 	actions: Array<Record<string, any>>;
 	available_actions: string[];
+	progress_actions: string[];
 	previous_claims: Array<{ name: string }>;
+	can_add_decision: boolean;
 	can_add_action: boolean;
 };
 
@@ -337,6 +473,12 @@ const start = ref(0);
 const hasMore = ref(false);
 const counts = reactive({ open: 0, pending: 0, approved: 0 });
 const claimTypes = ref<Array<{ name: string }>>([]);
+const showProposeDecision = ref(false);
+const decisionBusy = ref(false);
+const progressBusy = ref(false);
+const rejectDialogOpen = ref(false);
+const rejectReason = ref("");
+let rejectTarget: ClaimDecision | null = null;
 
 const route = useRoute();
 const router = useRouter();
@@ -369,7 +511,11 @@ const approvalItems = computed(() => [
 const progressItems = computed(() => [
 	{ title: __("All progress"), value: "" },
 	{ title: "Open", value: "Open" },
+	{ title: "Under Review", value: "Under Review" },
 	{ title: "In Progress", value: "In Progress" },
+	{ title: "Awaiting Customer", value: "Awaiting Customer" },
+	{ title: "Awaiting Engineer", value: "Awaiting Engineer" },
+	{ title: "Ready to Close", value: "Ready to Close" },
 	{ title: "Closed", value: "Closed" },
 ]);
 
@@ -388,7 +534,20 @@ function badgeClass(state?: string) {
 		{
 			Approved: "is-approved",
 			Rejected: "is-rejected",
+			Superseded: "is-rejected",
 			"Pending Approval": "is-pending",
+		}[state || ""] || "is-draft"
+	);
+}
+
+function progressBadgeClass(state?: string) {
+	return (
+		{
+			Completed: "is-approved",
+			Failed: "is-rejected",
+			Cancelled: "is-rejected",
+			"In Progress": "is-pending",
+			Queued: "is-pending",
 		}[state || ""] || "is-draft"
 	);
 }
@@ -498,6 +657,72 @@ async function selectClaim(name: string) {
 function refresh() {
 	void reload();
 	if (selectedName.value) void selectClaim(selectedName.value);
+}
+
+function onDecisionCreated() {
+	refresh();
+}
+
+async function decisionTransition(decision: ClaimDecision, action: string) {
+	if (action === "Reject") {
+		rejectTarget = decision;
+		rejectReason.value = "";
+		rejectDialogOpen.value = true;
+		return;
+	}
+	decisionBusy.value = true;
+	try {
+		await api.call("posawesome.posawesome.api.claims.decision_transition", {
+			name: decision.name,
+			action,
+			modified: decision.modified,
+		});
+		refresh();
+	} catch (error: any) {
+		listError.value =
+			error?.message?.message || error?.message || __("The decision could not be updated.");
+	} finally {
+		decisionBusy.value = false;
+	}
+}
+
+async function submitReject() {
+	if (!rejectTarget || !rejectReason.value.trim() || decisionBusy.value) return;
+	decisionBusy.value = true;
+	try {
+		await api.call("posawesome.posawesome.api.claims.decision_transition", {
+			name: rejectTarget.name,
+			action: "Reject",
+			modified: rejectTarget.modified,
+			reason: rejectReason.value.trim(),
+		});
+		rejectDialogOpen.value = false;
+		rejectTarget = null;
+		refresh();
+	} catch (error: any) {
+		listError.value =
+			error?.message?.message || error?.message || __("The decision could not be rejected.");
+	} finally {
+		decisionBusy.value = false;
+	}
+}
+
+async function moveProgress(step: string) {
+	if (!detail.value || progressBusy.value) return;
+	progressBusy.value = true;
+	try {
+		await api.call("posawesome.posawesome.api.claims.set_claim_progress", {
+			claim: detail.value.claim.name,
+			progress: step,
+			modified: detail.value.claim.modified,
+		});
+		refresh();
+	} catch (error: any) {
+		listError.value =
+			error?.message?.message || error?.message || __("The claim progress could not be updated.");
+	} finally {
+		progressBusy.value = false;
+	}
 }
 
 onMounted(reload);
@@ -675,6 +900,57 @@ defineExpose({ reload, selectClaim });
 	align-items: center;
 	gap: 12px;
 	margin-top: 10px;
+}
+.claims-view__badge--progress {
+	background: #eef2f7;
+	color: #445;
+}
+.claims-view__progress-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-top: 10px;
+}
+.claims-view__section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+.claims-view__section-head h4 {
+	margin: 0;
+	font-size: 15px;
+}
+.claims-view__notice {
+	font-size: 12px;
+	color: #8c5c13;
+	background: #fff2d9;
+	border-radius: 6px;
+	padding: 8px 10px;
+}
+.claims-view__item-list {
+	margin: 8px 0;
+	padding-left: 18px;
+	font-size: 12px;
+}
+.claims-view__toolbar {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-top: 10px;
+}
+.claims-view__decision {
+	border: 1px solid var(--pos-border-color, rgba(0, 0, 0, 0.12));
+	border-radius: 8px;
+	padding: 12px;
+	margin-top: 10px;
+	font-size: 12px;
+}
+.claims-view__decision-actions {
+	margin-top: 10px;
+	padding-top: 6px;
+	border-top: 1px dashed var(--pos-border-color, rgba(0, 0, 0, 0.12));
 }
 .claims-view__description {
 	white-space: pre-wrap;

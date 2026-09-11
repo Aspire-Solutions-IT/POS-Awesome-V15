@@ -73,14 +73,47 @@ const detail = {
 		owner: "till@example.com",
 		workflow_state: "Pending Approval",
 		progress: "Open",
+		modified: "2026-09-01 10:00:00",
 		items: [
 			{ name: "CCI-1", item_code: "ITEM-1", item_name: "Widget", qty: 1, uom: "Nos", fault_details: "cracked" },
 		],
 	},
+	decisions: [],
 	actions: [],
 	available_actions: [],
+	progress_actions: [],
 	previous_claims: [],
+	can_add_decision: false,
 	can_add_action: false,
+};
+
+const approverDecision = {
+	name: "CCD-0001",
+	claim: "CLM-0001",
+	outcome: "Replace",
+	service_call_type: "",
+	reasoning: "Confirmed faulty.",
+	differs_from_preference: 0,
+	amount: 0,
+	collection_required: 0,
+	workflow_state: "Approved",
+	rejection_reason: "",
+	superseded_by: "",
+	modified: "2026-09-01 11:00:00",
+	items: [{ name: "CCDI-1", item_code: "ITEM-1", qty: 1 }],
+	available_actions: [],
+	can_add_action: true,
+	actions: [
+		{
+			name: "CCA-0001",
+			action_type: "Replace",
+			service_call_type: "",
+			description: "Ship replacement",
+			amount: 0,
+			currency: "GBP",
+			execution_status: "Queued",
+		},
+	],
 };
 
 const BoxStub = defineComponent({
@@ -136,16 +169,47 @@ const VSelectStub = defineComponent({
 	},
 });
 
+const VTextareaStub = defineComponent({
+	props: { modelValue: { type: String, default: "" }, label: { type: String, default: "" } },
+	emits: ["update:modelValue"],
+	setup: (props, { emit }) => () =>
+		h("textarea", {
+			value: props.modelValue,
+			"aria-label": props.label,
+			onInput: (e: Event) => emit("update:modelValue", (e.target as HTMLTextAreaElement).value),
+		}),
+});
+
+const VCheckboxStub = defineComponent({
+	props: { modelValue: { type: Boolean, default: false }, label: { type: String, default: "" } },
+	emits: ["update:modelValue"],
+	setup: (props, { emit }) => () =>
+		h("input", {
+			type: "checkbox",
+			checked: props.modelValue,
+			"aria-label": props.label,
+			onChange: (e: Event) => emit("update:modelValue", (e.target as HTMLInputElement).checked),
+		}),
+});
+
 const mountView = () =>
 	mount(ClaimsView, {
 		global: {
 			mocks: { __: translate },
 			components: {
 				VCard: BoxStub,
+				VCardTitle: BoxStub,
+				VCardText: BoxStub,
+				VCardActions: BoxStub,
+				VDialog: BoxStub,
+				VRow: BoxStub,
+				VCol: BoxStub,
 				VAlert: BoxStub,
 				VTable: BoxStub,
 				VBtn: VBtnStub,
 				VTextField: VTextFieldStub,
+				VTextarea: VTextareaStub,
+				VCheckbox: VCheckboxStub,
 				VSelect: VSelectStub,
 			},
 		},
@@ -225,5 +289,143 @@ describe("ClaimsView", () => {
 		expect(routerReplace).toHaveBeenCalledWith({ path: "/claims", query: {} });
 		const lastCall = (api.call as any).mock.calls.at(-1);
 		expect(lastCall[1]).toMatchObject({ sales_order: "", start: 0 });
+	});
+
+	it("shows a decision with its nested actions and progress move buttons", async () => {
+		(api.call as any).mockImplementation(async (method: string) => {
+			if (method.endsWith("list_claims")) return overview;
+			if (method.endsWith("get_claim")) {
+				return {
+					...detail,
+					claim: { ...detail.claim, workflow_state: "Approved", progress: "In Progress" },
+					decisions: [approverDecision],
+					progress_actions: ["Awaiting Customer", "Awaiting Engineer", "Ready to Close"],
+					can_add_decision: true,
+				};
+			}
+			return null;
+		});
+		const wrapper = mountView();
+		await flushPromises();
+		const row = wrapper.findAll("button").find((b) => b.text().includes("CLM-0001"))!;
+		await row.trigger("click");
+		await flushPromises();
+
+		expect(wrapper.text()).toContain("Confirmed faulty.");
+		expect(wrapper.text()).toContain("Ship replacement");
+		expect(wrapper.findAll("button").find((b) => b.text() === "Propose decision")).toBeTruthy();
+		expect(wrapper.findAll("button").find((b) => b.text() === "Awaiting Customer")).toBeTruthy();
+	});
+
+	it("moves claim progress and refreshes the detail", async () => {
+		(api.call as any).mockImplementation(async (method: string) => {
+			if (method.endsWith("list_claims")) return overview;
+			if (method.endsWith("get_claim")) {
+				return {
+					...detail,
+					claim: { ...detail.claim, workflow_state: "Approved", progress: "In Progress" },
+					decisions: [approverDecision],
+					progress_actions: ["Awaiting Customer", "Awaiting Engineer", "Ready to Close"],
+				};
+			}
+			if (method.endsWith("set_claim_progress")) return { name: "CLM-0001", progress: "Awaiting Customer" };
+			return null;
+		});
+		const wrapper = mountView();
+		await flushPromises();
+		const row = wrapper.findAll("button").find((b) => b.text().includes("CLM-0001"))!;
+		await row.trigger("click");
+		await flushPromises();
+
+		const step = wrapper.findAll("button").find((b) => b.text() === "Awaiting Customer")!;
+		await step.trigger("click");
+		await flushPromises();
+
+		const call = (api.call as any).mock.calls.find((c: any[]) =>
+			c[0].endsWith("set_claim_progress"),
+		);
+		expect(call[1]).toMatchObject({ claim: "CLM-0001", progress: "Awaiting Customer" });
+	});
+
+	it("rejects a decision with a reason", async () => {
+		const pendingDecision = { ...approverDecision, available_actions: ["Approve", "Reject"] };
+		(api.call as any).mockImplementation(async (method: string) => {
+			if (method.endsWith("list_claims")) return overview;
+			if (method.endsWith("get_claim")) {
+				return {
+					...detail,
+					claim: { ...detail.claim, workflow_state: "Approved" },
+					decisions: [pendingDecision],
+				};
+			}
+			if (method.endsWith("decision_transition")) return { name: "CCD-0001", workflow_state: "Rejected" };
+			return null;
+		});
+		const wrapper = mountView();
+		await flushPromises();
+		const row = wrapper.findAll("button").find((b) => b.text().includes("CLM-0001"))!;
+		await row.trigger("click");
+		await flushPromises();
+
+		const rejectButton = wrapper.findAll("button").find((b) => b.text() === "Reject")!;
+		await rejectButton.trigger("click");
+		await wrapper.find("textarea[aria-label='Reason']").setValue("Not eligible.");
+		const confirm = wrapper.findAll("button").find((b) => b.text() === "Confirm rejection")!;
+		await confirm.trigger("click");
+		await flushPromises();
+
+		const call = (api.call as any).mock.calls.find((c: any[]) =>
+			c[0].endsWith("decision_transition"),
+		);
+		expect(call[1]).toMatchObject({ name: "CCD-0001", action: "Reject", reason: "Not eligible." });
+	});
+
+	it("proposes a decision from the claim detail", async () => {
+		(api.call as any).mockImplementation(async (method: string) => {
+			if (method.endsWith("list_claims")) return overview;
+			if (method.endsWith("get_claim")) {
+				return {
+					...detail,
+					claim: { ...detail.claim, workflow_state: "Approved" },
+					can_add_decision: true,
+				};
+			}
+			if (method.endsWith("propose_decision")) return { name: "CCD-NEW", workflow_state: "Approved" };
+			return null;
+		});
+		const wrapper = mountView();
+		await flushPromises();
+		const row = wrapper.findAll("button").find((b) => b.text().includes("CLM-0001"))!;
+		await row.trigger("click");
+		await flushPromises();
+
+		const propose = wrapper.findAll("button").find((b) => b.text() === "Propose decision")!;
+		await propose.trigger("click");
+		await flushPromises();
+
+		// Service Call needs no replacement item or amount, so this stays focused on the
+		// propose/submit wiring rather than every outcome-specific validation rule.
+		await wrapper.find("select[aria-label='Approved outcome']").setValue("Service Call");
+		await wrapper.find("select[aria-label='Service type']").setValue("Maintenance Visit");
+		await wrapper.find("textarea[aria-label='Reasoning']").setValue("Confirmed faulty.");
+		// checkbox 0 is "Collection required"; the item row checkbox comes after it.
+		const itemCheckbox = wrapper
+			.findAll("input[type='checkbox']")
+			.find((c) => c.attributes("aria-label") === "Include ITEM-1")!;
+		await itemCheckbox.setValue(true);
+		await flushPromises();
+
+		const record = wrapper.findAll("button").find((b) => b.text() === "Record decision")!;
+		await record.trigger("click");
+		await flushPromises();
+
+		const call = (api.call as any).mock.calls.find((c: any[]) => c[0].endsWith("propose_decision"));
+		expect(call).toBeTruthy();
+		expect(call[1].payload).toMatchObject({
+			claim: "CLM-0001",
+			outcome: "Service Call",
+			service_call_type: "Maintenance Visit",
+			reasoning: "Confirmed faulty.",
+		});
 	});
 });

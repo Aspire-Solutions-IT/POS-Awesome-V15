@@ -229,3 +229,38 @@ class TestPosawesomeClaims(IntegrationTestCase):
 		self.assertEqual(
 			frappe.db.get_value("Customer Claim", result["name"], "evidence"), uploaded["file_url"]
 		)
+
+	def _decision_payload(self, claim_name):
+		claim = frappe.get_doc("Customer Claim", claim_name)
+		return dict(
+			claim=claim_name,
+			outcome="Replace",
+			reasoning="Confirmed faulty on inspection.",
+			items=[
+				dict(
+					claim_item=claim.items[0].name,
+					qty=1,
+					replacement_item=self.item,
+					replacement_qty=1,
+				)
+			],
+		)
+
+	def test_propose_decision_moves_the_claim_to_in_progress(self):
+		frappe.set_user(self.approver)
+		raised = self._raise()
+		decision = claims.propose_decision(self._decision_payload(raised["name"]))
+		self.assertEqual(decision["workflow_state"], "Approved")
+
+		detail = claims.get_claim(raised["name"])
+		self.assertEqual([d["name"] for d in detail["decisions"]], [decision["name"]])
+		self.assertEqual(detail["claim"]["progress"], "In Progress")
+		self.assertIn("Awaiting Customer", detail["progress_actions"])
+
+	def test_decision_endpoints_refuse_non_rfs_claims(self):
+		frappe.set_user(self.approver)
+		non_rfs = claim_workspace.create_claim(self._payload(self.other_order, self.other_line))
+		with self.assertRaises(frappe.PermissionError):
+			claims.propose_decision(self._decision_payload(non_rfs["name"]))
+		with self.assertRaises(frappe.PermissionError):
+			claims.set_claim_progress(non_rfs["name"], "Awaiting Customer")

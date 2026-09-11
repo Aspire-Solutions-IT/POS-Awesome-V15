@@ -191,7 +191,35 @@ def list_claims(
 
 @frappe.whitelist()
 def get_claim(claim):
-	"""Full detail for one claim on an RFS order: facts, items, evidence, actions."""
+	"""Full detail for one claim on an RFS order: facts, items, decisions, actions."""
 	data = claim_workspace.get_detail(claim)
 	_require_rfs_order((data.get("claim") or {}).get("sales_order"))
 	return data
+
+
+def _require_rfs_claim(claim):
+	sales_order = frappe.db.get_value("Customer Claim", claim, "sales_order")
+	_require_rfs_order(sales_order)
+
+
+@frappe.whitelist(methods=["POST"])
+def propose_decision(payload):
+	"""Record a resolution decision for a claim on an RFS order."""
+	parsed = frappe.parse_json(payload)
+	if isinstance(parsed, dict):
+		_require_rfs_claim(parsed.get("claim"))
+	return claim_workspace.create_decision(payload)
+
+
+@frappe.whitelist(methods=["POST"])
+def decision_transition(name, action, modified, reason=""):
+	"""Approve / reject / submit a Customer Claim Decision from POSAwesome."""
+	_require_rfs_claim(frappe.db.get_value("Customer Claim Decision", name, "claim"))
+	return claim_workspace.transition("Customer Claim Decision", name, action, modified, reason)
+
+
+@frappe.whitelist(methods=["POST"])
+def set_claim_progress(claim, progress, modified=""):
+	"""Move an RFS claim along one of the allowed manual progress steps."""
+	_require_rfs_claim(claim)
+	return claim_workspace.set_claim_progress(claim, progress, modified)
