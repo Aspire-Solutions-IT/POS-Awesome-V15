@@ -237,7 +237,7 @@ describe("ClaimsView", () => {
 		expect(wrapper.text()).toContain("Alice");
 		const firstCall = (api.call as any).mock.calls[0];
 		expect(firstCall[0]).toBe("posawesome.posawesome.api.claims.list_claims");
-		expect(firstCall[1]).toMatchObject({ progress: "Open", start: 0 });
+		expect(firstCall[1]).toMatchObject({ progress: "", open_only: 1, start: 0 });
 	});
 
 	it("loads detail when a claim row is clicked", async () => {

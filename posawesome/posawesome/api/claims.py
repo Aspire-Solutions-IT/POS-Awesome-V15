@@ -174,7 +174,14 @@ def get_sales_order_claim_summary(sales_order):
 
 @frappe.whitelist()
 def list_claims(
-	search="", approval="", progress="", assigned_to="", claim_type="", sales_order="", start=0
+	search="",
+	approval="",
+	progress="",
+	assigned_to="",
+	claim_type="",
+	sales_order="",
+	open_only=0,
+	start=0,
 ):
 	"""Filterable claims overview for the POSAwesome Claims screen (RFS orders only)."""
 	return claim_workspace.get_overview(
@@ -185,6 +192,7 @@ def list_claims(
 		claim_type=claim_type,
 		sales_order=sales_order,
 		rfs_only=1,
+		open_only=open_only,
 		start=start,
 	)
 

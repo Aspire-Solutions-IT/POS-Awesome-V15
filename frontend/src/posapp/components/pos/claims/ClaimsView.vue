@@ -18,7 +18,7 @@
 		</div>
 
 		<div class="claims-view__summary">
-			<button type="button" :class="{ active: filters.approval === '' && filters.progress === 'Open' }" @click="applySummary('open')">
+			<button type="button" :class="{ active: filters.open_only }" @click="applySummary('open')">
 				<span>{{ __("Open claims") }}</span>
 				<strong>{{ counts.open }}</strong>
 			</button>
@@ -61,7 +61,7 @@
 				density="compact"
 				hide-details
 				class="pos-themed-input"
-				@update:model-value="reload"
+				@update:model-value="filterChanged"
 			/>
 			<v-select
 				v-model="filters.progress"
@@ -70,7 +70,7 @@
 				density="compact"
 				hide-details
 				class="pos-themed-input"
-				@update:model-value="reload"
+				@update:model-value="filterChanged"
 			/>
 			<v-select
 				v-model="filters.claim_type"
@@ -79,7 +79,7 @@
 				density="compact"
 				hide-details
 				class="pos-themed-input"
-				@update:model-value="reload"
+				@update:model-value="filterChanged"
 			/>
 			<v-text-field
 				v-model="filters.assigned_to"
@@ -486,14 +486,20 @@ const router = useRouter();
 const filters = reactive({
 	search: "",
 	approval: "",
-	progress: "Open",
+	progress: "",
 	claim_type: "",
 	assigned_to: "",
 	sales_order: typeof route.query.sales_order === "string" ? route.query.sales_order : "",
+	// Not yet Closed and not Rejected -- the default landing view. Deliberately
+	// NOT the same as the literal "Open" progress value (the very first step,
+	// before a decision even exists), which stays a precise, separately
+	// selectable choice in the Progress dropdown -- see workspace.get_overview's
+	// OPEN_CLAIMS_FILTER.
+	open_only: true,
 });
 // Arriving pre-filtered to one order (from Sales Order Management) should show
 // every claim on it, not just the open ones.
-if (filters.sales_order) filters.progress = "";
+if (filters.sales_order) filters.open_only = false;
 
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let listToken = 0;
@@ -575,6 +581,7 @@ async function reload() {
 			claim_type: filters.claim_type || "",
 			assigned_to: filters.assigned_to || "",
 			sales_order: filters.sales_order || "",
+			open_only: filters.open_only ? 1 : 0,
 			start: start.value,
 		});
 		if (disposed || token !== listToken) return;
@@ -599,7 +606,8 @@ function reloadFromStart() {
 
 function clearSalesOrder() {
 	filters.sales_order = "";
-	filters.progress = "Open";
+	filters.progress = "";
+	filters.open_only = true;
 	if (route.query.sales_order) {
 		void router.replace({ path: "/claims", query: {} });
 	}
@@ -615,16 +623,21 @@ function scheduleReload() {
 	searchTimer = setTimeout(reloadFromStart, 300);
 }
 
+function filterChanged() {
+	// An explicit filter change always means the user is choosing something
+	// specific -- the "Open claims" tile's broader meaning no longer applies.
+	filters.open_only = false;
+	reloadFromStart();
+}
+
 function applySummary(kind: "open" | "pending" | "approved") {
+	filters.progress = "";
 	if (kind === "open") {
 		filters.approval = "";
-		filters.progress = "Open";
-	} else if (kind === "pending") {
-		filters.approval = "Pending Approval";
-		filters.progress = "";
+		filters.open_only = true;
 	} else {
-		filters.approval = "Approved";
-		filters.progress = "";
+		filters.approval = kind === "pending" ? "Pending Approval" : "Approved";
+		filters.open_only = false;
 	}
 	reloadFromStart();
 }
