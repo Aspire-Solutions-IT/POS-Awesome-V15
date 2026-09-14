@@ -13,6 +13,8 @@ from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
 from frappe.utils import cint, cstr, flt, getdate, nowdate, split_emails, validate_email_address
 
+from posawesome.posawesome.api.email_validation import validate_optional_email
+
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
 
@@ -2268,7 +2270,7 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
 
     # Same resolution the receipt resend uses, so the link defaults to wherever this
     # order's paperwork already goes rather than asking the till operator to know it.
-    recipient = cstr(email or "").strip() or _resolve_customer_email(doc)
+    recipient = validate_optional_email(email) or _resolve_customer_email(doc)
 
     from customer_due_dates.revolut.payment_link import create_payment_link
 
