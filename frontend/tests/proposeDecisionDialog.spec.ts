@@ -153,7 +153,7 @@ describe("ProposeDecisionDialog", () => {
 	it("defaults the outcome to the claim's preferred outcome", async () => {
 		const wrapper = mountDialog();
 		await flushPromises();
-		const select = wrapper.find("select[aria-label='Approved outcome']")
+		const select = wrapper.find("select[aria-label='Suggested outcome']")
 			.element as HTMLSelectElement;
 		expect(select.value).toBe("Replace");
 	});
@@ -170,11 +170,42 @@ describe("ProposeDecisionDialog", () => {
 	it("requires a positive amount for Refund", async () => {
 		const wrapper = mountDialog();
 		await flushPromises();
-		await wrapper.find("select[aria-label='Approved outcome']").setValue("Refund");
+		await wrapper.find("select[aria-label='Suggested outcome']").setValue("Refund");
 		await wrapper.find("textarea[aria-label='Reasoning']").setValue("Confirmed faulty.");
 		await tickItem(wrapper, "Include ITEM-1");
 		await flushPromises();
 		expect(recordButton(wrapper).attributes("disabled")).toBeDefined();
+	});
+
+	it("hides the replacement/spare-part columns for a Refund", async () => {
+		const wrapper = mountDialog();
+		await flushPromises();
+		await wrapper.find("select[aria-label='Suggested outcome']").setValue("Refund");
+		await flushPromises();
+		expect(wrapper.text()).not.toContain("Replacement / spare part");
+		expect(wrapper.text()).not.toContain("Part qty");
+		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
+	});
+
+	it("shows the replacement columns for a Service Call Spare Part but not a Maintenance Visit", async () => {
+		// Real gap this covers: needsReplacement previously only checked
+		// Exchange/Replace, missing the Service Call + Spare Part case the
+		// server (CustomerClaimDecision._validate_items) and the Desk dialog
+		// (dialogs.js's updateItemColumnsVisibility) both already treat as
+		// needing a replacement item.
+		const wrapper = mountDialog();
+		await flushPromises();
+		await wrapper.find("select[aria-label='Suggested outcome']").setValue("Service Call");
+		await flushPromises();
+		await wrapper.find("select[aria-label='Service type']").setValue("Maintenance Visit");
+		await flushPromises();
+		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
+
+		await wrapper.find("select[aria-label='Service type']").setValue("Spare Part");
+		await flushPromises();
+		expect(wrapper.findAll("input[placeholder='Item code']").length).toBe(
+			wrapper.findAll("tbody tr").length,
+		);
 	});
 
 	it("submits the selected lines with replacement details and emits created", async () => {

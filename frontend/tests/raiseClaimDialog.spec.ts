@@ -16,6 +16,8 @@ vi.mock("../src/posapp/stores/toastStore.js", () => ({
 
 import RaiseClaimDialog from "../src/posapp/components/pos/claims/RaiseClaimDialog.vue";
 import api from "../src/posapp/services/api";
+import { useEmployeeStore } from "../src/posapp/stores/employeeStore";
+import { useUIStore } from "../src/posapp/stores/uiStore.js";
 
 /** Match frappe's __(): substitute {0}, {1}, … from the args array. */
 const translate = (value: string, args?: any[]) =>
@@ -203,6 +205,30 @@ describe("RaiseClaimDialog", () => {
 		expect(onCreated).toHaveBeenCalledWith("CLM-0001");
 		expect(onClose).toHaveBeenCalledWith(false);
 		expect(toastShow).toHaveBeenCalled();
+	});
+
+	it("attributes the raised claim to the selected POS cashier, not the ERP login", async () => {
+		useUIStore().setPosProfile({ name: "Irthlingborough" } as any);
+		useEmployeeStore().setCurrentCashier({ user: "tony@example.com", full_name: "Tony" });
+
+		const wrapper = mountDialog();
+		await flushPromises();
+
+		await wrapper.find("select[aria-label='Preferred outcome']").setValue("Replace");
+		await wrapper.find("textarea[aria-label='What is wrong?']").setValue("Arrived cracked");
+		const checkboxes = wrapper.findAll("input[type='checkbox']");
+		await checkboxes[0].setValue(true);
+		await flushPromises();
+
+		const submit = wrapper.findAll("button").find((b) => b.text() === "Submit for review")!;
+		await submit.trigger("click");
+		await flushPromises();
+
+		const call = (api.call as any).mock.calls.find((c: any[]) => c[0].endsWith("raise_claim"));
+		expect(call[1].payload).toMatchObject({
+			assigned_to: "tony@example.com",
+			pos_profile: "Irthlingborough",
+		});
 	});
 
 	it("keeps submit disabled until an item is selected", async () => {

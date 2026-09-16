@@ -184,20 +184,6 @@
 							{{ detail.claim.progress }}
 						</span>
 					</div>
-					<div v-if="(detail.progress_actions || []).length" class="claims-view__progress-actions">
-						<span class="text-medium-emphasis">{{ __("Move progress:") }}</span>
-						<v-btn
-							v-for="step in detail.progress_actions"
-							:key="step"
-							size="x-small"
-							variant="tonal"
-							:disabled="progressBusy"
-							@click="moveProgress(step)"
-						>
-							{{ step }}
-						</v-btn>
-					</div>
-
 					<h3 class="mt-2">{{ detail.claim.customer }}</h3>
 					<p class="claims-view__description">{{ detail.claim.description }}</p>
 
@@ -331,22 +317,6 @@
 								>
 							</li>
 						</ul>
-						<div
-							v-if="(decision.available_actions || []).length"
-							class="claims-view__toolbar"
-						>
-							<v-btn
-								v-for="choice in decision.available_actions"
-								:key="choice"
-								size="x-small"
-								:color="choice === 'Reject' ? undefined : 'primary'"
-								:variant="choice === 'Reject' ? 'text' : 'tonal'"
-								:disabled="decisionBusy"
-								@click="decisionTransition(decision, choice)"
-							>
-								{{ choice }}
-							</v-btn>
-						</div>
 						<div v-if="(decision.actions || []).length" class="claims-view__decision-actions">
 							<article
 								v-for="action in decision.actions"
@@ -385,34 +355,6 @@
 			@created="onDecisionCreated"
 		/>
 
-		<v-dialog v-model="rejectDialogOpen" max-width="420">
-			<v-card class="pos-themed-card">
-				<v-card-title>{{ __("Reject decision") }}</v-card-title>
-				<v-card-text class="pt-2">
-					<v-textarea
-						v-model="rejectReason"
-						:label="__('Reason')"
-						rows="3"
-						auto-grow
-						class="pos-themed-input"
-					/>
-				</v-card-text>
-				<v-card-actions class="justify-end">
-					<v-btn variant="text" :disabled="decisionBusy" @click="rejectDialogOpen = false">
-						{{ __("Cancel") }}
-					</v-btn>
-					<v-btn
-						color="error"
-						variant="flat"
-						:loading="decisionBusy"
-						:disabled="decisionBusy || !rejectReason.trim()"
-						@click="submitReject"
-					>
-						{{ __("Confirm rejection") }}
-					</v-btn>
-				</v-card-actions>
-			</v-card>
-		</v-dialog>
 	</v-card>
 </template>
 
@@ -474,11 +416,6 @@ const hasMore = ref(false);
 const counts = reactive({ open: 0, pending: 0, approved: 0 });
 const claimTypes = ref<Array<{ name: string }>>([]);
 const showProposeDecision = ref(false);
-const decisionBusy = ref(false);
-const progressBusy = ref(false);
-const rejectDialogOpen = ref(false);
-const rejectReason = ref("");
-let rejectTarget: ClaimDecision | null = null;
 
 const route = useRoute();
 const router = useRouter();
@@ -604,13 +541,17 @@ function reloadFromStart() {
 	void reload();
 }
 
-function clearSalesOrder() {
+function clearSalesOrderFilter() {
 	filters.sales_order = "";
-	filters.progress = "";
-	filters.open_only = true;
 	if (route.query.sales_order) {
 		void router.replace({ path: "/claims", query: {} });
 	}
+}
+
+function clearSalesOrder() {
+	clearSalesOrderFilter();
+	filters.progress = "";
+	filters.open_only = true;
 	reloadFromStart();
 }
 
@@ -631,6 +572,11 @@ function filterChanged() {
 }
 
 function applySummary(kind: "open" | "pending" | "approved") {
+	// The summary tiles are always the full, business-wide counts (see
+	// workspace.get_overview's count_scope), so clicking one must return the
+	// full matching list too -- not stay scoped to whatever single sales_order
+	// this page may have arrived pre-filtered to.
+	clearSalesOrderFilter();
 	filters.progress = "";
 	if (kind === "open") {
 		filters.approval = "";
@@ -674,68 +620,6 @@ function refresh() {
 
 function onDecisionCreated() {
 	refresh();
-}
-
-async function decisionTransition(decision: ClaimDecision, action: string) {
-	if (action === "Reject") {
-		rejectTarget = decision;
-		rejectReason.value = "";
-		rejectDialogOpen.value = true;
-		return;
-	}
-	decisionBusy.value = true;
-	try {
-		await api.call("posawesome.posawesome.api.claims.decision_transition", {
-			name: decision.name,
-			action,
-			modified: decision.modified,
-		});
-		refresh();
-	} catch (error: any) {
-		listError.value =
-			error?.message?.message || error?.message || __("The decision could not be updated.");
-	} finally {
-		decisionBusy.value = false;
-	}
-}
-
-async function submitReject() {
-	if (!rejectTarget || !rejectReason.value.trim() || decisionBusy.value) return;
-	decisionBusy.value = true;
-	try {
-		await api.call("posawesome.posawesome.api.claims.decision_transition", {
-			name: rejectTarget.name,
-			action: "Reject",
-			modified: rejectTarget.modified,
-			reason: rejectReason.value.trim(),
-		});
-		rejectDialogOpen.value = false;
-		rejectTarget = null;
-		refresh();
-	} catch (error: any) {
-		listError.value =
-			error?.message?.message || error?.message || __("The decision could not be rejected.");
-	} finally {
-		decisionBusy.value = false;
-	}
-}
-
-async function moveProgress(step: string) {
-	if (!detail.value || progressBusy.value) return;
-	progressBusy.value = true;
-	try {
-		await api.call("posawesome.posawesome.api.claims.set_claim_progress", {
-			claim: detail.value.claim.name,
-			progress: step,
-			modified: detail.value.claim.modified,
-		});
-		refresh();
-	} catch (error: any) {
-		listError.value =
-			error?.message?.message || error?.message || __("The claim progress could not be updated.");
-	} finally {
-		progressBusy.value = false;
-	}
 }
 
 onMounted(reload);
@@ -918,13 +802,6 @@ defineExpose({ reload, selectClaim });
 	background: #eef2f7;
 	color: #445;
 }
-.claims-view__progress-actions {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	flex-wrap: wrap;
-	margin-top: 10px;
-}
 .claims-view__section-head {
 	display: flex;
 	align-items: center;
@@ -946,12 +823,6 @@ defineExpose({ reload, selectClaim });
 	margin: 8px 0;
 	padding-left: 18px;
 	font-size: 12px;
-}
-.claims-view__toolbar {
-	display: flex;
-	gap: 8px;
-	flex-wrap: wrap;
-	margin-top: 10px;
 }
 .claims-view__decision {
 	border: 1px solid var(--pos-border-color, rgba(0, 0, 0, 0.12));

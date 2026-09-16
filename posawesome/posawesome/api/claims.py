@@ -10,11 +10,12 @@ import base64
 import binascii
 
 import frappe
+from customer_due_dates.customer_claims import workspace as claim_workspace
+from customer_due_dates.customer_claims.api import get_order_items
 from frappe import _
 from frappe.utils import cstr
 
-from customer_due_dates.customer_claims import workspace as claim_workspace
-from customer_due_dates.customer_claims.api import get_order_items
+from posawesome.posawesome.api.employees import _get_terminal_users
 
 PREFERRED_OUTCOMES = ("Exchange", "Refund", "Credit", "Replace", "Service Call")
 SERVICE_CALL_TYPES = ("Maintenance Visit", "Spare Part")
@@ -140,17 +141,54 @@ def upload_claim_evidence(filename, content_base64):
 	return {"file_url": file_doc.file_url, "file_name": file_doc.file_name}
 
 
+def _resolve_pos_actor(pos_profile, requested_user):
+	"""The POS cashier actually raising this claim, not the shared terminal's
+	own Frappe login -- many branches share one ERP session across staff and
+	pick the real operator via the till's own cashier switch. Falls back to
+	the session user whenever there's nothing to attribute to, and
+	re-validates the requested user against the POS Profile's own registered
+	cashier roster (the same check the cashier switch itself uses) so this
+	can't be used to attribute a claim to an arbitrary, unrelated user."""
+	requested_user = (requested_user or "").strip()
+	if not requested_user or requested_user == frappe.session.user:
+		return frappe.session.user
+	profile_name = (pos_profile or "").strip()
+	if not profile_name or requested_user not in _get_terminal_users(profile_name):
+		return frappe.session.user
+	return requested_user
+
+
 @frappe.whitelist(methods=["POST"])
 def raise_claim(payload):
 	"""Create a claim from POSAwesome and submit it for approval.
 
 	Delegates to the claims workspace so evidence rules, item ownership and the
-	real Workflow transition all run exactly as they do on the Desk.
+	real Workflow transition all run exactly as they do on the Desk. Attributed
+	to the POS cashier actually running the till (see _resolve_pos_actor), not
+	the shared terminal's own login: both `assigned_to` (the claim's own
+	"Claim Owner" field) and the record's `owner` ("Raised by") end up as that
+	cashier. `owner` can't be set through the normal insert path -- Frappe's
+	own `set_user_and_timestamp` always forces it to the real session user
+	there, by design -- so it's corrected afterwards with an explicit,
+	validated `db_set` once the claim exists.
+
+	`acting_as=cashier` also makes auto-approval follow the cashier's own role,
+	not the shared terminal session's -- a Desk/POS terminal login can hold
+	Claim Approver (needed to administer the till) even when the cashier
+	actually raising the claim only holds Claim User, and without this a claim
+	raised by a plain Claim User cashier would wrongly auto-approve itself
+	just because of who the terminal happens to be logged in as.
 	"""
 	parsed = frappe.parse_json(payload)
-	if isinstance(parsed, dict):
-		_require_rfs_order(parsed.get("sales_order"))
-	return claim_workspace.create_claim(payload)
+	if not isinstance(parsed, dict):
+		return claim_workspace.create_claim(payload)
+	_require_rfs_order(parsed.get("sales_order"))
+	cashier = _resolve_pos_actor(parsed.get("pos_profile"), parsed.get("assigned_to"))
+	parsed["assigned_to"] = cashier
+	result = claim_workspace.create_claim(parsed, acting_as=cashier)
+	if cashier != frappe.session.user:
+		frappe.db.set_value("Customer Claim", result["name"], "owner", cashier, update_modified=False)
+	return result
 
 
 @frappe.whitelist()
@@ -212,18 +250,18 @@ def _require_rfs_claim(claim):
 
 @frappe.whitelist(methods=["POST"])
 def propose_decision(payload):
-	"""Record a resolution decision for a claim on an RFS order."""
+	"""Record a resolution decision for a claim on an RFS order.
+
+	Always goes to Pending Approval, never auto-approves (require_approval=True)
+	-- a shared POS terminal's own Frappe login can hold Claim Approver even
+	when there's no reliable way to know which specific person at the till is
+	actually proposing this decision, so it must always be reviewed by a real
+	Desk user before it takes effect.
+	"""
 	parsed = frappe.parse_json(payload)
 	if isinstance(parsed, dict):
 		_require_rfs_claim(parsed.get("claim"))
-	return claim_workspace.create_decision(payload)
-
-
-@frappe.whitelist(methods=["POST"])
-def decision_transition(name, action, modified, reason=""):
-	"""Approve / reject / submit a Customer Claim Decision from POSAwesome."""
-	_require_rfs_claim(frappe.db.get_value("Customer Claim Decision", name, "claim"))
-	return claim_workspace.transition("Customer Claim Decision", name, action, modified, reason)
+	return claim_workspace.create_decision(payload, require_approval=True)
 
 
 @frappe.whitelist(methods=["POST"])

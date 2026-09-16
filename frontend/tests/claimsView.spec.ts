@@ -291,7 +291,24 @@ describe("ClaimsView", () => {
 		expect(lastCall[1]).toMatchObject({ sales_order: "", start: 0 });
 	});
 
-	it("shows a decision with its nested actions and progress move buttons", async () => {
+	it("returns to the full list when a summary tile is clicked from a sales-order-filtered view", async () => {
+		// The summary tiles always show the full, business-wide counts (see
+		// workspace.get_overview's count_scope), so clicking one must clear
+		// the sales_order scope too, not stay pinned to just that one order.
+		routeQuery.sales_order = "SO-9";
+		const wrapper = mountView();
+		await flushPromises();
+
+		const pending = wrapper.findAll("button").find((b) => b.text().includes("Awaiting approval"))!;
+		await pending.trigger("click");
+		await flushPromises();
+
+		expect(routerReplace).toHaveBeenCalledWith({ path: "/claims", query: {} });
+		const lastCall = (api.call as any).mock.calls.at(-1);
+		expect(lastCall[1]).toMatchObject({ sales_order: "", approval: "Pending Approval" });
+	});
+
+	it("shows a decision with its nested actions", async () => {
 		(api.call as any).mockImplementation(async (method: string) => {
 			if (method.endsWith("list_claims")) return overview;
 			if (method.endsWith("get_claim")) {
@@ -299,7 +316,6 @@ describe("ClaimsView", () => {
 					...detail,
 					claim: { ...detail.claim, workflow_state: "Approved", progress: "In Progress" },
 					decisions: [approverDecision],
-					progress_actions: ["Awaiting Customer", "Awaiting Engineer", "Ready to Close"],
 					can_add_decision: true,
 				};
 			}
@@ -314,10 +330,9 @@ describe("ClaimsView", () => {
 		expect(wrapper.text()).toContain("Confirmed faulty.");
 		expect(wrapper.text()).toContain("Ship replacement");
 		expect(wrapper.findAll("button").find((b) => b.text() === "Propose decision")).toBeTruthy();
-		expect(wrapper.findAll("button").find((b) => b.text() === "Awaiting Customer")).toBeTruthy();
 	});
 
-	it("moves claim progress and refreshes the detail", async () => {
+	it("never offers a manual progress move, even when the server returns progress_actions", async () => {
 		(api.call as any).mockImplementation(async (method: string) => {
 			if (method.endsWith("list_claims")) return overview;
 			if (method.endsWith("get_claim")) {
@@ -328,7 +343,6 @@ describe("ClaimsView", () => {
 					progress_actions: ["Awaiting Customer", "Awaiting Engineer", "Ready to Close"],
 				};
 			}
-			if (method.endsWith("set_claim_progress")) return { name: "CLM-0001", progress: "Awaiting Customer" };
 			return null;
 		});
 		const wrapper = mountView();
@@ -337,17 +351,15 @@ describe("ClaimsView", () => {
 		await row.trigger("click");
 		await flushPromises();
 
-		const step = wrapper.findAll("button").find((b) => b.text() === "Awaiting Customer")!;
-		await step.trigger("click");
-		await flushPromises();
-
-		const call = (api.call as any).mock.calls.find((c: any[]) =>
-			c[0].endsWith("set_claim_progress"),
-		);
-		expect(call[1]).toMatchObject({ claim: "CLM-0001", progress: "Awaiting Customer" });
+		expect(wrapper.text()).not.toContain("Move progress");
+		expect(wrapper.findAll("button").find((b) => b.text() === "Awaiting Customer")).toBeFalsy();
 	});
 
-	it("rejects a decision with a reason", async () => {
+	it("never offers Approve/Reject for a decision, even when the server returns available_actions", async () => {
+		// Approving/rejecting a decision must always go through Desk -- a POS
+		// session can't be trusted to review it (see the CC-03650/CC-03651
+		// fixes), so this is never wired up here at all, regardless of what
+		// the server includes in available_actions.
 		const pendingDecision = { ...approverDecision, available_actions: ["Approve", "Reject"] };
 		(api.call as any).mockImplementation(async (method: string) => {
 			if (method.endsWith("list_claims")) return overview;
@@ -358,7 +370,6 @@ describe("ClaimsView", () => {
 					decisions: [pendingDecision],
 				};
 			}
-			if (method.endsWith("decision_transition")) return { name: "CCD-0001", workflow_state: "Rejected" };
 			return null;
 		});
 		const wrapper = mountView();
@@ -367,17 +378,8 @@ describe("ClaimsView", () => {
 		await row.trigger("click");
 		await flushPromises();
 
-		const rejectButton = wrapper.findAll("button").find((b) => b.text() === "Reject")!;
-		await rejectButton.trigger("click");
-		await wrapper.find("textarea[aria-label='Reason']").setValue("Not eligible.");
-		const confirm = wrapper.findAll("button").find((b) => b.text() === "Confirm rejection")!;
-		await confirm.trigger("click");
-		await flushPromises();
-
-		const call = (api.call as any).mock.calls.find((c: any[]) =>
-			c[0].endsWith("decision_transition"),
-		);
-		expect(call[1]).toMatchObject({ name: "CCD-0001", action: "Reject", reason: "Not eligible." });
+		expect(wrapper.findAll("button").find((b) => b.text() === "Approve")).toBeFalsy();
+		expect(wrapper.findAll("button").find((b) => b.text() === "Reject")).toBeFalsy();
 	});
 
 	it("proposes a decision from the claim detail", async () => {
@@ -405,7 +407,7 @@ describe("ClaimsView", () => {
 
 		// Service Call needs no replacement item or amount, so this stays focused on the
 		// propose/submit wiring rather than every outcome-specific validation rule.
-		await wrapper.find("select[aria-label='Approved outcome']").setValue("Service Call");
+		await wrapper.find("select[aria-label='Suggested outcome']").setValue("Service Call");
 		await wrapper.find("select[aria-label='Service type']").setValue("Maintenance Visit");
 		await wrapper.find("textarea[aria-label='Reasoning']").setValue("Confirmed faulty.");
 		// checkbox 0 is "Collection required"; the item row checkbox comes after it.

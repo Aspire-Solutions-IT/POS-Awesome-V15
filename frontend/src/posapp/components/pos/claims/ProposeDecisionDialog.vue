@@ -38,7 +38,7 @@
 						<v-select
 							v-model="form.outcome"
 							:items="outcomes"
-							:label="__('Approved outcome')"
+							:label="__('Suggested outcome')"
 							density="compact"
 							hide-details
 							class="pos-themed-input"
@@ -71,7 +71,7 @@
 							type="number"
 							min="0"
 							step="0.01"
-							:label="__('Approved amount')"
+							:label="__('Suggested amount')"
 							:suffix="claim.currency"
 							density="compact"
 							hide-details
@@ -105,8 +105,10 @@
 								<th style="width: 44px"></th>
 								<th>{{ __("Item") }}</th>
 								<th style="width: 100px">{{ __("Qty") }}</th>
-								<th>{{ __("Replacement / spare part") }}</th>
-								<th style="width: 90px">{{ __("Part qty") }}</th>
+								<template v-if="needsReplacement">
+									<th>{{ __("Replacement / spare part") }}</th>
+									<th style="width: 90px">{{ __("Part qty") }}</th>
+								</template>
 							</tr>
 						</thead>
 						<tbody>
@@ -135,27 +137,29 @@
 										class="pos-themed-input"
 									/>
 								</td>
-								<td>
-									<v-text-field
-										v-model="row.replacement_item"
-										density="compact"
-										hide-details
-										:disabled="!row.selected"
-										:placeholder="__('Item code')"
-										class="pos-themed-input"
-									/>
-								</td>
-								<td>
-									<v-text-field
-										v-model.number="row.replacement_qty"
-										type="number"
-										min="0"
-										density="compact"
-										hide-details
-										:disabled="!row.selected || !row.replacement_item"
-										class="pos-themed-input"
-									/>
-								</td>
+								<template v-if="needsReplacement">
+									<td>
+										<v-text-field
+											v-model="row.replacement_item"
+											density="compact"
+											hide-details
+											:disabled="!row.selected"
+											:placeholder="__('Item code')"
+											class="pos-themed-input"
+										/>
+									</td>
+									<td>
+										<v-text-field
+											v-model.number="row.replacement_qty"
+											type="number"
+											min="0"
+											density="compact"
+											hide-details
+											:disabled="!row.selected || !row.replacement_item"
+											class="pos-themed-input"
+										/>
+									</td>
+								</template>
 							</tr>
 						</tbody>
 					</v-table>
@@ -228,16 +232,26 @@ const form = reactive({
 
 const isMoneyOutcome = computed(() => form.outcome === "Refund" || form.outcome === "Credit");
 const selectedRows = computed(() => itemRows.value.filter((row) => row.selected));
+// Mirrors the Desk dialog's updateItemColumnsVisibility (dialogs.js) and the
+// server's own needs_replacement (CustomerClaimDecision._validate_items) --
+// a replacement/spare part only means anything for Exchange, Replace, or a
+// Service Call that's specifically a Spare Part visit, never for Refund/
+// Credit/Maintenance Visit, which don't move stock.
+const needsReplacement = computed(
+	() =>
+		form.outcome === "Exchange" ||
+		form.outcome === "Replace" ||
+		(form.outcome === "Service Call" && form.service_call_type === "Spare Part"),
+);
 
 const canSubmit = computed(() => {
 	if (!form.outcome || !form.reasoning.trim()) return false;
 	if (form.outcome === "Service Call" && !form.service_call_type) return false;
 	if (isMoneyOutcome.value && !(Number(form.amount) > 0)) return false;
 	if (!selectedRows.value.length) return false;
-	const needsReplacement = form.outcome === "Exchange" || form.outcome === "Replace";
 	return selectedRows.value.every((row) => {
 		if (!(Number(row.qty) > 0 && Number(row.qty) <= row.maxQty)) return false;
-		if (needsReplacement && !row.replacement_item) return false;
+		if (needsReplacement.value && !row.replacement_item) return false;
 		return true;
 	});
 });

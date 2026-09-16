@@ -211,8 +211,11 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
 import api from "../../../services/api";
 import { useToastStore } from "../../../stores/toastStore.js";
+import { useUIStore } from "../../../stores/uiStore.js";
+import { useEmployeeStore } from "../../../stores/employeeStore";
 
 declare const __: (value: string, args?: any[]) => string;
 
@@ -272,6 +275,10 @@ const emit = defineEmits<{
 }>();
 
 const toastStore = useToastStore();
+const uiStore = useUIStore();
+const { posProfile } = storeToRefs(uiStore);
+const employeeStore = useEmployeeStore();
+const { currentCashier } = storeToRefs(employeeStore);
 
 const loading = ref(false);
 const loadError = ref("");
@@ -434,6 +441,12 @@ async function submit() {
 			service_call_type:
 				form.preferred_outcome === "Service Call" ? form.service_call_type : "",
 			evidence,
+			// The cashier actually raising this on the till, not the shared
+			// terminal's ERP login -- the server re-validates this against the
+			// profile's own registered cashiers before trusting it (see
+			// posawesome.api.claims._resolve_pos_actor).
+			assigned_to: currentCashier.value?.user || "",
+			pos_profile: posProfile.value?.name || "",
 			items: selectedRows.value.map((row) => ({
 				sales_order_item: row.sales_order_item,
 				qty: Number(row.qty),
