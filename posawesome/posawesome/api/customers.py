@@ -14,6 +14,7 @@ from erpnext.accounts.doctype.loyalty_program.loyalty_program import (
 from frappe.utils.caching import redis_cache
 from .utils import fetch_sales_person_names
 from .stored_value import get_stored_value_summary
+from .email_validation import validate_optional_email
 
 EXCLUDED_POS_CUSTOMER_NAMES = {"13682"}
 
@@ -397,6 +398,7 @@ def create_customer(
     county=None,
     country=None,
 ):
+    email_id = validate_optional_email(email_id)
     pos_profile = json.loads(pos_profile_doc)
 
     # Format birthday to MySQL compatible format (YYYY-MM-DD) if provided
@@ -522,6 +524,8 @@ def create_customer(
 
 @frappe.whitelist()
 def set_customer_info(customer, fieldname, value=""):
+    if fieldname == "email_id":
+        value = validate_optional_email(value)
     if fieldname == "loyalty_program":
         frappe.db.set_value("Customer", customer, "loyalty_program", value)
 
@@ -805,6 +809,7 @@ def make_address(args):
     if isinstance(args, str):
         args = json.loads(args)
     args = args or {}
+    args["email_id"] = validate_optional_email(args.get("email_id"))
     address = frappe.get_doc(
         {
             "doctype": "Address",

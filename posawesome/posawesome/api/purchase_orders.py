@@ -10,6 +10,7 @@ from erpnext.accounts.party import get_party_account
 
 
 from .utils import get_active_pos_profile, get_default_warehouse
+from .email_validation import validate_optional_email
 
 
 
@@ -241,6 +242,7 @@ def _create_purchase_receipt(po_doc, payload, default_warehouse, transaction_dat
 @frappe.whitelist()
 def create_supplier(data):
     payload = json.loads(data) if isinstance(data, str) else data
+    payload["email_id"] = validate_optional_email(payload.get("email_id"))
     profile = _resolve_pos_profile(payload.get("pos_profile"))
     _ensure_allowed(profile, "posa_allow_create_purchase_suppliers", _("Create suppliers"))
 

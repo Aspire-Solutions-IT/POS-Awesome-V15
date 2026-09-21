@@ -712,6 +712,15 @@ body[data-page-route="posapp"] #body {
 	overflow-y: auto !important;
 }
 
+/* Frappe reserves a top margin on .main-section for its own navbar, which is
+   hidden above. Left in place it makes the document taller than the viewport,
+   so the page scrolls and drags the POS top bar out of view. */
+body[data-route="posapp"] .main-section,
+body[data-route^="posapp/"] .main-section {
+	margin-top: 0 !important;
+	padding-top: 0 !important;
+}
+
 /* Ensure no residual sidebar space */
 body[data-page-route="posapp"] .desk-container {
 	padding-left: 0 !important;

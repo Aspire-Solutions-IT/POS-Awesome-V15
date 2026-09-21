@@ -258,10 +258,10 @@ export default {
 			additionalDiscountPercentage,
 		} = storeToRefs(invoiceStore);
 		const usePaymentDialog = computed(() => responsive.windowWidth.value >= 992);
-		const useCompactPosSwitcher = computed(() => responsive.windowWidth.value < 1100);
+		const useCompactPosSwitcher = computed(() => responsive.windowWidth.value < 1024);
 		const compactPanel = ref("selector");
 		const isPhone = computed(() => responsive.isPhone.value);
-		const showBottomDock = computed(() => !dialog.value && responsive.windowWidth.value < 1100);
+		const showBottomDock = computed(() => !dialog.value && responsive.windowWidth.value < 1024);
 		const bottomDockHeight = ref(0);
 		let mobileDockObserver = null;
 		const isEditingAdditionalDiscount = ref(false);

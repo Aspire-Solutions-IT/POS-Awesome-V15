@@ -763,8 +763,9 @@
 							v-model="revolutForm.email"
 							:label="__('Send To')"
 							density="compact"
-							hide-details
+							hide-details="auto"
 							type="email"
+							:rules="[emailRule]"
 							class="pos-themed-input mb-2"
 						/>
 						<v-checkbox
@@ -802,7 +803,7 @@
 							:disabled="
 								revolutLoading ||
 								(!isRevolutResendMode && !revolutForm.amount) ||
-								(revolutForm.sendEmail && !revolutForm.email)
+								(revolutForm.sendEmail && (!revolutForm.email || !revolutEmailValid))
 							"
 							@click="submitRevolutPaymentLink"
 						>
@@ -925,6 +926,7 @@
 						persistent-hint
 						density="compact"
 						type="email"
+						:rules="[emailRule]"
 						class="pos-themed-input"
 					/>
 					<!-- Opt-in: a resend is usually a fix for one customer, so the office
@@ -1074,7 +1076,11 @@ import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
+import { isValidOptionalEmail } from "../../../utils/emailValidation";
 import { storeToRefs } from "pinia";
+
+const emailRule = (value: unknown) =>
+	isValidOptionalEmail(value) || __("Enter a valid email address");
 
 declare const __: (value: string, args?: any[]) => string;
 
@@ -1819,8 +1825,14 @@ const closeRevolutDialog = () => {
 	revolutResult.value = null;
 };
 
+const revolutEmailValid = computed(() => isValidOptionalEmail(revolutForm.email));
+
 const submitRevolutPaymentLink = async () => {
 	if (!selectedOrder.value || revolutLoading.value) return;
+	if (revolutForm.sendEmail && !revolutEmailValid.value) {
+		revolutError.value = __("Enter a valid email address");
+		return;
+	}
 
 	revolutLoading.value = true;
 	revolutError.value = "";
@@ -1975,6 +1987,7 @@ const receiptCurrentRecipient = computed(
 const receiptCanSend = computed(
 	() =>
 		Boolean(receiptState.value?.print_format) &&
+		isValidOptionalEmail(receiptForm.email) &&
 		(receiptEmailChanged.value || Boolean(receiptState.value?.recipient)),
 );
 

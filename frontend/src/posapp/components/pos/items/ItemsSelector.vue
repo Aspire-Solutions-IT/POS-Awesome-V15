@@ -144,7 +144,7 @@
 			:active-price-list="active_price_list"
 			:offers-count="offersCount"
 			:coupons-count="couponsCount"
-			:reserve-bottom-dock-space="context === 'pos' && responsive.windowWidth.value < 1100"
+			:reserve-bottom-dock-space="context === 'pos' && responsive.windowWidth.value < 1024"
 			@open-offers="uiStore.setActiveView('offers')"
 			@open-coupons="uiStore.setActiveView('coupons')"
 		/>

@@ -53,6 +53,8 @@
 					density="compact"
 					variant="outlined"
 					class="pos-themed-input"
+					type="email"
+					:rules="[emailRule]"
 				/>
 			</v-card-text>
 			<v-card-actions>
@@ -69,6 +71,8 @@
 </template>
 
 <script>
+import { isValidOptionalEmail } from "../../../../utils/emailValidation";
+
 export default {
 	props: {
 		modelValue: Boolean,
@@ -95,6 +99,9 @@ export default {
 		},
 	},
 	methods: {
+		emailRule(value) {
+			return isValidOptionalEmail(value) || __("Enter a valid email address");
+		},
 		resetForm() {
 			this.form = {
 				supplier_name: "",
@@ -110,6 +117,10 @@ export default {
 				// Use the toast store passed as a prop or inject if available
 				// For now let's use frappe.msgprint or similar if available, or just emit error
 				this.$emit("error", __("Supplier name is required"));
+				return;
+			}
+			if (!isValidOptionalEmail(this.form.email_id)) {
+				this.$emit("error", __("Enter a valid email address"));
 				return;
 			}
 			this.loading = true;

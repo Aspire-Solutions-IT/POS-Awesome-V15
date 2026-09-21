@@ -89,8 +89,10 @@
 										density="compact"
 										color="primary"
 										class="pos-themed-input"
-										hide-details
-										v-model="address.email_id"
+									hide-details="auto"
+									type="email"
+									:rules="[emailRule]"
+									v-model="address.email_id"
 									></v-text-field>
 								</v-col>
 								<v-col cols="12" v-if="!isCollectedMode">
@@ -183,8 +185,10 @@
 											density="compact"
 											color="primary"
 											class="pos-themed-input"
-											hide-details
-											v-model="billing_address.email_id"
+										hide-details="auto"
+										type="email"
+										:rules="[emailRule]"
+										v-model="billing_address.email_id"
 										></v-text-field>
 									</v-col>
 								</template>
@@ -204,6 +208,7 @@
 
 <script>
 import { useToastStore } from "../../../stores/toastStore";
+import { isValidOptionalEmail } from "../../../utils/emailValidation";
 
 export default {
 	setup() {
@@ -242,6 +247,9 @@ export default {
 
 		requiredRule(value) {
 			return String(value || "").trim().length > 0 || __("This field is required");
+		},
+		emailRule(value) {
+			return isValidOptionalEmail(value) || __("Enter a valid email address");
 		},
 		toggleBillingDetails() {
 			this.showBillingDetails = !this.showBillingDetails;
