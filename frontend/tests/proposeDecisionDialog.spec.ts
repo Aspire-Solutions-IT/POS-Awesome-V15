@@ -177,22 +177,23 @@ describe("ProposeDecisionDialog", () => {
 		expect(recordButton(wrapper).attributes("disabled")).toBeDefined();
 	});
 
-	it("hides the replacement/spare-part columns for a Refund", async () => {
+	it("hides the replacement columns for a Refund", async () => {
 		const wrapper = mountDialog();
 		await flushPromises();
 		await wrapper.find("select[aria-label='Suggested outcome']").setValue("Refund");
 		await flushPromises();
-		expect(wrapper.text()).not.toContain("Replacement / spare part");
+		expect(wrapper.text()).not.toContain("Replacement");
 		expect(wrapper.text()).not.toContain("Part qty");
 		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
 	});
 
-	it("shows the replacement columns for a Service Call Spare Part but not a Maintenance Visit", async () => {
-		// Real gap this covers: needsReplacement previously only checked
-		// Exchange/Replace, missing the Service Call + Spare Part case the
-		// server (CustomerClaimDecision._validate_items) and the Desk dialog
-		// (dialogs.js's updateItemColumnsVisibility) both already treat as
-		// needing a replacement item.
+	it("never shows the replacement columns for a Service Call, only for Exchange/Replace", async () => {
+		// Policy change 2026-09-22: a Spare Part visit's Delivery Note/Stream
+		// order always carry the fixed "Spare Part" placeholder item regardless
+		// of what's picked here -- Replacement (renamed from "Replacement /
+		// spare part") is Exchange/Replace only now, matching the server
+		// (CustomerClaimDecision._validate_items' needs_replacement) and the
+		// Desk dialog (dialogs.js's updateItemColumnsVisibility).
 		const wrapper = mountDialog();
 		await flushPromises();
 		await wrapper.find("select[aria-label='Suggested outcome']").setValue("Service Call");
@@ -203,9 +204,7 @@ describe("ProposeDecisionDialog", () => {
 
 		await wrapper.find("select[aria-label='Service type']").setValue("Spare Part");
 		await flushPromises();
-		expect(wrapper.findAll("input[placeholder='Item code']").length).toBe(
-			wrapper.findAll("tbody tr").length,
-		);
+		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
 	});
 
 	it("submits the selected lines with replacement details and emits created", async () => {

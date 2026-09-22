@@ -106,7 +106,7 @@
 								<th>{{ __("Item") }}</th>
 								<th style="width: 100px">{{ __("Qty") }}</th>
 								<template v-if="needsReplacement">
-									<th>{{ __("Replacement / spare part") }}</th>
+									<th>{{ __("Replacement") }}</th>
 									<th style="width: 90px">{{ __("Part qty") }}</th>
 								</template>
 							</tr>
@@ -234,14 +234,13 @@ const isMoneyOutcome = computed(() => form.outcome === "Refund" || form.outcome 
 const selectedRows = computed(() => itemRows.value.filter((row) => row.selected));
 // Mirrors the Desk dialog's updateItemColumnsVisibility (dialogs.js) and the
 // server's own needs_replacement (CustomerClaimDecision._validate_items) --
-// a replacement/spare part only means anything for Exchange, Replace, or a
-// Service Call that's specifically a Spare Part visit, never for Refund/
-// Credit/Maintenance Visit, which don't move stock.
+// Exchange/Replace only, since those are the only outcomes that raise a real
+// replacement Sales Order from it. A Service Call Spare Part visit's Delivery
+// Note always carries the fixed "Spare Part" placeholder item regardless;
+// what the part actually is gets captured on the action itself instead
+// (Desk-only -- POS has no add-action capability for any outcome).
 const needsReplacement = computed(
-	() =>
-		form.outcome === "Exchange" ||
-		form.outcome === "Replace" ||
-		(form.outcome === "Service Call" && form.service_call_type === "Spare Part"),
+	() => form.outcome === "Exchange" || form.outcome === "Replace",
 );
 
 const canSubmit = computed(() => {
