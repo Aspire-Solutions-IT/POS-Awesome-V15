@@ -7,6 +7,8 @@ import json
 import frappe
 from frappe.utils import nowdate, flt
 from frappe import _
+from erpnext.accounts.party import get_party_account
+
 try:
     from erpnext.accounts.party import get_party_bank_account
 except ImportError:
@@ -285,6 +287,59 @@ def redeeming_customer_credit(invoice_doc, data, is_payment_entry, total_cash, c
                 except Exception as e:
                     frappe.log_error(frappe.get_traceback(), "POSAwesome JV Error")
                     frappe.throw(_("Unable to create Journal Entry for customer credit."))
+            elif row["type"] == "Journal Entry" and row["credit_to_redeem"]:
+                # Credit posted with no invoice/order reference (e.g. a Customer
+                # Claims goodwill credit -- see get_available_credit above). Same
+                # shape as the Invoice branch: debit the stored credit's own
+                # account, tagged back to the Journal Entry it came from (closing
+                # it out), and credit this new invoice's account, tagged to it.
+                jv_doc = frappe.get_doc(
+                    {
+                        "doctype": "Journal Entry",
+                        "voucher_type": "Journal Entry",
+                        "posting_date": today,
+                        "company": invoice_doc.company,
+                    }
+                )
+
+                debit_row = jv_doc.append("accounts", {})
+                debit_row.update(
+                    {
+                        "account": invoice_doc.debit_to,
+                        "party_type": "Customer",
+                        "party": invoice_doc.customer,
+                        "reference_type": "Journal Entry",
+                        "reference_name": row["credit_origin"],
+                        "debit_in_account_currency": row["credit_to_redeem"],
+                        "cost_center": cost_center,
+                    }
+                )
+
+                credit_row = jv_doc.append("accounts", {})
+                credit_row.update(
+                    {
+                        "account": invoice_doc.debit_to,
+                        "party_type": "Customer",
+                        "party": invoice_doc.customer,
+                        "reference_type": "Sales Invoice",
+                        "reference_name": invoice_doc.name,
+                        "credit_in_account_currency": row["credit_to_redeem"],
+                        "cost_center": cost_center,
+                    }
+                )
+
+                ensure_child_doctype(jv_doc, "accounts", "Journal Entry Account")
+
+                jv_doc.flags.ignore_permissions = True
+                frappe.flags.ignore_account_permission = True
+                jv_doc.user_remark = get_posawesome_credit_redeem_remark(invoice_doc.name)
+                jv_doc.set_missing_values()
+                try:
+                    jv_doc.save()
+                    jv_doc.submit()
+                except Exception as e:
+                    frappe.log_error(frappe.get_traceback(), "POSAwesome JV Error")
+                    frappe.throw(_("Unable to create Journal Entry for customer credit."))
 
     remaining_total_cash = flt(total_cash)
 
@@ -455,7 +510,92 @@ def get_available_credit(customer, company):
 
         total_credit.append(row)
 
+    # Credit posted directly against the customer's receivable account with no
+    # invoice/order reference -- e.g. a Customer Claims goodwill credit
+    # (customer_due_dates.customer_claims.execution.credit.issue_credit). Not a
+    # Payment Entry advance, so it needs its own type; see redeeming_customer_credit
+    # below for how it's actually spent. Same matching rule as the reconciliation
+    # screen's own Journal Entry credit source (payment_processing/data.py).
+    party_account = get_party_account("Customer", customer, company)
+    journal_credits = frappe.db.sql(
+        """
+            select
+                jea.parent as name,
+                sum(jea.credit_in_account_currency - jea.debit_in_account_currency) as credit_amount
+            from `tabJournal Entry Account` jea
+            inner join `tabJournal Entry` je on je.name = jea.parent
+            where je.docstatus = 1
+                and je.company = %(company)s
+                and jea.party_type = 'Customer'
+                and jea.party = %(customer)s
+                and jea.account = %(party_account)s
+                and (jea.reference_type is null or jea.reference_type = '' or jea.reference_type = 'Sales Order')
+                and (jea.reference_name is null or jea.reference_name = '')
+            group by jea.parent
+            having sum(jea.credit_in_account_currency - jea.debit_in_account_currency) > 0
+        """,
+        {"company": company, "customer": customer, "party_account": party_account},
+        as_dict=True,
+    )
+
+    for row in journal_credits:
+        net_credit = flt(row.credit_amount) - journal_entry_consumed_amount(row.name)
+        if net_credit < 0.01:
+            continue
+
+        total_credit.append(
+            {
+                "type": "Journal Entry",
+                "credit_origin": row.name,
+                "total_credit": net_credit,
+                "credit_to_redeem": 0,
+                "source_type": "Journal Entry",
+            }
+        )
+
     return total_credit
+
+
+def journal_entry_consumed_amount(je_name):
+    """How much of an unreferenced customer-credit Journal Entry (see
+    get_available_credit above) has already been spent, across the two ways that
+    can happen:
+
+    - Till checkout (redeeming_customer_credit's "Journal Entry" branch): a new
+      Journal Entry is posted whose debit row references this one directly.
+    - A Managed Sales Order (_apply_managed_sales_order_journal_credit in
+      sales_orders.py): the original entry is never touched -- a Journal Entry
+      row can't natively split across several orders the way a Payment Entry's
+      own references table can -- instead an Advance Payment Ledger Entry earmark
+      is recorded against it, the same mechanism a Payment Entry advance uses.
+
+    Without netting both of these out, the same credit would be reported as fully
+    available again on every subsequent check, however much of it has already
+    been spent either way."""
+    redeemed = frappe.db.sql(
+        """
+            select coalesce(sum(jea.debit_in_account_currency), 0)
+            from `tabJournal Entry Account` jea
+            inner join `tabJournal Entry` je on je.name = jea.parent
+            where je.docstatus = 1
+                and jea.reference_type = 'Journal Entry'
+                and jea.reference_name = %(je_name)s
+        """,
+        {"je_name": je_name},
+    )[0][0]
+
+    earmarked = frappe.db.sql(
+        """
+            select coalesce(-sum(amount), 0)
+            from `tabAdvance Payment Ledger Entry`
+            where voucher_type = 'Journal Entry'
+                and voucher_no = %(je_name)s
+                and delinked = 0
+        """,
+        {"je_name": je_name},
+    )[0][0]
+
+    return flt(redeemed) + flt(earmarked)
 
 
 def _coerce_text_list(value):

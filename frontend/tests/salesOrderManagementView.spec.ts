@@ -43,6 +43,15 @@ vi.mock("../src/posapp/stores/toastStore.js", () => ({
 	}),
 }));
 
+const { somRouterReplace, somRouteQuery } = vi.hoisted(() => ({
+	somRouterReplace: vi.fn(),
+	somRouteQuery: {} as { sales_order?: string },
+}));
+vi.mock("vue-router", () => ({
+	useRouter: () => ({ push: vi.fn(), replace: somRouterReplace }),
+	useRoute: () => ({ query: somRouteQuery }),
+}));
+
 import SalesOrderManagementView from "../src/posapp/components/pos/shell/SalesOrderManagementView.vue";
 import api from "../src/posapp/services/api";
 import { useUIStore } from "../src/posapp/stores/uiStore";
@@ -338,6 +347,7 @@ describe("SalesOrderManagementView", () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		vi.clearAllMocks();
+		delete somRouteQuery.sales_order;
 		selectorItem.current = { item_code: "ITEM-NEW", stock_uom: "Nos" };
 		vi.stubGlobal("__", (value: string) => value);
 		(globalThis as any).frappe = { _: (value: string) => value };
@@ -967,5 +977,24 @@ describe("SalesOrderManagementView", () => {
 
 		expect(wrapper.text()).toContain("please choose a warehouse");
 		expect(savedItemsPayload()).toBeUndefined();
+	});
+
+	it("selects the order named in ?sales_order= and clears the query", async () => {
+		somRouteQuery.sales_order = "SO-1";
+		const calls: Array<[string, any]> = [];
+		mockApi((method, args) => {
+			calls.push([method, args]);
+			return undefined;
+		});
+
+		const wrapper = mountView();
+		await flushPromises();
+
+		const listCall = calls.find(([m]) => m.endsWith("get_managed_sales_orders"));
+		expect(listCall?.[1]).toMatchObject({ order_name: "SO-1" });
+		const detailCall = calls.find(([m]) => m.endsWith("get_managed_sales_order"));
+		expect(detailCall?.[1]).toMatchObject({ sales_order: "SO-1" });
+		expect(somRouterReplace).toHaveBeenCalledWith({ path: "/sales-orders", query: {} });
+		expect(wrapper.text()).toContain("SO-1");
 	});
 });

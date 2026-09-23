@@ -1577,9 +1577,84 @@ def _apply_managed_sales_order_credit(doc, max_amount):
         remaining = flt(remaining - take)
         applied = flt(applied + take)
 
+    remaining = flt(max_amount - applied)
+    if remaining >= 0.01:
+        applied = flt(applied + _apply_managed_sales_order_journal_credit(doc, remaining))
+
     if applied:
         doc.set_total_advance_paid()
         doc.reload()
+    return applied
+
+
+def _apply_managed_sales_order_journal_credit(doc, max_amount):
+    """The Journal Entry equivalent of the Payment Entry handling above -- spends
+    a Customer Claims goodwill credit (or any other unreferenced Journal Entry
+    credit against the customer's receivable account; see
+    customer_due_dates.customer_claims.execution.credit.issue_credit and
+    payments.get_available_credit) on this Sales Order.
+
+    A Journal Entry Account row can't natively split its amount across several
+    orders the way a Payment Entry's own references table can, so the original
+    entry is never edited -- only an Advance Payment Ledger Entry earmark is
+    recorded against it, exactly as for a Payment Entry advance.
+    calculate_total_advance_from_ledger (erpnext.controllers.accounts_controller)
+    sums those purely by against_voucher_type/against_voucher_no, regardless of
+    voucher_type, so this raises advance_paid the same way. get_available_credit
+    nets out these earmarks (and any till-checkout redemption) when reporting how
+    much of the original entry is still free, so the same credit can never be
+    double-spent between this and the till.
+
+    Returns the amount applied.
+    """
+    max_amount = flt(max_amount)
+    if max_amount < 0.01:
+        return 0.0
+
+    customer = cstr(getattr(doc, "customer", "") or "").strip()
+    company = cstr(getattr(doc, "company", "") or "").strip()
+    if not customer or not company:
+        return 0.0
+
+    from posawesome.posawesome.api.payments import get_available_credit
+
+    remaining = max_amount
+    applied = 0.0
+    for row in get_available_credit(customer=customer, company=company) or []:
+        if remaining < 0.01:
+            break
+        if cstr(row.get("type") or "").strip() != "Journal Entry":
+            continue
+        take = min(flt(row.get("total_credit")), remaining)
+        if take < 0.01:
+            continue
+
+        je_name = row["credit_origin"]
+        currency = frappe.db.get_value(
+            "Journal Entry Account",
+            {"parent": je_name, "party_type": "Customer", "party": customer},
+            "account_currency",
+        )
+
+        frappe.get_doc(
+            {
+                "doctype": "Advance Payment Ledger Entry",
+                "company": company,
+                "voucher_type": "Journal Entry",
+                "voucher_no": je_name,
+                "against_voucher_type": "Sales Order",
+                "against_voucher_no": doc.name,
+                # Negative, matching an original allocation, so advance_paid rises.
+                "amount": -take,
+                "currency": currency,
+                "event": "Adjustment",
+                "delinked": 0,
+            }
+        ).insert(ignore_permissions=True)
+
+        remaining = flt(remaining - take)
+        applied = flt(applied + take)
+
     return applied
 
 

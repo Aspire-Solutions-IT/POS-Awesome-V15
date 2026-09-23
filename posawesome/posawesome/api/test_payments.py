@@ -25,6 +25,7 @@ class FakeChildRow(dict):
 class FakePaymentEntry:
     def __init__(self):
         self.references = []
+        self.accounts = []
         self.flags = types.SimpleNamespace(ignore_permissions=False, submitted=True)
         self.name = "ACC-PAY-TEST-0001"
         self.docstatus = 1
@@ -75,6 +76,8 @@ def _install_stubs():
     created_docs = []
     get_all_responses = {}
     sql_responses = []
+    journal_redeemed_responses = []
+    journal_earmarked_responses = []
     get_doc_responses = {}
     reconcile_calls = []
 
@@ -91,9 +94,22 @@ def _install_stubs():
     frappe_module.whitelist = lambda *args, **kwargs: (lambda fn: fn)
     frappe_module.flags = types.SimpleNamespace(ignore_account_permission=False)
     frappe_module.get_value = lambda *args, **kwargs: "Main - CC"
+
+    def _sql(query, *args, **kwargs):
+        # get_available_credit/journal_entry_consumed_amount issue three distinct
+        # queries against Journal Entry Account / Advance Payment Ledger Entry --
+        # route each to its own canned response instead of one shared queue, so a
+        # test can set only the one it cares about without the others colliding.
+        text = query if isinstance(query, str) else str(query)
+        if "tabAdvance Payment Ledger Entry" in text:
+            return list(journal_earmarked_responses) or [(0,)]
+        if "jea.debit_in_account_currency)" in text and "reference_type = 'Journal Entry'" in text:
+            return list(journal_redeemed_responses) or [(0,)]
+        return list(sql_responses)
+
     frappe_module.db = types.SimpleNamespace(
         get_value=lambda *args, **kwargs: None,
-        sql=lambda *args, **kwargs: list(sql_responses),
+        sql=_sql,
     )
 
     def _matches_filters(row, filters):
@@ -152,6 +168,7 @@ def _install_stubs():
     accounts_utils.reconcile_against_document = _reconcile_against_document
 
     accounts_party.get_party_bank_account = lambda *args, **kwargs: None
+    accounts_party.get_party_account = lambda *args, **kwargs: "Debtors - CC"
     payment_request_module.get_dummy_message = lambda *_args, **_kwargs: ""
     payment_request_module.get_existing_payment_request_amount = (
         lambda *_args, **_kwargs: 0
@@ -167,7 +184,15 @@ def _install_stubs():
     ] = payment_request_module
     sys.modules["posawesome.posawesome.api.utilities"] = utilities_module
 
-    return created_docs, get_all_responses, sql_responses, get_doc_responses, reconcile_calls
+    return (
+        created_docs,
+        get_all_responses,
+        sql_responses,
+        journal_redeemed_responses,
+        journal_earmarked_responses,
+        get_doc_responses,
+        reconcile_calls,
+    )
 
 
 def _load_payments_module():
@@ -187,6 +212,8 @@ class TestRedeemingCustomerCredit(unittest.TestCase):
             cls.created_docs,
             cls.get_all_responses,
             cls.sql_responses,
+            cls.journal_redeemed_responses,
+            cls.journal_earmarked_responses,
             cls.get_doc_responses,
             cls.reconcile_calls,
         ) = _install_stubs()
@@ -196,6 +223,8 @@ class TestRedeemingCustomerCredit(unittest.TestCase):
         self.created_docs.clear()
         self.get_all_responses.clear()
         self.sql_responses.clear()
+        self.journal_redeemed_responses.clear()
+        self.journal_earmarked_responses.clear()
         self.get_doc_responses.clear()
         self.reconcile_calls.clear()
 
@@ -328,6 +357,107 @@ class TestRedeemingCustomerCredit(unittest.TestCase):
         )
 
         self.assertEqual(credits, [])
+
+    def test_get_available_credit_includes_unreferenced_journal_entry_credit(self):
+        """A Customer Claims goodwill credit (see
+        customer_due_dates.customer_claims.execution.credit.issue_credit) posts an
+        unreferenced Journal Entry against the customer's receivable account --
+        this must show up as spendable credit at the till."""
+        self.get_all_responses["Sales Invoice"] = []
+        self.get_all_responses["Payment Entry"] = []
+        self.sql_responses.append(types.SimpleNamespace(name="ACC-JV-2026-00001", credit_amount=50))
+
+        credits = self.payments_module.get_available_credit(
+            customer="CUST-0001",
+            company="Test Company",
+        )
+
+        self.assertEqual(
+            credits,
+            [
+                {
+                    "type": "Journal Entry",
+                    "credit_origin": "ACC-JV-2026-00001",
+                    "total_credit": 50.0,
+                    "credit_to_redeem": 0,
+                    "source_type": "Journal Entry",
+                }
+            ],
+        )
+
+    def test_get_available_credit_nets_out_already_spent_journal_entry_credit(self):
+        """The original credit Journal Entry is never edited -- neither a
+        till-checkout redemption (a new JE referencing it) nor a Managed Sales
+        Order earmark (an Advance Payment Ledger Entry) touches its own row.
+        Both must still be subtracted, or the same credit reports as fully
+        available forever regardless of how much has actually been spent."""
+        self.get_all_responses["Sales Invoice"] = []
+        self.get_all_responses["Payment Entry"] = []
+        self.sql_responses.append(types.SimpleNamespace(name="ACC-JV-2026-00001", credit_amount=50))
+        self.journal_redeemed_responses.append((20,))  # spent via till checkout
+        self.journal_earmarked_responses.append((10,))  # spent via a Sales Order
+
+        credits = self.payments_module.get_available_credit(
+            customer="CUST-0001",
+            company="Test Company",
+        )
+
+        self.assertEqual(credits[0]["total_credit"], 20.0)  # 50 - 20 - 10
+
+    def test_get_available_credit_drops_a_fully_spent_journal_entry(self):
+        self.get_all_responses["Sales Invoice"] = []
+        self.get_all_responses["Payment Entry"] = []
+        self.sql_responses.append(types.SimpleNamespace(name="ACC-JV-2026-00001", credit_amount=50))
+        self.journal_redeemed_responses.append((50,))
+
+        credits = self.payments_module.get_available_credit(
+            customer="CUST-0001",
+            company="Test Company",
+        )
+
+        self.assertEqual(credits, [])
+
+    def test_redeeming_journal_entry_credit_references_the_original_entry(self):
+        invoice_doc = types.SimpleNamespace(
+            customer="CUST-0001",
+            debit_to="Debtors - TC",
+            company="Test Company",
+            pos_profile="Main POS",
+            posa_pos_opening_shift="POS-OPEN-0001",
+            name="SINV-0002",
+        )
+        data = {
+            "redeemed_customer_credit": 50,
+            "customer_credit_dict": [
+                {
+                    "type": "Journal Entry",
+                    "credit_origin": "ACC-JV-2026-00001",
+                    "credit_to_redeem": 50,
+                }
+            ],
+            "due_date": "2026-03-26",
+        }
+
+        self.payments_module.redeeming_customer_credit(
+            invoice_doc=invoice_doc,
+            data=data,
+            is_payment_entry=0,
+            total_cash=0,
+            cash_account={"account": "Cash - TC"},
+            payments=[],
+        )
+
+        self.assertEqual(len(self.created_docs), 1)
+        jv_doc = self.created_docs[0]
+        self.assertTrue(jv_doc.flags.submitted)
+        self.assertEqual(len(jv_doc.accounts), 2)
+        debit_row, credit_row = jv_doc.accounts
+        self.assertEqual(debit_row["reference_type"], "Journal Entry")
+        self.assertEqual(debit_row["reference_name"], "ACC-JV-2026-00001")
+        self.assertEqual(debit_row["debit_in_account_currency"], 50)
+        self.assertEqual(credit_row["reference_type"], "Sales Invoice")
+        self.assertEqual(credit_row["reference_name"], "SINV-0002")
+        self.assertEqual(credit_row["credit_in_account_currency"], 50)
 
     def test_repair_overpayment_change_allocations_previews_exact_match(self):
         self.get_all_responses["Sales Invoice"] = [
