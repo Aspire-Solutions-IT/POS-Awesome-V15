@@ -9,22 +9,38 @@
 		<v-card class="pos-themed-card order-success">
 			<v-card-text class="pa-6">
 				<div class="order-success__header">
-					<v-icon color="success" size="44">mdi-check-circle</v-icon>
-					<h2 class="order-success__title">{{ __("Payment Successful") }}</h2>
+					<v-icon :color="noPayment ? 'primary' : 'success'" size="44">
+						{{ noPayment ? "mdi-cart-check" : "mdi-check-circle" }}
+					</v-icon>
+					<h2 class="order-success__title">
+						{{ noPayment ? __("Order Placed") : __("Payment Successful") }}
+					</h2>
 				</div>
 
 				<div v-for="order in orders" :key="order.name" class="order-success__order">
 					<div class="order-success__number">{{ order.name }}</div>
 
-					<div v-if="order.customerName || order.total" class="order-success__meta">
+					<!-- For an unpaid order the amount is shown in its own "Amount Due" box
+					     below, so keep this line to just the customer. -->
+					<div v-if="order.customerName || (order.total && !noPayment)" class="order-success__meta">
 						<span v-if="order.customerName">{{ order.customerName }}</span>
-						<span v-if="order.customerName && order.total" class="order-success__dot">•</span>
-						<span v-if="order.total">{{ order.total }}</span>
+						<span v-if="order.customerName && order.total && !noPayment" class="order-success__dot">•</span>
+						<span v-if="order.total && !noPayment">{{ order.total }}</span>
+					</div>
+
+					<!-- Unpaid order: the whole grand total is still owed. Nothing was
+					     collected at the till, so this doubles as the amount due. -->
+					<div v-if="noPayment && order.total" class="order-success__window order-success__window--due">
+						<div class="order-success__window-label">
+							{{ __("Amount Due") }}
+						</div>
+						<div class="order-success__window-value">{{ order.total }}</div>
 					</div>
 
 					<!-- The reason this screen exists: the operator reads this out rather than
-					     going hunting for it after the customer has already asked. -->
-					<div class="order-success__window">
+					     going hunting for it after the customer has already asked. Hidden for
+					     an unpaid order -- it goes on hold, so there's no window to quote yet. -->
+					<div v-if="!noPayment" class="order-success__window">
 						<div class="order-success__window-label">
 							{{ __("Estimated Delivery") }}
 						</div>
@@ -60,12 +76,21 @@
 				</v-btn>
 				<v-btn
 					v-if="orders.length === 1"
-					color="primary"
-					variant="flat"
+					:color="noPayment ? 'default' : 'primary'"
+					:variant="noPayment ? 'tonal' : 'flat'"
 					prepend-icon="mdi-printer"
 					@click="printReceipt(orders[0].name)"
 				>
 					{{ __("Print Receipt") }}
+				</v-btn>
+				<v-btn
+					v-if="noPayment && orders.length === 1"
+					color="primary"
+					variant="flat"
+					prepend-icon="mdi-credit-card-outline"
+					@click="goToPaymentLink"
+				>
+					{{ __("Send Payment Link") }}
 				</v-btn>
 			</v-card-actions>
 		</v-card>
@@ -74,6 +99,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { useFormat } from "../../../format";
 import { openReceiptPdf } from "../../../utils/receiptPdfUrl";
@@ -85,7 +111,12 @@ defineOptions({
 const __ = window.__ || ((text) => text);
 
 const uiStore = useUIStore();
+const router = useRouter();
 const { formatCurrency, currencySymbol } = useFormat();
+
+// "Submit without payment": reframe the dialog as "Order Placed" and offer a
+// shortcut into Sales Order Management with the payment-link button flashing.
+const noPayment = computed(() => Boolean(uiStore.orderSuccess?.noPayment));
 
 // The window is written by an after_commit hook and can be revised again by the
 // background work that follows submit, so it is polled rather than read from the
@@ -153,7 +184,9 @@ const fetchSummary = async (name, attempt = 0) => {
 		total: formatTotal(message),
 	};
 
-	if (!resolved && attempt < RETRY_DELAYS_MS.length) {
+	// No retries for an unpaid order: the delivery window is hidden anyway, and a
+	// held order may never settle, so polling for it would just churn.
+	if (!resolved && !noPayment.value && attempt < RETRY_DELAYS_MS.length) {
 		const id = setTimeout(() => fetchSummary(name, attempt + 1), RETRY_DELAYS_MS[attempt]);
 		timers.value.push(id);
 	}
@@ -166,6 +199,17 @@ const printReceipt = (name) => {
 const close = () => {
 	clearTimers();
 	uiStore.closeOrderSuccess();
+};
+
+const goToPaymentLink = () => {
+	const name = orders.value[0]?.name;
+	close();
+	if (name) {
+		void router.push({
+			path: "/sales-orders",
+			query: { order: name, prompt: "payment-link" },
+		});
+	}
 };
 
 watch(
@@ -225,6 +269,14 @@ onBeforeUnmount(clearTimers);
 	padding: 14px 16px;
 	border-radius: 8px;
 	background: rgba(var(--v-theme-primary), 0.08);
+}
+
+.order-success__window--due {
+	background: rgba(var(--v-theme-warning), 0.12);
+}
+
+.order-success__window--due .order-success__window-value {
+	color: rgb(var(--v-theme-warning));
 }
 
 .order-success__window-label {

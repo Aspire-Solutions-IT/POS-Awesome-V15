@@ -116,7 +116,9 @@
 									color="primary"
 									:label="frappe._('Email Id')"
 									class="pos-themed-input"
-									hide-details
+									hide-details="auto"
+									type="email"
+									:rules="[emailRule]"
 									v-model="email_id"
 								></v-text-field>
 							</v-col>
@@ -217,6 +219,7 @@ import { useCustomersStore } from "../../../../stores/customersStore.js";
 import { useUIStore } from "../../../../stores/uiStore.js";
 import { storeToRefs } from "pinia";
 import { useToastStore } from "../../../../stores/toastStore.js";
+import { isValidOptionalEmail } from "../../../../utils/emailValidation";
 
 export default {
 	setup() {
@@ -309,6 +312,9 @@ export default {
 	},
 	computed: {},
 	methods: {
+		emailRule(value) {
+			return isValidOptionalEmail(value) || __("Enter a valid email address");
+		},
 		focusCustomerNameField() {
 			this.$nextTick(() => {
 				const field = this.$refs.customerNameField;
@@ -410,6 +416,10 @@ export default {
 			const vm = this;
 			if (!this.customer_name) {
 				frappe.throw(__("Customer Name is required"));
+				return;
+			}
+			if (!isValidOptionalEmail(this.email_id)) {
+				frappe.throw(__("Enter a valid email address"));
 				return;
 			}
 

@@ -13,6 +13,8 @@ from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
 from frappe.utils import cint, cstr, flt, getdate, nowdate, split_emails, validate_email_address
 
+from posawesome.posawesome.api.email_validation import validate_optional_email
+
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
 
@@ -386,7 +388,107 @@ def _queue_receipt_email(doc, revised=False):
 
 
 def on_submit(doc, method):
+    _apply_amendment_carryover_credit(doc)
     _queue_receipt_email(doc, revised=False)
+
+
+def on_cancel(doc, method):
+    _release_pos_sales_order_advances_on_cancel(doc)
+    _cancel_pos_sales_order_payment_requests(doc)
+
+
+def _release_pos_sales_order_advances_on_cancel(doc):
+    """Free a cancelled POS order's advance payments to on-account credit.
+
+    ERPNext only unlinks a cancelled Sales Order's advance Payment Entries when
+    ``Accounts Settings.unlink_advance_payment_on_cancelation_of_order`` is on.
+    Where it is off the money stays pinned to the dead order and the customer
+    cannot spend it - not on an amendment, not on anything. This runs the same
+    ERPNext unlink for POS orders only, so a later amendment (or the customer's
+    next order) can pick the money up as credit.
+
+    A no-op when ERPNext already did it, or when nothing is linked.
+    """
+    if not cint(getattr(doc, "is_pos", 0)):
+        return
+    if frappe.db.get_single_value(
+        "Accounts Settings", "unlink_advance_payment_on_cancelation_of_order"
+    ):
+        return
+    if not frappe.db.exists(
+        "Payment Entry Reference",
+        {"reference_doctype": "Sales Order", "reference_name": doc.name, "docstatus": 1},
+    ):
+        return
+
+    from erpnext.accounts.utils import unlink_ref_doc_from_payment_entries
+
+    unlink_ref_doc_from_payment_entries(doc)
+
+
+def _cancel_pos_sales_order_payment_requests(doc):
+    """Cancel the Inward Payment Requests left behind by a cancelled POS order.
+
+    The generic cancel cascade is told to skip Payment Request (see so_kit.js)
+    because ``PaymentRequest.on_cancel`` throws "Payment Entry already exists"
+    while a Payment Entry stands against the order. By the time this runs the
+    advance has already been unlinked to on-account credit, so that guard no
+    longer protects anything - drop the request out of "Paid" so it cancels
+    cleanly. ``on_cancel`` overwrites the status to "Cancelled" immediately.
+    """
+    if not cint(getattr(doc, "is_pos", 0)):
+        return
+
+    names = frappe.get_all(
+        "Payment Request",
+        filters={
+            "reference_doctype": "Sales Order",
+            "reference_name": doc.name,
+            "docstatus": 1,
+        },
+        pluck="name",
+    )
+    for name in names:
+        pr = frappe.get_doc("Payment Request", name)
+        if pr.status == "Paid":
+            pr.db_set("status", "Requested", update_modified=False)
+            pr.reload()
+        pr.flags.ignore_permissions = True
+        pr.cancel()
+
+
+def _apply_amendment_carryover_credit(doc):
+    """Spend the customer's on-account credit on a freshly submitted amendment.
+
+    When a paid POS order is cancelled its payment becomes on-account credit
+    (see ``_release_pos_sales_order_advances_on_cancel``). Amending that order
+    creates a new Sales Order with ``amended_from`` set; without this it would
+    start at ``advance_paid = 0`` and ask the customer to pay again for money
+    they have already handed over. Any of the customer's unallocated payments
+    are eligible, oldest first - matching ``_apply_new_sales_order_customer_credit``.
+
+    The amount is capped at what the order still needs; a shortfall is logged,
+    never thrown - the amendment has already submitted.
+    """
+    if cint(getattr(doc, "docstatus", 0)) != 1 or not cint(getattr(doc, "is_pos", 0)):
+        return
+    if not cstr(getattr(doc, "amended_from", "") or "").strip():
+        return
+
+    doc.reload()
+    outstanding = flt(
+        flt(getattr(doc, "grand_total", 0)) - flt(getattr(doc, "advance_paid", 0))
+    )
+    if outstanding < 0.01:
+        return
+
+    applied = _apply_managed_sales_order_credit(doc, outstanding)
+    frappe.logger().info(
+        "POSAwesome amendment carryover: Sales Order %s outstanding=%s applied=%s",
+        doc.name,
+        outstanding,
+        applied,
+    )
 
 
 def _send_receipt_email_job(
@@ -938,6 +1040,19 @@ def _get_managed_sales_order_ns_default_warehouse(doc):
     return cstr(frappe.db.get_value("POS Profile", pos_profile, "default_ns_warehouse") or "").strip()
 
 
+def _get_managed_sales_order_revolut_link(doc):
+    """Whether this order already has a pending Revolut payment link, so the client
+    can offer Resend/Delete instead of Send. A local lookup only (no Revolut API
+    call) -- safe to include on every list/detail fetch.
+    """
+    if cint(frappe.db.get_single_value("Revolut Settings", "enabled")) != 1:
+        return None
+
+    from customer_due_dates.revolut.payment_link import get_active_payment_link
+
+    return get_active_payment_link("Sales Order", doc.name)
+
+
 def _serialize_managed_sales_order(doc):
     items = []
     latest_component_due_date = None
@@ -1041,6 +1156,7 @@ def _serialize_managed_sales_order(doc):
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "receipt_email": _managed_sales_order_receipt_email_state(doc),
+        "revolut_payment_link": _get_managed_sales_order_revolut_link(doc),
         "items": items,
     }
 
@@ -1725,7 +1841,10 @@ def preview_managed_sales_order_items(data):
     current_total = flt(getattr(doc, "grand_total", 0))
     projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
     advance_paid = flt(getattr(doc, "advance_paid", 0))
-    amount_due = max(flt(projected_total - advance_paid), 0.0)
+    # Currency precision, so the figure shown to the cashier matches the one the
+    # payment endpoint will allocate (raw float subtraction drifts a fraction of a
+    # penny and ERPNext's SQL-derived outstanding does not).
+    amount_due = max(flt(projected_total - advance_paid, doc.precision("grand_total")), 0.0)
     customer_credit = _get_managed_sales_order_customer_credit(doc)
 
     return {
@@ -1808,7 +1927,12 @@ def update_managed_sales_order_items_with_payment(data):
     normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
     _validate_managed_sales_order_item_mutations(doc, normalized_items)
     projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
-    amount_due = max(flt(projected_total - flt(getattr(doc, "advance_paid", 0))), 0.0)
+    # Round to the order's currency precision: the raw subtraction carries float noise
+    # (e.g. 480.66 - 303.96 == 176.70000000000005), and that value becomes the Payment
+    # Entry's allocated_amount. ERPNext then re-derives the reference outstanding in SQL
+    # (exact decimal), so an unrounded allocation trips "Allocated Amount cannot be
+    # greater than outstanding amount" by a fraction of a penny.
+    amount_due = max(flt(projected_total - flt(getattr(doc, "advance_paid", 0)), doc.precision("grand_total")), 0.0)
 
     expected = payment.get("expected_amount")
     if expected is not None and abs(flt(expected) - amount_due) > 0.01:
@@ -1827,7 +1951,7 @@ def update_managed_sales_order_items_with_payment(data):
     # Spend the customer's own money first, if the cashier offered it. How much is
     # decided here, never by the client - it is capped at what the order still needs.
     credit_applied = _apply_managed_sales_order_credit(doc, amount_due) if use_credit else 0.0
-    amount_due = flt(amount_due - credit_applied)
+    amount_due = flt(amount_due - credit_applied, doc.precision("grand_total"))
 
     if amount_due <= 0.001:
         # Credit covered the lot, so there is nothing to take at the till.
@@ -2113,6 +2237,23 @@ def resend_managed_sales_order_receipt(sales_order, address=None, email=None, in
     }
 
 
+def _release_managed_sales_order_from_hold(sales_order_name, source=None):
+    """Best-effort: take a payment-held Sales Order off hold now that a payment has
+    landed. A payment must never fail because the hold release did, so this
+    swallows and logs any error."""
+    try:
+        from customer_due_dates.kit_items.overrides.sales_order import (
+            release_sales_order_from_hold_if_paid,
+        )
+
+        release_sales_order_from_hold_if_paid(sales_order_name, source=source)
+    except Exception:
+        frappe.log_error(
+            title="POS: release Sales Order from hold failed",
+            message=f"Sales Order {sales_order_name}\n\n{frappe.get_traceback()}",
+        )
+
+
 @frappe.whitelist()
 def pay_managed_sales_order_balance(
     sales_order, mode_of_payment, amount=None, reference_no=None, reference_date=None
@@ -2164,10 +2305,90 @@ def pay_managed_sales_order_balance(
     payment_entry.submit()
 
     doc.reload()
+    _release_managed_sales_order_from_hold(doc.name, source="POS balance payment")
+
+    doc.reload()
     return {
         "sales_order": _serialize_managed_sales_order(doc),
         "payment_entry": payment_entry.name,
     }
+
+
+@frappe.whitelist()
+def create_managed_sales_order_payment_link(sales_order, amount=None, email=None, send_email=1):
+    """Create a Revolut hosted-checkout payment link for this order's outstanding balance
+    and email it to the customer.
+
+    Unlike pay_managed_sales_order_balance, this does not record a payment itself -- it
+    only creates and sends the link. The Payment Entry is created later, when the
+    customer actually pays, by customer_due_dates' Revolut webhook handler. See
+    customer_due_dates.revolut.payment_link.create_payment_link for the rest of that flow.
+    """
+    sales_order_name = cstr(sales_order or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    order_total = flt(getattr(doc, "grand_total", None) or 0)
+    advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
+    outstanding_balance = max(flt(order_total - advance_paid), 0)
+    if outstanding_balance <= 0.001:
+        frappe.throw(_("This Sales Order is already fully paid."))
+
+    payment_amount = flt(amount) if amount else outstanding_balance
+    if payment_amount <= 0:
+        frappe.throw(_("Payment amount must be greater than zero."))
+    if payment_amount - outstanding_balance > 0.001:
+        frappe.throw(_("Payment amount cannot exceed the remaining balance."))
+
+    # Same resolution the receipt resend uses, so the link defaults to wherever this
+    # order's paperwork already goes rather than asking the till operator to know it.
+    recipient = validate_optional_email(email) or _resolve_customer_email(doc)
+
+    from customer_due_dates.revolut.payment_link import create_payment_link
+
+    result = create_payment_link(
+        reference_doctype="Sales Order",
+        reference_name=doc.name,
+        amount=payment_amount,
+        email_to=recipient or None,
+        send_email=cint(send_email),
+        # Shop/till roles carry no standard Sales Order permission at all -- they're
+        # authorised by reaching this whitelisted endpoint (_validate_managed_sales_order_doc
+        # above), the same as every other Sales Order mutation in this file.
+        check_permission=False,
+    )
+
+    doc.reload()
+    return {
+        "sales_order": _serialize_managed_sales_order(doc),
+        "payment_request": result.get("payment_request"),
+        "checkout_url": result.get("checkout_url"),
+        "already_paid": result.get("already_paid"),
+    }
+
+
+@frappe.whitelist()
+def delete_managed_sales_order_payment_link(sales_order):
+    """Cancel this order's pending Revolut payment link, on Revolut's side and ours.
+    Refuses if Revolut already completed it -- create_managed_sales_order_payment_link
+    is what reconciles a completed-but-unrecorded payment, not this.
+    """
+    sales_order_name = cstr(sales_order or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    _validate_managed_sales_order_doc(doc)
+
+    from customer_due_dates.revolut.payment_link import delete_payment_link
+
+    delete_payment_link(reference_doctype="Sales Order", reference_name=doc.name, check_permission=False)
+
+    doc.reload()
+    return {"sales_order": _serialize_managed_sales_order(doc)}
 
 
 def _map_delivery_dates(data):
