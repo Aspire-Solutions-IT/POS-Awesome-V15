@@ -1,5 +1,10 @@
 <template>
-	<v-container fluid class="sales-order-management">
+	<v-container
+		ref="rootEl"
+		fluid
+		class="sales-order-management"
+		:class="{ 'sales-order-management--phone-save': showPhoneSaveBar }"
+	>
 		<v-row>
 			<v-col cols="12">
 				<div class="page-header">
@@ -32,7 +37,9 @@
 		</v-row>
 
 		<v-row v-else class="content-grid">
-			<v-col cols="12" lg="4" class="left-panel-col">
+			<!-- Below lg the panels would stack, burying the detail under the whole list, so
+			     show one at a time and switch between them instead. -->
+			<v-col v-show="isSplitLayout || mobilePane === 'list'" cols="12" lg="4" class="left-panel-col">
 				<v-card class="pos-themed-card left-panel">
 					<v-card-title class="panel-title">
 						<span>{{ __("RFS Sales Orders") }}</span>
@@ -117,7 +124,7 @@
 								type="button"
 								class="order-list-item"
 								:class="{ 'order-list-item--active': order.name === selectedOrderName }"
-								@click="selectOrder(order.name)"
+								@click="openOrder(order.name)"
 							>
 								<div class="order-list-item__top">
 									<strong>{{ order.customer_name || order.customer }}</strong>
@@ -137,16 +144,27 @@
 				</v-card>
 			</v-col>
 
-			<v-col cols="12" lg="8" class="right-panel-col">
+			<v-col v-show="isSplitLayout || mobilePane === 'detail'" cols="12" lg="8" class="right-panel-col">
 				<v-card class="pos-themed-card right-panel">
 					<v-card-title class="panel-title">
-						<span>{{
-							selectedOrder
-								? selectedOrder.customer_name || selectedOrder.customer
-								: __("Sales Order Details")
-						}}</span>
+						<div class="panel-title__main">
+							<v-btn
+								v-if="!isSplitLayout"
+								variant="text"
+								prepend-icon="mdi-arrow-left"
+								class="back-to-orders"
+								@click="backToOrders"
+							>
+								{{ __("Orders") }}
+							</v-btn>
+							<span class="panel-title__text">{{
+								selectedOrder
+									? selectedOrder.customer_name || selectedOrder.customer
+									: __("Sales Order Details")
+							}}</span>
+						</div>
 						<div class="panel-actions">
-							<template v-if="streamPickLists.length">
+							<template v-if="isSplitLayout && streamPickLists.length">
 								<v-select
 									v-model="selectedStreamPickList"
 									:items="streamPickListItems"
@@ -161,7 +179,7 @@
 									color="primary"
 									variant="tonal"
 									:disabled="!selectedStreamPickListLink"
-									@click="openStreamLink"
+									@click="openStreamLink()"
 								>
 									{{ __("Open Stream") }}
 								</v-btn>
@@ -176,35 +194,80 @@
 							>
 								{{ __("Pay Remaining Balance") }}
 							</v-btn>
+							<template v-if="isSplitLayout">
+								<v-btn
+									v-if="selectedOrder"
+									color="primary"
+									variant="tonal"
+									prepend-icon="mdi-email-outline"
+									:disabled="receiptLoading"
+									@click="openReceiptDialog"
+								>
+									{{ __("Email Receipt") }}
+								</v-btn>
+								<v-btn
+									v-if="selectedOrder && claimsEnabled && claimCount > 0"
+									color="warning"
+									variant="text"
+									prepend-icon="mdi-clipboard-list-outline"
+									@click="showClaims"
+								>
+									{{ __("Show Claims ({0})", [claimCount]) }}
+								</v-btn>
+								<v-btn
+									v-if="selectedOrder && claimsEnabled"
+									color="warning"
+									variant="tonal"
+									prepend-icon="mdi-clipboard-alert-outline"
+									@click="raiseClaimOpen = true"
+								>
+									{{ __("Raise Claim") }}
+								</v-btn>
+							</template>
+							<v-menu v-else-if="selectedOrder" location="bottom end">
+								<template #activator="{ props: menuProps }">
+									<v-btn
+										v-bind="menuProps"
+										icon="mdi-dots-vertical"
+										variant="text"
+										:aria-label="__('More actions')"
+									/>
+								</template>
+								<v-list density="compact">
+									<v-list-item
+										prepend-icon="mdi-email-outline"
+										:title="__('Email Receipt')"
+										:disabled="receiptLoading"
+										@click="openReceiptDialog"
+									/>
+									<v-list-item
+										v-if="claimsEnabled && claimCount > 0"
+										prepend-icon="mdi-clipboard-list-outline"
+										:title="__('Show Claims ({0})', [claimCount])"
+										@click="showClaims"
+									/>
+									<v-list-item
+										v-if="claimsEnabled"
+										prepend-icon="mdi-clipboard-alert-outline"
+										:title="__('Raise Claim')"
+										@click="raiseClaimOpen = true"
+									/>
+									<template v-if="streamPickLists.length">
+										<v-divider />
+										<v-list-subheader>{{ __("Open Stream") }}</v-list-subheader>
+										<v-list-item
+											v-for="pickList in streamPickListItems"
+											:key="pickList.value"
+											prepend-icon="mdi-open-in-new"
+											:title="pickList.title"
+											:disabled="!streamLinkFor(pickList.value)"
+											@click="openStreamLink(pickList.value)"
+										/>
+									</template>
+								</v-list>
+							</v-menu>
 							<v-btn
-								v-if="selectedOrder"
-								color="primary"
-								variant="tonal"
-								prepend-icon="mdi-email-outline"
-								:disabled="receiptLoading"
-								@click="openReceiptDialog"
-							>
-								{{ __("Email Receipt") }}
-							</v-btn>
-							<v-btn
-								v-if="selectedOrder && claimsEnabled && claimCount > 0"
-								color="warning"
-								variant="text"
-								prepend-icon="mdi-clipboard-list-outline"
-								@click="showClaims"
-							>
-								{{ __("Show Claims ({0})", [claimCount]) }}
-							</v-btn>
-							<v-btn
-								v-if="selectedOrder && claimsEnabled"
-								color="warning"
-								variant="tonal"
-								prepend-icon="mdi-clipboard-alert-outline"
-								@click="raiseClaimOpen = true"
-							>
-								{{ __("Raise Claim") }}
-							</v-btn>
-							<v-btn
+								v-if="!isPhone"
 								color="primary"
 								:loading="saveLoading"
 								:disabled="!selectedOrder || !isDirty"
@@ -613,6 +676,21 @@
 						</div>
 					</v-card-text>
 				</v-card>
+				<!-- Phones: the header Save scrolls away with a long order, so pin it here instead. -->
+				<div v-if="showPhoneSaveBar" class="phone-save-bar">
+					<span class="phone-save-bar__status">
+						{{ isDirty ? __("Unsaved changes") : __("No changes") }}
+					</span>
+					<v-btn
+						color="primary"
+						size="large"
+						:loading="saveLoading"
+						:disabled="!isDirty"
+						@click="saveOrder"
+					>
+						{{ __("Save") }}
+					</v-btn>
+				</div>
 			</v-col>
 		</v-row>
 
@@ -893,7 +971,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { useDisplay } from "vuetify";
 import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
@@ -1096,6 +1175,13 @@ if (requestedSalesOrder) {
 	searchTerm.value = requestedSalesOrder;
 	selectedOrderName.value = requestedSalesOrder;
 }
+
+// Side by side from lg (matching the columns' lg breakpoint); one pane at a time below it.
+const { lgAndUp, xs } = useDisplay();
+const isSplitLayout = computed(() => lgAndUp.value);
+const isPhone = computed(() => xs.value);
+const mobilePane = ref<"list" | "detail">(requestedSalesOrder ? "detail" : "list");
+const rootEl = ref<{ $el: HTMLElement } | null>(null);
 onMounted(() => {
 	// The search box now shows the order, so the query param has done its job.
 	if (route.query.sales_order) {
@@ -1240,6 +1326,9 @@ const isItemDirty = computed(() => {
 });
 
 const isDirty = computed(() => isHeaderDirty.value || isItemDirty.value);
+const showPhoneSaveBar = computed(
+	() => isPhone.value && mobilePane.value === "detail" && Boolean(selectedOrder.value),
+);
 
 const orderLevelLock = computed(() => selectedOrder.value?.order_level_lock || null);
 
@@ -1313,14 +1402,13 @@ const streamPickListItems = computed(() =>
 	}),
 );
 
-const selectedStreamPickListLink = computed(
-	() =>
-		streamPickLists.value.find((pickList) => pickList.name === selectedStreamPickList.value)?.tracking_link ||
-		"",
-);
+const streamLinkFor = (name: string) =>
+	streamPickLists.value.find((pickList) => pickList.name === name)?.tracking_link || "";
 
-const openStreamLink = () => {
-	const link = selectedStreamPickListLink.value;
+const selectedStreamPickListLink = computed(() => streamLinkFor(selectedStreamPickList.value));
+
+const openStreamLink = (name = selectedStreamPickList.value) => {
+	const link = streamLinkFor(name);
 	if (!link) return;
 	window.open(link, "_blank", "noopener,noreferrer");
 };
@@ -1806,6 +1894,28 @@ const loadOrders = async () => {
 	}
 };
 
+const openOrder = async (name: string) => {
+	if (isSplitLayout.value) {
+		await selectOrder(name);
+		return;
+	}
+	mobilePane.value = "detail";
+	await nextTick();
+	rootEl.value?.$el?.scrollIntoView({ block: "start" });
+	// Going back to the list keeps the order (and any unsaved edits) loaded, so reopening
+	// the same one must not refetch over them.
+	if (name === selectedOrderName.value && selectedOrder.value?.name === name) return;
+	await selectOrder(name);
+};
+
+const backToOrders = async () => {
+	mobilePane.value = "list";
+	await nextTick();
+	rootEl.value?.$el
+		?.querySelector(".order-list-item--active")
+		?.scrollIntoView({ block: "center" });
+};
+
 const selectOrder = async (name: string) => {
 	if (!name || detailLoading.value) return;
 
@@ -2183,8 +2293,56 @@ watch(
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	flex-wrap: wrap;
 	gap: 12px;
 	border-bottom: 1px solid var(--pos-border);
+}
+
+/* Give the customer name room of its own; the actions wrap beneath it rather than
+   squeezing it down to a few letters. */
+.panel-title__main {
+	display: flex;
+	flex: 1 1 200px;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+}
+
+.panel-title__text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.back-to-orders {
+	flex-shrink: 0;
+	margin-left: -8px;
+}
+
+.phone-save-bar {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 5;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+	border-top: 1px solid var(--pos-border);
+	background: var(--pos-surface);
+	box-shadow: 0 -6px 16px var(--pos-shadow);
+}
+
+.phone-save-bar__status {
+	color: var(--pos-text-muted);
+	font-size: 0.9rem;
+}
+
+/* Keep the end of the order clear of the pinned bar. */
+.sales-order-management--phone-save {
+	padding-bottom: 96px;
 }
 
 .panel-actions {
