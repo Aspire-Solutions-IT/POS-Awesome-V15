@@ -7,7 +7,10 @@ import {
 	isDynamicImportFailure,
 	recoverFromChunkLoadError,
 } from "../utils/chunkLoadRecovery";
-import { resolvePosAppRouteFullPath } from "../../loader-utils";
+import {
+	resolvePosAppBasePath,
+	resolvePosAppRouteFullPath,
+} from "../../loader-utils";
 import OfflineRouteUnavailable from "../components/system/OfflineRouteUnavailable.vue";
 
 const OFFLINE_ROUTE_UNAVAILABLE_NAME = "offline-route-unavailable";
@@ -167,7 +170,11 @@ export function resolveRouteLoadingMessage(
 }
 
 const createPosAppRouter = () => {
-	const history = createWebHistory("/app/posapp");
+	const history = createWebHistory(
+		resolvePosAppBasePath(
+			typeof window !== "undefined" ? window.location.pathname : null,
+		),
+	);
 	const router = createRouter({
 		history,
 		routes,
@@ -192,7 +199,10 @@ const createPosAppRouter = () => {
 		stopRouteLoading();
 		const currentWindowRoute =
 			typeof window !== "undefined"
-				? resolvePosAppRouteFullPath(window.location)
+				? resolvePosAppRouteFullPath(
+						window.location,
+						resolvePosAppBasePath(window.location.pathname),
+					)
 				: null;
 		const failureAction = resolveRouteLoadFailureAction({
 			error,

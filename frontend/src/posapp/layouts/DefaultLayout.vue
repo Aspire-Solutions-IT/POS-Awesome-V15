@@ -94,6 +94,7 @@ import { useInactivityLock } from "../composables/core/useInactivityLock";
 import { useUpdatePolling } from "../composables/core/useUpdatePolling";
 import { usePosShift } from "../composables/pos/shared/usePosShift";
 import { loadingState, initLoadingSources, setSourceProgress, markSourceLoaded } from "../utils/loading.js";
+import { resolvePosAppBasePath, resolvePosAppRouteFullPath } from "../../loader-utils";
 import { useCustomersStore } from "../stores/customersStore.js";
 import { useSyncStore } from "../stores/syncStore.js";
 import { useToastStore } from "../stores/toastStore.js";
@@ -252,8 +253,19 @@ let removeBootstrapSnapshotListener = null;
 // Event Bus
 const eventBus = instance?.proxy?.eventBus;
 
-// Initialize loading sources immediately in setup so watchers can mark them 100%
-initLoadingSources(["init", "items", "customers"]);
+// Initialize loading sources immediately in setup so watchers can mark them 100%.
+// Items are only loaded by the POS screen's ItemsSelector, so a boot straight onto
+// another route (e.g. a refresh on /claims) must not wait for them, or the
+// overlay stalls at 2/3. The router hasn't resolved yet here, so read the URL.
+const initialRoutePath =
+	resolvePosAppRouteFullPath(
+		window.location,
+		resolvePosAppBasePath(window.location.pathname),
+	)?.split(/[?#]/)[0] || "/";
+const bootsOnPosScreen = initialRoutePath === "/" || initialRoutePath === "/pos";
+initLoadingSources(
+	bootsOnPosScreen ? ["init", "items", "customers"] : ["init", "customers"],
+);
 
 // Auto-lock the terminal after 5 minutes of no activity, once a POS profile is registered.
 useInactivityLock(5 * 60 * 1000, () => Boolean(posProfile.value?.name));

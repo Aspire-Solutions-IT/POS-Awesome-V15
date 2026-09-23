@@ -1,10 +1,10 @@
 declare const __BUILD_VERSION__: string;
 import {
 	buildPosAppRecoveryLocation,
+	resolvePosAppBasePath,
 	resolvePosAppNormalizedPath,
 } from "./loader-utils";
 
-const POSAPP_BASE_PATH = "/app/posapp";
 const VERSION_ENDPOINT = "/assets/posawesome/dist/js/version.json";
 const LOADER_RECOVERY_KEY = "posa_loader_chunk_recovery_once";
 
@@ -36,7 +36,7 @@ function normalizePosAppPath(): boolean {
 	}
 
 	const { pathname, search, hash } = window.location;
-	const normalizedPath = resolvePosAppNormalizedPath(pathname, POSAPP_BASE_PATH);
+	const normalizedPath = resolvePosAppNormalizedPath(pathname, resolvePosAppBasePath(pathname));
 	if (!normalizedPath) {
 		return false;
 	}
@@ -93,7 +93,7 @@ function recoverByReloadingPosApp() {
 				window.location,
 				"_posa_loader_recovery",
 				Date.now(),
-				POSAPP_BASE_PATH,
+				resolvePosAppBasePath(window.location.pathname),
 			),
 		);
 		return;
@@ -109,7 +109,7 @@ function recoverByReloadingPosApp() {
 			window.location,
 			"_posa_loader_recovery",
 			Date.now(),
-			POSAPP_BASE_PATH,
+			resolvePosAppBasePath(window.location.pathname),
 		),
 	);
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildPosAppRecoveryLocation,
+	resolvePosAppBasePath,
 	resolvePosAppNormalizedPath,
 	resolvePosAppRouteFullPath,
 } from "../src/loader-utils";
@@ -58,5 +59,19 @@ describe("resolvePosAppNormalizedPath", () => {
 		).toBe(
 			"/app/posapp/orders?draft=1&_posa_loader_recovery=123#items",
 		);
+	});
+
+	it("uses the /desk base when Frappe v16 has redirected /app to /desk", () => {
+		expect(resolvePosAppBasePath("/desk/posapp/claims")).toBe("/desk/posapp");
+		expect(resolvePosAppBasePath("/desk/posapp")).toBe("/desk/posapp");
+		expect(resolvePosAppBasePath("/app/posapp/claims")).toBe("/app/posapp");
+		expect(resolvePosAppBasePath("/desk/posapps")).toBe("/app/posapp");
+		expect(resolvePosAppBasePath(null)).toBe("/app/posapp");
+		expect(
+			resolvePosAppRouteFullPath(
+				{ pathname: "/desk/posapp/claims", search: "?sales_order=SO-1" },
+				resolvePosAppBasePath("/desk/posapp/claims"),
+			),
+		).toBe("/claims?sales_order=SO-1");
 	});
 });

@@ -1,6 +1,8 @@
-import { buildPosAppRecoveryLocation } from "../../loader-utils";
+import {
+	buildPosAppRecoveryLocation,
+	resolvePosAppBasePath,
+} from "../../loader-utils";
 
-const POSAPP_ROUTE = "/app/posapp";
 const CHUNK_RELOAD_KEY = "posa_chunk_reload_once";
 const CHUNK_CACHE_RECOVERY_KEY = "posa_chunk_cache_recovery_once";
 const CHUNK_RECOVERY_IN_PROGRESS_KEY = "posa_chunk_recovery_in_progress";
@@ -73,7 +75,12 @@ export function buildChunkRecoveryLocation(
 	param: string,
 	token: string | number = Date.now(),
 ) {
-	return buildPosAppRecoveryLocation(locationLike, param, token, POSAPP_ROUTE);
+	return buildPosAppRecoveryLocation(
+		locationLike,
+		param,
+		token,
+		resolvePosAppBasePath(locationLike?.pathname),
+	);
 }
 
 function redirectToPosApp(param: string) {
