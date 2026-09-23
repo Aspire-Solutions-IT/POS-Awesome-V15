@@ -27,6 +27,8 @@
  * `lockTerminal()` closes the switch dialog and opens `lockDialogOpen`.
  * `unlockTerminal(cashier?)` closes the lock and optionally switches the active
  * cashier in one step. `isLocked` is a computed alias for `lockDialogOpen`.
+ * The lock state is persisted in `localStorage` under `"posa_terminal_locked"`
+ * so a refresh keeps a locked terminal locked (and an unlocked one unlocked).
  */
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
@@ -40,6 +42,7 @@ export interface TerminalEmployee {
 }
 
 const STORAGE_KEY = "posa_terminal_cashier";
+const LOCKED_STORAGE_KEY = "posa_terminal_locked";
 
 const getBrowserGlobal = (): any =>
 	typeof window !== "undefined" ? window : globalThis;
@@ -66,6 +69,27 @@ const readStoredCashierUser = (): string => {
 	}
 };
 
+// Persisted so a page refresh cannot be used to skip past an active lock.
+const readStoredLocked = (): boolean => {
+	try {
+		return getBrowserGlobal()?.localStorage?.getItem(LOCKED_STORAGE_KEY) === "1";
+	} catch {
+		return false;
+	}
+};
+
+const persistLocked = (locked: boolean) => {
+	try {
+		if (locked) {
+			getBrowserGlobal()?.localStorage?.setItem(LOCKED_STORAGE_KEY, "1");
+		} else {
+			getBrowserGlobal()?.localStorage?.removeItem(LOCKED_STORAGE_KEY);
+		}
+	} catch {
+		// Ignore storage failures.
+	}
+};
+
 const persistCashierUser = (user: string) => {
 	try {
 		if (user) {
@@ -82,7 +106,7 @@ export const useEmployeeStore = defineStore("employee", () => {
 	const terminalEmployees = ref<TerminalEmployee[]>([]);
 	const currentCashier = ref<TerminalEmployee | null>(getSessionCashier());
 	const switchDialogOpen = ref(false);
-	const lockDialogOpen = ref(false);
+	const lockDialogOpen = ref(readStoredLocked());
 
 	const currentCashierDisplay = computed(
 		() => currentCashier.value?.full_name || currentCashier.value?.user || "",
@@ -168,6 +192,7 @@ export const useEmployeeStore = defineStore("employee", () => {
 	const lockTerminal = () => {
 		switchDialogOpen.value = false;
 		lockDialogOpen.value = true;
+		persistLocked(true);
 	};
 
 	const unlockTerminal = (cashier?: TerminalEmployee | string | null) => {
@@ -175,6 +200,7 @@ export const useEmployeeStore = defineStore("employee", () => {
 			setCurrentCashier(cashier);
 		}
 		lockDialogOpen.value = false;
+		persistLocked(false);
 	};
 
 	return {

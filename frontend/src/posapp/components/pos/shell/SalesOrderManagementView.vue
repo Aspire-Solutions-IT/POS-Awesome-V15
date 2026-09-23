@@ -1128,7 +1128,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
@@ -1367,8 +1367,6 @@ const detailTab = ref("details");
 // Deep link from the "Order Placed" dialog (submit-without-payment): preselect the
 // order and, once its payment-link button is on screen, flash it a few times so the
 // till is nudged to actually send the link.
-const route = useRoute();
-const router = useRouter();
 const deepLinkedOrder = String(route.query.order || "").trim();
 const pendingPaymentLinkFlash = ref(String(route.query.prompt || "") === "payment-link");
 const flashRevolutButton = ref(false);
