@@ -140,7 +140,7 @@ const mountDialog = (props: Record<string, any> = {}) =>
 				VCol: BoxStub,
 				VAlert: BoxStub,
 				VTable: BoxStub,
-				VFileInput: BoxStub,
+				VChip: BoxStub,
 				VBtn: VBtnStub,
 				VTextField: VTextFieldStub,
 				VTextarea: VTextareaStub,
@@ -292,5 +292,94 @@ describe("RaiseClaimDialog", () => {
 		expect(wrapper.text()).toContain("Photograph the damage from two angles.");
 		const submit = wrapper.findAll("button").find((b) => b.text() === "Submit for review")!;
 		expect(submit.attributes("disabled")).toBeDefined();
+	});
+
+	const pickEvidence = async (wrapper: any, names: string[], sizes: Record<string, number> = {}) => {
+		const input = wrapper.find("input.evidence-input");
+		const files = names.map((name) => {
+			const type = /\.(mp4|mov)$/i.test(name) ? "video/mp4" : "image/jpeg";
+			return new File(["x".repeat(sizes[name] ?? 1)], name, { type });
+		});
+		Object.defineProperty(input.element, "files", { value: files, configurable: true });
+		await input.trigger("change");
+		return files;
+	};
+
+	it("uploads every evidence photo added and sends them all with the claim", async () => {
+		let uploads = 0;
+		(api.call as any).mockImplementation(async (method: string, args: any) => {
+			if (method.endsWith("get_sales_order_claim_context")) {
+				return {
+					...context,
+					claim_types: [{ ...context.claim_types[0], evidence_required: 1 }],
+				};
+			}
+			if (method.endsWith("upload_claim_evidence")) {
+				uploads += 1;
+				return { file_url: `/private/files/${args.filename}` };
+			}
+			if (method.endsWith("raise_claim")) return { name: "CLM-0002" };
+			return null;
+		});
+		const wrapper = mountDialog();
+		await flushPromises();
+		await wrapper.find("select[aria-label='Preferred outcome']").setValue("Replace");
+		await wrapper.find("textarea[aria-label='What is wrong?']").setValue("Cracked");
+		await wrapper.findAll("input[type='checkbox']")[0].setValue(true);
+		await flushPromises();
+
+		const submit = () => wrapper.findAll("button").find((b: any) => b.text() === "Submit for review")!;
+		expect(submit().attributes("disabled")).toBeDefined();
+
+		// One photo is enough to satisfy a claim type that requires evidence…
+		await pickEvidence(wrapper, ["front.jpg"]);
+		await flushPromises();
+		expect(submit().attributes("disabled")).toBeUndefined();
+		// …and later picks add to the list rather than replacing it.
+		await pickEvidence(wrapper, ["back.jpg", "label.jpg"]);
+		await flushPromises();
+		expect(wrapper.text()).toContain("front.jpg");
+		expect(wrapper.text()).toContain("label.jpg");
+
+		await submit().trigger("click");
+		// FileReader resolves on its own timer in jsdom.
+		await vi.waitFor(() =>
+			expect((api.call as any).mock.calls.some((c: any[]) => c[0].endsWith("raise_claim"))).toBe(true),
+		);
+
+		expect(uploads).toBe(3);
+		const call = (api.call as any).mock.calls.find((c: any[]) => c[0].endsWith("raise_claim"));
+		expect(call[1].payload.evidence).toEqual([
+			"/private/files/front.jpg",
+			"/private/files/back.jpg",
+			"/private/files/label.jpg",
+		]);
+	});
+
+	it("accepts videos and refuses any file over its size limit when picked", async () => {
+		(api.call as any).mockImplementation(async (method: string) => {
+			if (method.endsWith("get_sales_order_claim_context")) {
+				return { ...context, evidence_max_bytes: { photo: 10, video: 50 } };
+			}
+			return null;
+		});
+		const wrapper = mountDialog();
+		await flushPromises();
+		expect(wrapper.find("input.evidence-input").attributes("accept")).toContain("video/*");
+
+		await pickEvidence(wrapper, ["clip.mp4", "huge.mov", "big.jpg", "ok.jpg"], {
+			"clip.mp4": 40,
+			"huge.mov": 60,
+			"big.jpg": 20,
+			"ok.jpg": 5,
+		});
+		await flushPromises();
+
+		const text = wrapper.text();
+		expect(text).toContain("clip.mp4");
+		expect(text).toContain("ok.jpg");
+		expect(text).toContain("huge.mov is over 0 MB");
+		expect(text).toContain("big.jpg is over 0 MB");
+		expect(wrapper.findAll(".evidence-chip").map((c: any) => c.text())).toEqual(["clip.mp4", "ok.jpg"]);
 	});
 });

@@ -10,6 +10,9 @@ Run on the test site:
       --module posawesome.posawesome.api.test_claims --skip-before-tests
 """
 
+import base64
+from unittest.mock import patch
+
 import frappe
 from frappe.model.workflow import apply_workflow
 from frappe.tests.classes import IntegrationTestCase
@@ -325,6 +328,8 @@ class TestPosawesomeClaims(IntegrationTestCase):
 		uploaded = claims.upload_claim_evidence("damage.png", _PNG_BASE64)
 		self.assertTrue(uploaded["file_url"])
 		self.assertTrue(frappe.db.get_value("File", {"file_url": uploaded["file_url"]}, "is_private"))
+		# Different bytes: identical uploads share one URL.
+		second = claims.upload_claim_evidence("label.png", base64.b64encode(b"second photo").decode())
 
 		result = claims.raise_claim(
 			dict(
@@ -332,13 +337,32 @@ class TestPosawesomeClaims(IntegrationTestCase):
 				claim_type=self.claim_type,
 				description="Cracked on arrival",
 				preferred_outcome="Replace",
-				evidence=uploaded["file_url"],
+				evidence=[uploaded["file_url"], second["file_url"]],
 				items=[dict(sales_order_item=self.line.name, qty=1)],
 			)
 		)
+		detail = claims.get_claim(result["name"])
 		self.assertEqual(
-			frappe.db.get_value("Customer Claim", result["name"], "evidence"), uploaded["file_url"]
+			[row["file"] for row in detail["claim"]["evidence_files"]],
+			[uploaded["file_url"], second["file_url"]],
 		)
+
+	def test_video_evidence_upload_and_per_kind_size_limits(self):
+		frappe.set_user(self.approver)
+		video = claims.upload_claim_evidence("damage.MOV", base64.b64encode(b"video bytes").decode())
+		self.assertTrue(video["file_url"].lower().endswith(".mov"))
+		self.assertTrue(frappe.db.get_value("File", {"file_url": video["file_url"]}, "is_private"))
+
+		context = claims.get_sales_order_claim_context(self.order.name)
+		self.assertLessEqual(context["evidence_max_bytes"]["photo"], context["evidence_max_bytes"]["video"])
+
+		# A video may be larger than a photo is allowed to be.
+		with patch.object(claims, "_evidence_limits", return_value={"photo": 4, "video": 8}):
+			claims.upload_claim_evidence("clip.mp4", base64.b64encode(b"sixbyt").decode())
+			with self.assertRaises(frappe.ValidationError):
+				claims.upload_claim_evidence("photo.jpg", base64.b64encode(b"sixbyt").decode())
+			with self.assertRaises(frappe.ValidationError):
+				claims.upload_claim_evidence("clip.mp4", base64.b64encode(b"ninebytes").decode())
 
 	def _decision_payload(self, claim_name):
 		claim = frappe.get_doc("Customer Claim", claim_name)

@@ -139,14 +139,32 @@
 								</td>
 								<template v-if="needsReplacement">
 									<td>
-										<v-text-field
-											v-model="row.replacement_item"
-											density="compact"
-											hide-details
+										<div v-if="row.replacement_item" class="replacement-choice">
+											<div class="replacement-choice__text">
+												<div>{{ row.replacement_item }}</div>
+												<small class="text-medium-emphasis">{{ row.replacement_item_name }}</small>
+											</div>
+											<v-btn
+												size="small"
+												variant="text"
+												class="replacement-change"
+												:disabled="!row.selected"
+												@click="openReplacementPicker(row)"
+											>
+												{{ __("Change") }}
+											</v-btn>
+										</div>
+										<v-btn
+											v-else
+											size="small"
+											variant="tonal"
+											prepend-icon="mdi-magnify"
+											class="replacement-pick"
 											:disabled="!row.selected"
-											:placeholder="__('Item code')"
-											class="pos-themed-input"
-										/>
+											@click="openReplacementPicker(row)"
+										>
+											{{ __("Choose item") }}
+										</v-btn>
 									</td>
 									<td>
 										<v-text-field
@@ -179,12 +197,42 @@
 				</v-btn>
 			</v-card-actions>
 		</v-card>
+
+		<!-- The same item picker Sales Order Management uses to add items to an order. -->
+		<v-dialog v-model="pickerOpen" max-width="760" scrollable>
+			<v-card class="pos-themed-card replacement-picker">
+				<v-card-title class="d-flex align-center justify-space-between">
+					<span>{{ __("Choose replacement for {0}", [pickerRow?.item_code || ""]) }}</span>
+					<v-btn
+						icon="mdi-close"
+						variant="text"
+						density="comfortable"
+						:aria-label="__('Close item selector')"
+						@click="pickerOpen = false"
+					/>
+				</v-card-title>
+				<v-card-text class="replacement-picker__body">
+					<v-alert
+						v-if="pickerError"
+						type="warning"
+						variant="tonal"
+						density="compact"
+						class="mb-2"
+					>
+						{{ pickerError }}
+					</v-alert>
+					<ItemsSelector v-if="pickerOpen" context="sales-order" @add-item="onReplacementPicked" />
+				</v-card-text>
+			</v-card>
+		</v-dialog>
 	</v-dialog>
 </template>
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import api from "../../../services/api";
+// Imported statically: an async ItemsSelector breaks the whole POS app.
+import ItemsSelector from "../items/ItemsSelector.vue";
 
 declare const __: (value: string, args?: any[]) => string;
 
@@ -196,6 +244,7 @@ type DecisionItemRow = {
 	selected: boolean;
 	qty: number;
 	replacement_item: string;
+	replacement_item_name: string;
 	replacement_qty: number;
 };
 
@@ -251,6 +300,7 @@ const canSubmit = computed(() => {
 	return selectedRows.value.every((row) => {
 		if (!(Number(row.qty) > 0 && Number(row.qty) <= row.maxQty)) return false;
 		if (needsReplacement.value && !row.replacement_item) return false;
+		if (row.replacement_item && !(Number(row.replacement_qty) > 0)) return false;
 		return true;
 	});
 });
@@ -271,8 +321,36 @@ function resetForm() {
 		selected: false,
 		qty: Number(item.qty || 0),
 		replacement_item: "",
+		replacement_item_name: "",
 		replacement_qty: 0,
 	}));
+}
+
+const pickerOpen = ref(false);
+const pickerRow = ref<DecisionItemRow | null>(null);
+const pickerError = ref("");
+
+function openReplacementPicker(row: DecisionItemRow) {
+	pickerRow.value = row;
+	pickerError.value = "";
+	pickerOpen.value = true;
+}
+
+function onReplacementPicked(item: any) {
+	const row = pickerRow.value;
+	if (!row || !item?.item_code) return;
+	// A template can't go on the replacement Sales Order; one of its variants can.
+	if (item.has_variants) {
+		pickerError.value = __("{0} has variants. Choose the specific variant instead.", [
+			item.item_name || item.item_code,
+		]);
+		return;
+	}
+	row.replacement_item = item.item_code;
+	row.replacement_item_name = item.item_name || "";
+	// Like-for-like by default; the part qty can still be changed afterwards.
+	if (!(Number(row.replacement_qty) > 0)) row.replacement_qty = Number(row.qty) || 1;
+	pickerOpen.value = false;
 }
 
 async function submit() {
@@ -331,5 +409,19 @@ watch(
 	vertical-align: top;
 	padding-top: 8px;
 	padding-bottom: 8px;
+}
+.replacement-choice {
+	display: flex;
+	align-items: flex-start;
+	gap: 4px;
+}
+.replacement-choice__text {
+	flex: 1;
+	min-width: 0;
+}
+/* ItemsSelector sizes itself to its container, as in the SOM drawer. */
+.replacement-picker__body {
+	height: 70vh;
+	padding: 0 12px 12px;
 }
 </style>

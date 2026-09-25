@@ -8,6 +8,30 @@ vi.mock("../src/posapp/services/api", () => ({
 	default: { call: vi.fn() },
 }));
 
+// Stands in for the real picker, which needs the full POS app around it. Each
+// button emits add-item with that item, as ItemsSelector does outside the cart.
+vi.mock("../src/posapp/components/pos/items/ItemsSelector.vue", async () => {
+	const { defineComponent, h } = await import("vue");
+	const items = [
+		{ item_code: "SOFA-NEW", item_name: "New Sofa" },
+		{ item_code: "CHAIR-TPL", item_name: "Chair Template", has_variants: 1 },
+	];
+	return {
+		default: defineComponent({
+			props: { context: { type: String, default: "" } },
+			emits: ["add-item"],
+			setup: (props, { emit }) => () =>
+				h(
+					"div",
+					{ class: "items-selector-stub", "data-context": props.context },
+					items.map((item) =>
+						h("button", { class: `pick-${item.item_code}`, onClick: () => emit("add-item", item) }, item.item_code),
+					),
+				),
+		}),
+	};
+});
+
 import ProposeDecisionDialog from "../src/posapp/components/pos/claims/ProposeDecisionDialog.vue";
 import api from "../src/posapp/services/api";
 
@@ -184,7 +208,7 @@ describe("ProposeDecisionDialog", () => {
 		await flushPromises();
 		expect(wrapper.text()).not.toContain("Replacement");
 		expect(wrapper.text()).not.toContain("Part qty");
-		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
+		expect(wrapper.findAll(".replacement-pick")).toHaveLength(0);
 	});
 
 	it("never shows the replacement columns for a Service Call, only for Exchange/Replace", async () => {
@@ -200,11 +224,11 @@ describe("ProposeDecisionDialog", () => {
 		await flushPromises();
 		await wrapper.find("select[aria-label='Service type']").setValue("Maintenance Visit");
 		await flushPromises();
-		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
+		expect(wrapper.findAll(".replacement-pick")).toHaveLength(0);
 
 		await wrapper.find("select[aria-label='Service type']").setValue("Spare Part");
 		await flushPromises();
-		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
+		expect(wrapper.findAll(".replacement-pick")).toHaveLength(0);
 	});
 
 	it("submits the selected lines with replacement details and emits created", async () => {
@@ -216,9 +240,19 @@ describe("ProposeDecisionDialog", () => {
 		await tickItem(wrapper, "Include ITEM-1");
 		await flushPromises();
 
+		// No free-text code box: the replacement comes from the item picker.
+		expect(wrapper.findAll("input[placeholder='Item code']")).toHaveLength(0);
 		const rows = wrapper.findAll("tbody tr");
-		await rows[0]!.find("input[placeholder='Item code']").setValue("ITEM-1-NEW");
+		await rows[0]!.find(".replacement-pick").trigger("click");
 		await flushPromises();
+		expect(wrapper.find(".items-selector-stub").attributes("data-context")).toBe("sales-order");
+		expect(wrapper.text()).toContain("Choose replacement for ITEM-1");
+		await wrapper.find(".pick-SOFA-NEW").trigger("click");
+		await flushPromises();
+
+		// The picker closes and the row shows the chosen item.
+		expect(wrapper.find(".items-selector-stub").exists()).toBe(false);
+		expect(wrapper.findAll("tbody tr")[0]!.text()).toContain("New Sofa");
 
 		await recordButton(wrapper).trigger("click");
 		await flushPromises();
@@ -230,9 +264,44 @@ describe("ProposeDecisionDialog", () => {
 			claim: "CLM-0001",
 			outcome: "Replace",
 			reasoning: "Confirmed faulty.",
-			items: [{ claim_item: "CCI-1", qty: 2, replacement_item: "ITEM-1-NEW" }],
+			// Replacement qty defaults to the decided qty, like for like.
+			items: [{ claim_item: "CCI-1", qty: 2, replacement_item: "SOFA-NEW", replacement_qty: 2 }],
 		});
 		expect(onCreated).toHaveBeenCalledWith("CLM-0001");
 		expect(onClose).toHaveBeenCalledWith(false);
+	});
+
+	it("refuses a template item and asks for a specific variant", async () => {
+		const wrapper = mountDialog();
+		await flushPromises();
+		await wrapper.find("textarea[aria-label='Reasoning']").setValue("Confirmed faulty.");
+		await tickItem(wrapper, "Include ITEM-1");
+		await flushPromises();
+		await wrapper.findAll("tbody tr")[0]!.find(".replacement-pick").trigger("click");
+		await flushPromises();
+		await wrapper.find(".pick-CHAIR-TPL").trigger("click");
+		await flushPromises();
+
+		expect(wrapper.text()).toContain("Chair Template has variants. Choose the specific variant instead.");
+		expect(wrapper.find(".items-selector-stub").exists()).toBe(true);
+		expect(recordButton(wrapper).attributes("disabled")).toBeDefined();
+	});
+
+	it("blocks recording when a replacement quantity is cleared to zero", async () => {
+		const wrapper = mountDialog();
+		await flushPromises();
+		await wrapper.find("textarea[aria-label='Reasoning']").setValue("Confirmed faulty.");
+		await tickItem(wrapper, "Include ITEM-1");
+		await flushPromises();
+		await wrapper.findAll("tbody tr")[0]!.find(".replacement-pick").trigger("click");
+		await flushPromises();
+		await wrapper.find(".pick-SOFA-NEW").trigger("click");
+		await flushPromises();
+		expect(recordButton(wrapper).attributes("disabled")).toBeUndefined();
+
+		const qtyInputs = wrapper.findAll("tbody tr")[0]!.findAll("input:not([type='checkbox'])");
+		await qtyInputs[qtyInputs.length - 1]!.setValue("0");
+		await flushPromises();
+		expect(recordButton(wrapper).attributes("disabled")).toBeDefined();
 	});
 });

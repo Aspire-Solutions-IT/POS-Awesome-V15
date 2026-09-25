@@ -232,8 +232,13 @@
 						>{{ prev.name }}</a>
 					</v-alert>
 
-					<div v-if="evidenceUrl" class="my-3">
-						<a :href="evidenceUrl" target="_blank" rel="noopener noreferrer">{{ __("View attached evidence ↗") }}</a>
+					<div v-if="evidenceFiles.length" class="my-3">
+						<h4>{{ __("Evidence ({0})", [evidenceFiles.length]) }}</h4>
+						<ul class="evidence-list">
+							<li v-for="file in evidenceFiles" :key="file.url">
+								<a :href="file.url" target="_blank" rel="noopener noreferrer">{{ file.name }} ↗</a>
+							</li>
+						</ul>
 					</div>
 
 					<h4 class="mt-4">{{ __("Affected items") }}</h4>
@@ -467,10 +472,21 @@ const claimTypeItems = computed(() => [
 	...claimTypes.value.map((type) => ({ title: type.name, value: type.name })),
 ]);
 
-const evidenceUrl = computed(() => {
-	const url = String(detail.value?.claim?.evidence || "");
-	return /^\/(?!\/)/.test(url) || /^https?:\/\//i.test(url) ? url : "";
-});
+const evidenceFiles = computed(() =>
+	((detail.value?.claim?.evidence_files || []) as Array<{ file?: string }>)
+		.map((row) => String(row?.file || ""))
+		.filter((url) => /^\/(?!\/)/.test(url) || /^https?:\/\//i.test(url))
+		.map((url) => ({ url, name: evidenceFileName(url) })),
+);
+
+function evidenceFileName(url: string) {
+	const last = url.split("/").pop() || url;
+	try {
+		return decodeURIComponent(last);
+	} catch {
+		return last;
+	}
+}
 
 function badgeClass(state?: string) {
 	return (
@@ -634,6 +650,10 @@ defineExpose({ reload, selectClaim });
 </script>
 
 <style scoped>
+.evidence-list {
+	margin: 4px 0 0;
+	padding-left: 18px;
+}
 .claims-view {
 	padding: 20px;
 }

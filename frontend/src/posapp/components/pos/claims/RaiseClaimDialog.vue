@@ -117,16 +117,50 @@
 						{{ selectedClaimType.evidence_instructions }}
 					</v-alert>
 
-					<v-file-input
-						v-model="evidenceFile"
-						:label="evidenceRequired ? __('Evidence photo (required)') : __('Evidence photo (optional)')"
-						accept="image/*,application/pdf"
-						prepend-icon="mdi-camera"
-						density="compact"
-						hide-details
-						class="pos-themed-input mt-3"
-						:show-size="true"
-					/>
+					<div class="evidence-section mt-3">
+						<div class="d-flex align-center flex-wrap ga-2">
+							<v-btn
+								variant="tonal"
+								prepend-icon="mdi-camera"
+								class="evidence-add"
+								@click="evidenceInput?.click()"
+							>
+								{{
+									evidenceFiles.length ? __("Add more photos or videos") : __("Add photos or videos")
+								}}
+							</v-btn>
+							<span class="text-medium-emphasis evidence-hint">
+								{{
+									evidenceRequired
+										? __("At least one photo or video is required.")
+										: __("Optional. Add as many as you need.")
+								}}
+							</span>
+						</div>
+						<input
+							ref="evidenceInput"
+							type="file"
+							accept="image/*,video/*,application/pdf"
+							multiple
+							hidden
+							class="evidence-input"
+							@change="onEvidencePicked"
+						/>
+						<div v-if="evidenceFiles.length" class="d-flex flex-wrap ga-2 mt-2">
+							<v-chip
+								v-for="(file, index) in evidenceFiles"
+								:key="index + ':' + file.name"
+								closable
+								size="small"
+								class="evidence-chip"
+								:prepend-icon="isVideo(file) ? 'mdi-video' : 'mdi-image'"
+								@click:close="removeEvidence(index)"
+							>
+								{{ file.name }}
+							</v-chip>
+						</div>
+						<div v-if="evidenceError" class="text-error evidence-hint mt-2">{{ evidenceError }}</div>
+					</div>
 
 					<div class="items-section mt-5">
 						<div class="items-section__heading">
@@ -250,6 +284,7 @@ type ClaimContext = {
 	existing_claims: ExistingClaim[];
 	preferred_outcomes: string[];
 	service_call_types: string[];
+	evidence_max_bytes?: { photo: number; video: number };
 };
 
 type ItemRow = {
@@ -284,7 +319,11 @@ const loading = ref(false);
 const loadError = ref("");
 const submitting = ref(false);
 const submitError = ref("");
-const evidenceFile = ref<File | File[] | null>(null);
+const evidenceFiles = ref<File[]>([]);
+const evidenceInput = ref<HTMLInputElement | null>(null);
+const evidenceError = ref("");
+// A file already uploaded by an earlier, failed submit is not uploaded again.
+const uploadedEvidence = new WeakMap<File, string>();
 
 const emptyContext: ClaimContext = {
 	items: [],
@@ -328,16 +367,40 @@ const overlapWarning = computed(() => {
 	);
 });
 
-const evidencePicked = computed(() => {
-	const value = evidenceFile.value;
-	if (Array.isArray(value)) return value[0] || null;
-	return value || null;
-});
+const VIDEO_EXTENSION = /\.(mp4|mov|m4v|webm|3gp)$/i;
+
+function isVideo(file: File) {
+	return file.type.startsWith("video/") || VIDEO_EXTENSION.test(file.name);
+}
+
+function onEvidencePicked(event: Event) {
+	const input = event.target as HTMLInputElement;
+	const limits = context.evidence_max_bytes;
+	const accepted: File[] = [];
+	const tooBig: string[] = [];
+	for (const file of Array.from(input.files || [])) {
+		const limit = limits ? (isVideo(file) ? limits.video : limits.photo) : 0;
+		// Refused here rather than after a slow upload the server would reject.
+		if (limit && file.size > limit) {
+			tooBig.push(__("{0} is over {1} MB", [file.name, Math.round(limit / (1024 * 1024))]));
+		} else {
+			accepted.push(file);
+		}
+	}
+	evidenceError.value = tooBig.length ? tooBig.join("; ") + "." : "";
+	// Each pick adds to the list, so staff can add several files one at a time.
+	evidenceFiles.value = [...evidenceFiles.value, ...accepted];
+	input.value = "";
+}
+
+function removeEvidence(index: number) {
+	evidenceFiles.value = evidenceFiles.value.filter((_, i) => i !== index);
+}
 
 const canSubmit = computed(() => {
 	if (!form.claim_type || !form.preferred_outcome || !form.description.trim()) return false;
 	if (form.preferred_outcome === "Service Call" && !form.service_call_type) return false;
-	if (evidenceRequired.value && !evidencePicked.value) return false;
+	if (evidenceRequired.value && !evidenceFiles.value.length) return false;
 	if (!selectedRows.value.length) return false;
 	return selectedRows.value.every((row) => Number(row.qty) > 0 && Number(row.qty) <= row.maxQty);
 });
@@ -372,7 +435,8 @@ function resetForm() {
 	form.preferred_outcome = "";
 	form.service_call_type = "";
 	form.description = "";
-	evidenceFile.value = null;
+	evidenceFiles.value = [];
+	evidenceError.value = "";
 	submitError.value = "";
 }
 
@@ -413,6 +477,8 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 async function uploadEvidence(file: File): Promise<string> {
+	const existing = uploadedEvidence.get(file);
+	if (existing) return existing;
 	const contentBase64 = await fileToBase64(file);
 	const uploaded = await api.call<{ file_url?: string }>(
 		"posawesome.posawesome.api.claims.upload_claim_evidence",
@@ -421,6 +487,7 @@ async function uploadEvidence(file: File): Promise<string> {
 	if (!uploaded?.file_url) {
 		throw new Error(__("Evidence upload failed."));
 	}
+	uploadedEvidence.set(file, uploaded.file_url);
 	return uploaded.file_url;
 }
 
@@ -429,9 +496,9 @@ async function submit() {
 	submitting.value = true;
 	submitError.value = "";
 	try {
-		let evidence = "";
-		if (evidencePicked.value) {
-			evidence = await uploadEvidence(evidencePicked.value);
+		const evidence: string[] = [];
+		for (const file of evidenceFiles.value) {
+			evidence.push(await uploadEvidence(file));
 		}
 		const payload = {
 			sales_order: props.salesOrder,
@@ -508,5 +575,8 @@ watch(
 }
 .text-warning {
 	color: #b26a00;
+}
+.evidence-hint {
+	font-size: 13px;
 }
 </style>

@@ -12,6 +12,8 @@ import binascii
 import frappe
 from customer_due_dates.customer_claims import workspace as claim_workspace
 from customer_due_dates.customer_claims.api import get_order_items
+from customer_due_dates.customer_claims.evidence import evidence_kind, size_error
+from customer_due_dates.customer_claims.evidence import evidence_limits as _evidence_limits
 from frappe import _
 from frappe.utils import cstr
 
@@ -19,9 +21,6 @@ from posawesome.posawesome.api.employees import _get_terminal_users
 
 PREFERRED_OUTCOMES = ("Exchange", "Refund", "Credit", "Replace", "Service Call")
 SERVICE_CALL_TYPES = ("Maintenance Visit", "Spare Part")
-# Evidence is a photo or a scanned document from the shop floor, kept small.
-EVIDENCE_MAX_BYTES = 15 * 1024 * 1024
-EVIDENCE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".pdf")
 
 
 def _require_claim_create():
@@ -102,6 +101,7 @@ def get_sales_order_claim_context(sales_order):
 		existing_claims=existing,
 		preferred_outcomes=list(PREFERRED_OUTCOMES),
 		service_call_types=list(SERVICE_CALL_TYPES),
+		evidence_max_bytes=_evidence_limits(),
 	)
 
 
@@ -109,17 +109,17 @@ def get_sales_order_claim_context(sales_order):
 def upload_claim_evidence(filename, content_base64):
 	"""Store one evidence file for a claim and return its URL.
 
-	POSAwesome sends the photo as base64 through the normal RPC channel (which
+	POSAwesome sends the photo or video as base64 through the normal RPC channel (which
 	already carries the CSRF token), rather than a multipart form. The file is
-	private and unattached; ``raise_claim`` records its URL on the new claim.
+	private and unattached; ``raise_claim`` records the URLs of every file
+	uploaded for the claim in its evidence table.
 	"""
 	_require_claim_create()
 
 	safe_name = cstr(filename).strip() or "evidence"
-	if "." not in safe_name or safe_name.lower().rsplit(".", 1)[-1] not in (
-		ext.lstrip(".") for ext in EVIDENCE_EXTENSIONS
-	):
-		frappe.throw(_("Evidence must be a photo or a PDF."))
+	kind = evidence_kind(safe_name)
+	if not kind:
+		frappe.throw(_("Evidence must be a photo, a video or a PDF."))
 
 	try:
 		content = base64.b64decode(str(content_base64), validate=True)
@@ -127,8 +127,10 @@ def upload_claim_evidence(filename, content_base64):
 		frappe.throw(_("The evidence file could not be read. Try again."))
 	if not content:
 		frappe.throw(_("The evidence file is empty."))
-	if len(content) > EVIDENCE_MAX_BYTES:
-		frappe.throw(_("Evidence files must be under 15 MB."))
+	# Checked here too, before the File is stored, not only when the claim is saved.
+	limit = _evidence_limits()[kind]
+	if len(content) > limit:
+		frappe.throw(size_error(kind, limit))
 
 	file_doc = frappe.get_doc(
 		{
