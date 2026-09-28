@@ -35,6 +35,10 @@ const itemService = {
     return api.call("posawesome.posawesome.api.items.search_items", args, { signal });
   },
 
+  searchItemsByCode(args: GetItemsArgs, signal?: AbortSignal): Promise<Item[]> {
+    return api.call("posawesome.posawesome.api.items.search_items_by_code", args, { signal });
+  },
+
   getItemsCount(args: GetItemsCountArgs): Promise<number> {
     return api.call("posawesome.posawesome.api.items.get_items_count", args);
   },

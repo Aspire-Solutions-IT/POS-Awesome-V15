@@ -28,6 +28,7 @@
 				<v-card flat class="selector-section-card selector-header-card pos-themed-card">
 					<ItemHeader
 						v-model:search-input="search_input"
+						v-model:sku-input="sku_input"
 						v-model:qty-input="debounce_qty"
 						:pos-profile="pos_profile"
 						:scanner-locked="scannerLocked"
@@ -41,6 +42,9 @@
 						@clear-search="clearSearch"
 						@clear-search-and-qty="clearSearchAndQty"
 						@search-input="handleSearchInput"
+						@sku-input="handleSkuInput"
+						@sku-enter="flushSkuSearch"
+						@clear-sku="clearSkuSearch"
 						@search-paste="handleSearchPaste"
 						@focus="handleItemSearchFocus"
 						@clear-qty="clearQty"
@@ -318,6 +322,7 @@ const newItemDialogScannedBarcode = ref("");
 const newItemDialogAwaitingScan = ref(false);
 const qty = ref(1);
 const search_input = ref("");
+const sku_input = ref("");
 const first_search = ref("");
 const items_view = ref("list");
 const itemsPerPage = ref(50);
@@ -998,6 +1003,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
 	if (initTimeout.value) clearTimeout(initTimeout.value);
+	runSkuSearch.cancel();
 	itemSync.stopBackgroundSyncScheduler();
 	// @ts-ignore
 	if (itemWorker.value) itemWorker.value.terminate();
@@ -1172,7 +1178,41 @@ const hasVisibleDialog = () => {
 const esc_event = () => clearSearch();
 const onEnter = (e) => itemsSelectorSearch.onEnter(e);
 const handleSearchKeydown = (e) => itemsSelectorFocus.handleSearchKeydown(e);
+// SKU box: server-side item_code search. It and the main search are mutually
+// exclusive — typing in one clears the other.
+const runSkuSearch = _.debounce((term: string) => {
+	itemsIntegration.searchItemsByCode(term);
+}, 300);
+const handleSkuInput = (val) => {
+	const term = String(val ?? "");
+	sku_input.value = term;
+	itemSelection.clearHighlightedItem();
+	if (!term.trim()) {
+		clearSkuSearch();
+		return;
+	}
+	// Mark SKU mode now, not after the debounce, so the main search's own debounced
+	// clear (triggered above) doesn't reset the list back to the full catalogue.
+	itemsIntegration.itemsStore.codeSearchTerm = term.trim();
+	if (search_input.value) {
+		clearSearch();
+	}
+	runSkuSearch(term);
+};
+const flushSkuSearch = () => {
+	runSkuSearch.flush();
+};
+const clearSkuSearch = () => {
+	runSkuSearch.cancel();
+	sku_input.value = "";
+	if (itemsIntegration.itemsStore.codeSearchTerm) {
+		itemsIntegration.searchItemsByCode("");
+	}
+};
 const handleSearchInput = (val) => {
+	if (sku_input.value && String(val ?? "")) {
+		clearSkuSearch();
+	}
 	search_input.value = val;
 	first_search.value = String(val ?? "");
 	if (scannerInput.handleSearchInput) {
