@@ -184,16 +184,53 @@
 									{{ __("Open Stream") }}
 								</v-btn>
 							</template>
-							<v-btn
-								v-if="canPayRemainingBalance"
-								color="success"
-								variant="flat"
-								:loading="paymentLoading"
-								:disabled="paymentLoading"
-								@click="openPaymentDialog"
-							>
-								{{ __("Pay Remaining Balance") }}
-							</v-btn>
+							<v-menu v-model="takePaymentOpen" location="bottom end" :close-on-content-click="true">
+								<template #activator="{ props: takePaymentProps }">
+									<v-btn
+										v-if="hasTakePaymentOptions"
+										v-bind="takePaymentProps"
+										color="success"
+										variant="flat"
+										prepend-icon="mdi-cash-register"
+										append-icon="mdi-chevron-down"
+										:loading="paymentLoading"
+										:class="{ 'revolut-flash': flashRevolutButton }"
+									>
+										{{ __("Take Payment") }}
+									</v-btn>
+								</template>
+								<v-list density="compact" class="pos-themed-card">
+									<v-list-item
+										v-if="canPayRemainingBalance"
+										:disabled="paymentLoading"
+										prepend-icon="mdi-cash"
+										:title="__('Pay Remaining Balance')"
+										@click="openPaymentDialog"
+									/>
+									<v-list-item
+										v-if="canSendRevolutLink"
+										:disabled="revolutLoading"
+										prepend-icon="mdi-credit-card-outline"
+										:title="__('Send Payment Link')"
+										@click="openRevolutDialog"
+									/>
+									<v-list-item
+										v-if="canResendRevolutLink"
+										:disabled="revolutLoading"
+										prepend-icon="mdi-credit-card-refresh-outline"
+										:title="__('Resend Payment Link')"
+										@click="openRevolutDialog"
+									/>
+									<v-list-item
+										v-if="canResendRevolutLink"
+										:disabled="revolutLoading"
+										prepend-icon="mdi-delete-outline"
+										base-color="error"
+										:title="__('Delete Payment Link')"
+										@click="openDeleteRevolutDialog"
+									/>
+								</v-list>
+							</v-menu>
 							<template v-if="isSplitLayout">
 								<v-btn
 									v-if="selectedOrder"
