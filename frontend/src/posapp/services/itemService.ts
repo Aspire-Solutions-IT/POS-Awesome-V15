@@ -15,6 +15,7 @@ export interface GetItemsArgs {
   item_groups?: string[];
   limit?: number;
   modified_after?: string;
+  exact?: number;
 }
 
 export interface GetItemsCountArgs {

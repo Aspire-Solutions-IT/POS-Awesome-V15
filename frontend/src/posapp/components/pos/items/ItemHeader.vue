@@ -122,6 +122,16 @@
 						density="compact"
 						variant="text"
 						color="primary"
+						prepend-icon="mdi-text-search"
+						@click="$emit('open-advanced-search')"
+						class="settings-btn"
+					>
+						{{ __("Advanced Search") }}
+					</v-btn>
+					<v-btn
+						density="compact"
+						variant="text"
+						color="primary"
 						prepend-icon="mdi-cog-outline"
 						@click="$emit('toggle-settings')"
 						class="settings-btn"
@@ -188,6 +198,7 @@ defineEmits([
 	"blur-qty",
 	"start-camera",
 	"open-new-item",
+	"open-advanced-search",
 	"toggle-settings",
 	"reload-items",
 ]);

@@ -780,8 +780,12 @@ def search_items_by_code(
     include_description=False,
     include_image=False,
     item_groups=None,
+    exact=0,
 ):
-    """Return items whose item code contains ``search_value``, shaped like ``get_items`` rows."""
+    """Return items whose item code contains ``search_value``, shaped like ``get_items`` rows.
+
+    With ``exact`` set, only the item whose code equals ``search_value`` is returned.
+    """
 
     search_value = cstr(search_value).strip()
     if not search_value:
@@ -812,7 +816,10 @@ def search_items_by_code(
         include_image,
         groups_ctx.groups,
     )
-    plan.filters["item_code"] = ["like", f"%{_escape_like(search_value)}%"]
+    if cint(exact):
+        plan.filters["item_code"] = search_value
+    else:
+        plan.filters["item_code"] = ["like", f"%{_escape_like(search_value)}%"]
     object.__setattr__(plan, "order_by", "item_code asc")
 
     started_at = time.perf_counter()
@@ -831,6 +838,22 @@ def search_items_by_code(
         groups=len(groups_ctx.groups),
     )
     return result
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def item_advanced_search_query(doctype, txt, searchfield, start, page_len, filters, as_dict=False):
+    """ERPNext's Item link query for the POS Advanced Search dialog, minus POS-excluded items."""
+
+    from erpnext.controllers.queries import item_query
+
+    if isinstance(filters, str):
+        filters = json.loads(filters) if filters else {}
+    filters = dict(filters or {})
+    if _item_has_custom_exclude_from_pos():
+        filters["custom_exclude_from_pos"] = ["!=", 1]
+
+    return item_query(doctype, txt, searchfield, start, page_len, filters, as_dict=as_dict)
 
 
 @frappe.whitelist()

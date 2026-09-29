@@ -51,6 +51,7 @@
 						@blur-qty="onQtyBlur"
 						@start-camera="startCameraScanning"
 						@open-new-item="openNewItemDialog"
+						@open-advanced-search="openAdvancedSearch"
 						@toggle-settings="toggleItemSettings"
 						@reload-items="forceReloadItems"
 						ref="itemHeader"
@@ -236,6 +237,8 @@ import { useInvoiceStore } from "../../../stores/invoiceStore";
 import { useEmployeeStore } from "../../../stores/employeeStore";
 
 import { parseBooleanSetting } from "../../../utils/stock";
+import { openItemAdvancedSearch } from "../../../utils/itemAdvancedSearch";
+import itemService from "../../../services/itemService";
 import {
 	buildSelectorRowProps,
 	createItemHighlightMatcher,
@@ -755,6 +758,55 @@ const handleRemoteStockAdjustment = (payload: unknown) => {
 const openNewItemDialog = () => {
 	resetNewItemDialogState(newItemDialogScannedBarcode, newItemDialogAwaitingScan);
 	newItemDialog.value = true;
+};
+
+// Advanced Search: desk's Item LinkSelector dialog; the picked code is resolved to a
+// full POS row (rate, stock, UOMs) before going through the normal add_item path.
+const resolveItemForCart = async (itemCode: string) => {
+	const loaded = (items.value || []).find((item: any) => item?.item_code === itemCode);
+	if (loaded) {
+		return loaded;
+	}
+	const results = await itemService.searchItemsByCode({
+		pos_profile: JSON.stringify(pos_profile.value),
+		price_list: active_price_list.value,
+		search_value: itemCode,
+		customer: selectedCustomer.value as any,
+		include_image: 1,
+		item_groups: pos_profile.value?.item_groups?.map((g: any) => g.item_group) || [],
+		limit: 1,
+		exact: 1,
+	});
+	return Array.isArray(results) && results.length ? results[0] : null;
+};
+
+const openAdvancedSearch = () => {
+	openItemAdvancedSearch({
+		txt: search_input.value,
+		context: props.context,
+		customer: selectedCustomer.value as any,
+		onSelect: async (itemCode: string) => {
+			try {
+				const item = await resolveItemForCart(itemCode);
+				if (!item) {
+					toastStore.show({
+						title: __("{0} is not available in this POS Profile", [itemCode]),
+						color: "warning",
+					});
+					return;
+				}
+				await add_item(item);
+			} catch (error) {
+				console.error("Advanced search add failed:", error);
+				toastStore.show({
+					title: __("Could not add {0}", [itemCode]),
+					color: "error",
+				});
+			} finally {
+				requestItemSearchFocus();
+			}
+		},
+	});
 };
 
 onMounted(async () => {
@@ -1359,6 +1411,7 @@ defineExpose({
 	format_number,
 	currencySymbol,
 	openNewItemDialog,
+	openAdvancedSearch,
 	clearSearch,
 	onDragStart,
 	onDragEnd,
