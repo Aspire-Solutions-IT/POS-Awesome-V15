@@ -73,9 +73,9 @@ def _install_stub_modules():
     update_child_qty_rate_module.update_child_qty_rate = lambda *args, **kwargs: None
 
     package_roots = {
-        "posawesome": Path(__file__).resolve().parents[3],
-        "posawesome.posawesome": Path(__file__).resolve().parents[2],
-        "posawesome.posawesome.api": Path(__file__).resolve().parents[1],
+        "posawesome": Path(__file__).resolve().parents[2],
+        "posawesome.posawesome": Path(__file__).resolve().parents[1],
+        "posawesome.posawesome.api": Path(__file__).resolve().parents[0],
     }
 
     for name, path in package_roots.items():
@@ -2155,6 +2155,84 @@ class TestSalesOrderSubmit(TestCase):
         create_payment_entries.assert_called_once_with(so_doc, order["payments"])
         auto_dn.assert_called_once_with(so_doc)
         self.assertFalse(enqueue.called)
+
+    def _collect_from_store_lookup(self, flag):
+        def get_cached_value(doctype, name, fieldname):
+            self.assertEqual((doctype, name, fieldname), ("Delivery Charges", "Store Pickup", "collect_from_store"))
+            return flag
+
+        return patch.object(sales_orders.frappe, "get_cached_value", side_effect=get_cached_value, create=True)
+
+    def test_force_peterborough_store_collection_sets_is_collection(self):
+        order = {"pos_profile": "Peterborough", "posa_delivery_charges": "Store Pickup"}
+        with self._collect_from_store_lookup(1):
+            sales_orders._force_peterborough_store_collection(order)
+        self.assertEqual(order["is_collection"], 1)
+
+    def test_force_peterborough_store_collection_ignores_other_profiles(self):
+        order = {"pos_profile": "Wolverhampton", "posa_delivery_charges": "Store Pickup"}
+        with self._collect_from_store_lookup(1):
+            sales_orders._force_peterborough_store_collection(order)
+        self.assertNotIn("is_collection", order)
+
+    def test_force_peterborough_store_collection_ignores_non_store_charges(self):
+        order = {"pos_profile": "Peterborough", "posa_delivery_charges": "Store Pickup", "is_collection": 0}
+        with self._collect_from_store_lookup(0):
+            sales_orders._force_peterborough_store_collection(order)
+        self.assertEqual(order["is_collection"], 0)
+
+    def test_force_peterborough_store_collection_ignores_missing_charge(self):
+        order = {"pos_profile": "Peterborough"}
+        with patch.object(sales_orders.frappe, "get_cached_value", create=True) as lookup:
+            sales_orders._force_peterborough_store_collection(order)
+        lookup.assert_not_called()
+        self.assertNotIn("is_collection", order)
+
+    def test_update_sales_order_forces_peterborough_store_collection(self):
+        order = {"doctype": "Sales Order", "pos_profile": "Peterborough", "posa_delivery_charges": "Store Pickup"}
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders, "_ensure_unique_customer_order_ref"), patch.object(
+            sales_orders, "_save_sales_order_doc_from_payload"
+        ) as save, self._collect_from_store_lookup(1):
+            sales_orders.update_sales_order(json.dumps(order))
+
+        self.assertEqual(save.call_args.args[0]["is_collection"], 1)
+
+    def test_submit_sales_order_forces_peterborough_store_collection(self):
+        so_doc = FakeSalesOrder(grand_total=300)
+        order = {
+            "doctype": "Sales Order",
+            "pos_profile": "Peterborough",
+            "posa_delivery_charges": "Store Pickup",
+            "payments": [{"mode_of_payment": "Cash", "amount": 300}],
+        }
+
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=so_doc) as get_doc, patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(
+            sales_orders, "_apply_kit_meta_fields"
+        ), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(
+            sales_orders, "_apply_collection_flow_tag"
+        ), patch.object(
+            sales_orders, "_apply_collect_from_store_tag"
+        ), patch.object(
+            sales_orders, "_is_collection_delivery_charge_selected", return_value=False
+        ), patch.object(
+            sales_orders, "make_sales_invoice"
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ), self._collect_from_store_lookup(1):
+            sales_orders.submit_sales_order(
+                json.dumps(order),
+                json.dumps({"sales_order_settlement_state": "full"}),
+            )
+
+        self.assertEqual(get_doc.call_args.args[0]["is_collection"], 1)
 
     def test_submit_sales_order_adds_collect_from_store_tag(self):
         so_doc = FakeSalesOrder(grand_total=300)

@@ -2538,6 +2538,27 @@ def _apply_ns_default_warehouse(order_data):
             item["warehouse"] = ns_warehouse
 
 
+PETERBOROUGH_POS_PROFILE = "Peterborough"
+
+
+def _force_peterborough_store_collection(order_data):
+    """Mark Peterborough collect-from-store orders as collections.
+
+    Applied to the raw payload so every Sales Order built from it - including each
+    split group, of which only the first carries the delivery charge - gets the flag.
+    """
+    if not isinstance(order_data, dict):
+        return
+    if cstr(order_data.get("pos_profile")).strip() != PETERBOROUGH_POS_PROFILE:
+        return
+    charge_name = cstr(order_data.get("posa_delivery_charges")).strip()
+    if not charge_name:
+        return
+    if not cint(frappe.get_cached_value("Delivery Charges", charge_name, "collect_from_store")):
+        return
+    order_data["is_collection"] = 1
+
+
 def _is_collection_delivery_charge_selected(so_doc):
     charge_name = str(getattr(so_doc, "posa_delivery_charges", "") or "").strip()
     if not charge_name:
@@ -2667,6 +2688,7 @@ def update_sales_order(data):
     data = json.loads(data)
     _map_delivery_dates(data)
     _apply_ns_default_warehouse(data)
+    _force_peterborough_store_collection(data)
     data.pop("posa_split_groups", None)
     _ensure_unique_customer_order_ref(data, data.get("name"))
     so_doc = _save_sales_order_doc_from_payload(data)
@@ -3166,6 +3188,7 @@ def submit_sales_order(order, data=None):
         order["sales_order_settlement_state"] = "none"
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
+    _force_peterborough_store_collection(order)
     is_split_group_submit = _is_split_group_submit(order)
     if _should_force_full_allocation_for_pos_order(order):
         order["must_be_fully_allocated"] = 1
