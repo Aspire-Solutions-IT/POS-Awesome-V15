@@ -133,7 +133,7 @@
 							:addresses="availableFulfillmentAddresses"
 							:show-address-action="showAddressAction"
 							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
-							:show-split-delivery="showDeliverySchedulingFields"
+							:show-split-delivery="showSplitDeliveryOption"
 							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
 							:show-collection-date="showCollectionDate"
 							:collection-date="collection_date"
@@ -639,6 +639,9 @@ const shouldUseStoreCollectionFlow = computed(
 const showDeliverySchedulingFields = computed(
 	() => !isCollectionDeliveryChargeSelected() && !shouldUseStoreCollectionFlow.value,
 );
+
+// Collect-from-store orders can still be split; only customer collections can't.
+const showSplitDeliveryOption = computed(() => !isCollectionDeliveryChargeSelected());
 
 const availableFulfillmentAddresses = computed(() =>
 	shouldUseStoreCollectionFlow.value ? storeCollectionAddresses.value : addresses.value,
@@ -3135,9 +3138,18 @@ watch(
 
 		preferred_delivery_date.value = null;
 		customer_unsure_delivery_date.value = true;
-		invoice_doc.value.posa_split_delivery = 0;
 		invoice_doc.value.prefered_earliest_delivery_date = null;
 		invoice_doc.value.preferred_earliest_delivery_date = null;
+	},
+	{ immediate: true },
+);
+
+watch(
+	showSplitDeliveryOption,
+	(enabled) => {
+		if (!enabled && invoice_doc.value) {
+			invoice_doc.value.posa_split_delivery = 0;
+		}
 	},
 	{ immediate: true },
 );

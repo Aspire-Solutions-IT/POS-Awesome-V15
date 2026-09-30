@@ -1791,6 +1791,53 @@ class TestSalesOrderSubmit(TestCase):
             1093.72,
         )
 
+    def _build_store_pickup_split_groups(self, collect_from_store_flag):
+        order = {
+            "doctype": "Sales Order",
+            "customer_order_ref": "ORBASE1234",
+            "conversion_rate": 1,
+            "posa_delivery_charges": "Store Pickup",
+            "posa_delivery_charges_rate": 25,
+            "posa_split_delivery": 1,
+            "items": [
+                {"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 100, "amount": 100},
+                {"item_code": "ITEM-2", "posa_row_id": "row-2", "qty": 1, "rate": 50, "amount": 50},
+            ],
+            "posa_split_groups": [
+                {"group_id": "living", "label": "Living", "row_ids": ["row-1"]},
+                {"group_id": "bedroom", "label": "Bedroom", "row_ids": ["row-2"]},
+            ],
+        }
+
+        def fake_save_sales_order_doc(payload):
+            doc = FakeGroupedSalesOrder(name=f"SO-GROUP-{payload['items'][0]['posa_row_id']}", grand_total=100)
+            doc.update(payload)
+            return doc
+
+        with patch.object(
+            sales_orders, "_save_sales_order_doc_from_payload", side_effect=fake_save_sales_order_doc
+        ), patch.object(sales_orders.frappe, "get_all", return_value=[]), patch.object(
+            sales_orders, "_add_tag_ignore_permissions"
+        ) as add_tag, self._collect_from_store_lookup(collect_from_store_flag):
+            built = sales_orders._build_split_group_documents(order)
+
+        return built, add_tag
+
+    def test_build_split_group_documents_tags_every_collect_from_store_group(self):
+        built, add_tag = self._build_store_pickup_split_groups(1)
+
+        self.assertEqual(built[1]["payload"]["posa_delivery_charges"], "")
+        tagged = [(call.args[0].name, call.args[1]) for call in add_tag.call_args_list]
+        self.assertEqual(
+            tagged,
+            [("SO-GROUP-row-1", "Collect from Store"), ("SO-GROUP-row-2", "Collect from Store")],
+        )
+
+    def test_build_split_group_documents_skips_tag_for_non_store_charges(self):
+        _built, add_tag = self._build_store_pickup_split_groups(0)
+
+        add_tag.assert_not_called()
+
     def test_submit_sales_order_forces_full_allocation_for_pos_split_delivery(self):
         order = {
             "customer": "CUST-0001",

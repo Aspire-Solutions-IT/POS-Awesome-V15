@@ -2679,12 +2679,16 @@ def _is_collection_delivery_charge_selected(so_doc):
     return bool(flt(collection))
 
 
-def _is_collect_from_store_delivery_charge_selected(so_doc):
-    charge_name = str(getattr(so_doc, "posa_delivery_charges", "") or "").strip()
+def _is_collect_from_store_delivery_charge(charge_name):
+    charge_name = str(charge_name or "").strip()
     if not charge_name:
         return False
     collect_from_store = frappe.get_cached_value("Delivery Charges", charge_name, "collect_from_store")
     return bool(flt(collect_from_store))
+
+
+def _is_collect_from_store_delivery_charge_selected(so_doc):
+    return _is_collect_from_store_delivery_charge(getattr(so_doc, "posa_delivery_charges", ""))
 
 
 def _add_tag_ignore_permissions(doc, tag):
@@ -3172,6 +3176,9 @@ def _build_split_group_documents(order):
     groups, item_map = _validate_split_groups(order)
     discount_allocations = _allocate_group_discounts(order, groups, item_map)
     batch_root = _ensure_unique_customer_order_ref({"customer_order_ref": order.get("customer_order_ref")})
+    # Groups after the first have their delivery charge stripped, so they can't be
+    # recognised as collect-from-store from their own fields; use the original order's.
+    is_collect_from_store = _is_collect_from_store_delivery_charge(order.get("posa_delivery_charges"))
     built = []
     for index, group in enumerate(groups, start=1):
         preferred_ref = _build_group_customer_order_ref(batch_root, index)
@@ -3187,6 +3194,8 @@ def _build_split_group_documents(order):
         so_doc = _save_sales_order_doc_from_payload(payload)
         so_doc.must_be_fully_allocated = 1
         so_doc.save()
+        if is_collect_from_store:
+            _add_tag_ignore_permissions(so_doc, "Collect from Store")
         built.append(
             {
                 "group_id": group["group_id"],
