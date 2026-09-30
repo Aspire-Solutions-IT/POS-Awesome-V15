@@ -315,6 +315,8 @@ self.onmessage = async (event) => {
 				stock_uom: it.stock_uom,
 				next_due_date: it.next_due_date,
 				quantity_due_in: it.quantity_due_in,
+				is_kit_item: it.is_kit_item,
+				is_kit_set: it.is_kit_set,
 				image: it.image,
 				item_group: it.item_group,
 				rate: it.rate,

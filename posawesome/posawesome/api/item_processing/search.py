@@ -26,6 +26,10 @@ def _item_has_custom_tfw_name() -> bool:
     return frappe.db.has_column("Item", "custom_tfw_name")
 
 
+def _item_kit_flag_fields() -> List[str]:
+    return [f for f in ("is_kit_item", "is_kit_set") if frappe.db.has_column("Item", f)]
+
+
 def _item_has_custom_exclude_from_pos() -> bool:
     return frappe.db.has_column("Item", "custom_exclude_from_pos")
 
@@ -228,6 +232,7 @@ def _build_search_plan(
     ]
     if has_custom_tfw_name:
         fields.append("custom_tfw_name")
+    fields.extend(_item_kit_flag_fields())
     if include_description:
         fields.append("description")
     if include_image:

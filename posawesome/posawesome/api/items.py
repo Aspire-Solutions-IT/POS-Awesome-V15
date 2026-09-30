@@ -50,6 +50,7 @@ from posawesome.posawesome.api.item_processing.search import (
     normalize_brand,
     _item_has_custom_exclude_from_pos,
     _item_has_custom_tfw_name,
+    _item_kit_flag_fields,
     _resolve_display_item_name,
 )
 
@@ -188,6 +189,7 @@ def get_delta_items(
     ]
     if _item_has_custom_tfw_name():
         fields.append("custom_tfw_name")
+    fields.extend(_item_kit_flag_fields())
 
     item_rows = frappe.get_all(
         "Item",
