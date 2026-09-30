@@ -72,6 +72,14 @@ def _install_stub_modules():
     update_child_qty_rate_module = types.ModuleType("customer_due_dates.api.update_child_qty_rate")
     update_child_qty_rate_module.update_child_qty_rate = lambda *args, **kwargs: None
 
+    class _StubDocument:
+        def validate_higher_perm_levels(self):
+            self.permlevel_reset_ran = True
+
+    frappe_model = types.ModuleType("frappe.model")
+    frappe_model_document = types.ModuleType("frappe.model.document")
+    frappe_model_document.Document = _StubDocument
+
     package_roots = {
         "posawesome": Path(__file__).resolve().parents[2],
         "posawesome.posawesome": Path(__file__).resolve().parents[1],
@@ -85,6 +93,8 @@ def _install_stub_modules():
 
     sys.modules["frappe"] = frappe_module
     sys.modules["frappe.utils"] = frappe_utils
+    sys.modules["frappe.model"] = frappe_model
+    sys.modules["frappe.model.document"] = frappe_model_document
     sys.modules["erpnext.accounts.party"] = erpnext_accounts_party
     sys.modules["erpnext.accounts.utils"] = erpnext_accounts_utils
     sys.modules["erpnext.selling.doctype.sales_order.sales_order"] = erpnext_sales_order
@@ -2598,3 +2608,65 @@ class TestManagedSalesOrderPaymentReferences(TestCase):
         # The payment lookup stays inside the listing's scope.
         scoped = [f for f in captured if f.get("name") == ["in", ["SO-PAID-2"]]]
         self.assertEqual(scoped[0]["company"], "Test Company")
+
+
+class TestManagedSalesOrderPermlevelReset(TestCase):
+    """A till login cannot write the order totals (permlevel 4/5). Frappe must not revert
+    them on the item update's save, or the payment that follows sees the old total and
+    fails with "has already been fully paid"."""
+
+    def _document(self, doctype, name):
+        from frappe.model.document import Document
+
+        doc = Document()
+        doc.doctype = doctype
+        doc.name = name
+        doc.permlevel_reset_ran = False
+        return doc
+
+    def test_reset_is_skipped_for_the_order_being_updated_only(self):
+        from frappe.model.document import Document
+
+        original = Document.validate_higher_perm_levels
+        target = self._document("Sales Order", "SO-1")
+        other_order = self._document("Sales Order", "SO-2")
+        other_doctype = self._document("Payment Entry", "SO-1")
+
+        with sales_orders._keep_computed_fields_on_save("Sales Order", "SO-1"):
+            for doc in (target, other_order, other_doctype):
+                doc.validate_higher_perm_levels()
+
+        self.assertFalse(target.permlevel_reset_ran)
+        self.assertTrue(other_order.permlevel_reset_ran)
+        self.assertTrue(other_doctype.permlevel_reset_ran)
+        self.assertIs(Document.validate_higher_perm_levels, original)
+
+    def test_reset_is_restored_when_the_update_fails(self):
+        from frappe.model.document import Document
+
+        original = Document.validate_higher_perm_levels
+        with self.assertRaises(RuntimeError):
+            with sales_orders._keep_computed_fields_on_save("Sales Order", "SO-1"):
+                raise RuntimeError("update failed")
+
+        self.assertIs(Document.validate_higher_perm_levels, original)
+
+    def test_item_update_saves_inside_the_guard(self):
+        seen = {}
+
+        def fake_update(**kwargs):
+            doc = self._document("Sales Order", kwargs["parent_doctype_name"])
+            doc.validate_higher_perm_levels()
+            seen["reset_ran"] = doc.permlevel_reset_ran
+
+        order = SimpleNamespace(name="SO-1", reload=MagicMock())
+        with patch(
+            "customer_due_dates.api.update_child_qty_rate.update_child_qty_rate", side_effect=fake_update
+        ), patch.object(sales_orders, "_settle_managed_sales_order_surplus"):
+            sales_orders._apply_managed_sales_order_items(order, "SO-1", [])
+
+        self.assertFalse(seen["reset_ran"])
+        # Restored once the update returns, so later saves in the request are checked again.
+        after = self._document("Sales Order", "SO-1")
+        after.validate_higher_perm_levels()
+        self.assertTrue(after.permlevel_reset_ran)

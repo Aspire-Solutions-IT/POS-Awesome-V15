@@ -6,6 +6,7 @@ from copy import deepcopy
 import secrets
 import string
 from collections import defaultdict
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
@@ -1407,16 +1408,48 @@ def _validate_managed_sales_order_item_mutations(doc, normalized_items):
             )
 
 
+@contextmanager
+def _keep_computed_fields_on_save(doctype, name):
+    """Stop Frappe reverting fields above the user's permlevel when `name` is saved.
+
+    ERPNext's update_child_qty_rate loads and saves the order itself, as the session
+    user. On a till login the totals (grand_total at permlevel 4, the rest at 5) are
+    above what the Shop role can write, so Document.validate_higher_perm_levels quietly
+    puts them back to their stored values: the new rows land but grand_total does not
+    move. The follow-up Payment Entry then sees nothing outstanding and fails with
+    "Sales Order ... has already been fully paid".
+
+    Those fields are computed by the save, never taken from the cashier, and write
+    permission on the order is still checked, so skipping the reset is safe here. The
+    patch is limited to this one document and always restored.
+    """
+    from frappe.model.document import Document
+
+    original = Document.validate_higher_perm_levels
+
+    def validate_higher_perm_levels(self):
+        if self.doctype == doctype and self.name == name:
+            return
+        return original(self)
+
+    Document.validate_higher_perm_levels = validate_higher_perm_levels
+    try:
+        yield
+    finally:
+        Document.validate_higher_perm_levels = original
+
+
 def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items):
     """Write the prepared rows through the shared Sales Order update path."""
     from customer_due_dates.api.update_child_qty_rate import update_child_qty_rate as update_sales_order_items
 
-    update_sales_order_items(
-        parent_doctype="Sales Order",
-        trans_items=json.dumps(normalized_items),
-        parent_doctype_name=sales_order_name,
-        child_docname="items",
-    )
+    with _keep_computed_fields_on_save("Sales Order", sales_order_name):
+        update_sales_order_items(
+            parent_doctype="Sales Order",
+            trans_items=json.dumps(normalized_items),
+            parent_doctype_name=sales_order_name,
+            child_docname="items",
+        )
 
     # A reduction can leave money stranded on the order. Settle it here so the order
     # always ends up holding exactly its own value, whichever route made the change.
