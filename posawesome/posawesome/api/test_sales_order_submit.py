@@ -2426,3 +2426,128 @@ class TestSalesOrderSubmit(TestCase):
         self.assertIn(("db_set", "status", "Requested"), pr.calls)
         self.assertIn(("cancel",), pr.calls)
         self.assertLess(pr.calls.index(("db_set", "status", "Requested")), pr.calls.index(("cancel",)))
+
+
+class _RecordingPaymentEntry:
+    def __init__(self, name="PE-0002"):
+        self.name = name
+        self.references = []
+        self.flags = SimpleNamespace(ignore_permissions=False)
+
+    def append(self, fieldname, value):
+        if fieldname == "references":
+            self.references.append(value)
+
+    def save(self):
+        self.saved = True
+
+    def submit(self):
+        self.submitted = True
+
+
+class TestManagedSalesOrderPaymentReferences(TestCase):
+    """Each payment on an order keeps its own reference on its own Payment Entry."""
+
+    def _balance_order(self):
+        doc = FakeSalesOrder(grand_total=300)
+        doc.docstatus = 1
+        doc.advance_paid = 100
+        doc.customer_order_ref = "#FIRST1"
+        doc.reload = lambda: None
+        return doc
+
+    def _pay_balance(self, doc, mode, reference_no):
+        created = []
+
+        def fake_create_payment_entry(**kwargs):
+            created.append(kwargs)
+            return _RecordingPaymentEntry()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(sales_orders, "_release_managed_sales_order_from_hold"), patch.object(
+            sales_orders, "_serialize_managed_sales_order", side_effect=lambda d: {"name": d.name}
+        ), patch.object(sales_orders, "create_payment_entry", side_effect=fake_create_payment_entry):
+            result = sales_orders.pay_managed_sales_order_balance(
+                doc.name, mode, amount=50, reference_no=reference_no
+            )
+        return result, created
+
+    def test_till_payment_entry_carries_the_order_revolut_reference(self):
+        so_doc = FakeSalesOrder(grand_total=300)
+        so_doc.customer_order_ref = " #TILL01 "
+        created = []
+
+        def fake_create_payment_entry(**kwargs):
+            created.append(kwargs)
+            return _RecordingPaymentEntry()
+
+        with patch.object(sales_orders, "create_payment_entry", side_effect=fake_create_payment_entry):
+            sales_orders._create_payment_entries(so_doc, [{"mode_of_payment": "Credit Card", "amount": 100}])
+
+        self.assertEqual(created[0]["reference_no"], "#TILL01")
+
+    def test_balance_payment_records_its_own_reference_and_leaves_the_order_ref(self):
+        doc = self._balance_order()
+
+        result, created = self._pay_balance(doc, "Credit Card", "#SECOND2")
+
+        self.assertEqual(created[0]["reference_no"], "#SECOND2")
+        self.assertEqual(doc.customer_order_ref, "#FIRST1")
+        self.assertEqual(result["payment_entry"], "PE-0002")
+
+    def test_card_balance_payment_needs_a_hash_reference(self):
+        for reference in (None, "", "#", "SECOND2"):
+            with self.subTest(reference=reference):
+                with self.assertRaises(RuntimeError):
+                    self._pay_balance(self._balance_order(), "Credit Card", reference)
+
+    def test_non_card_balance_payment_falls_back_to_the_order_name(self):
+        _result, created = self._pay_balance(self._balance_order(), "Cash", None)
+
+        self.assertEqual(created[0]["reference_no"], "SO-TEST-0001")
+
+    def test_payments_list_one_row_per_entry_with_its_reference(self):
+        captured = {}
+        rows = [
+            {"name": "PE-1", "posting_date": "2026-09-01", "mode_of_payment": "Credit Card",
+             "payment_type": "Receive", "reference_no": "#FIRST1", "amount": 100},
+            {"name": "PE-2", "posting_date": "2026-09-20", "mode_of_payment": "Credit Card",
+             "payment_type": "Receive", "reference_no": "#SECOND2", "amount": 50},
+        ]
+
+        def fake_sql(query, values=None, **kwargs):
+            captured["query"] = query
+            captured["values"] = values
+            return rows
+
+        with patch.object(sales_orders.frappe.db, "sql", side_effect=fake_sql):
+            payments = sales_orders._get_managed_sales_order_payments("SO-1")
+
+        self.assertEqual([p["reference_no"] for p in payments], ["#FIRST1", "#SECOND2"])
+        self.assertEqual([p["amount"] for p in payments], [100.0, 50.0])
+        # Still counts the portion an invoice split off the order's advance.
+        self.assertIn("ref.advance_voucher_no = %(sales_order)s", captured["query"])
+        self.assertEqual(captured["values"], {"sales_order": "SO-1"})
+
+    def test_search_matches_a_later_payment_reference(self):
+        base_filters = {"company": "Test Company", "docstatus": 1}
+        captured = []
+
+        def fake_get_all(doctype, filters=None, **kwargs):
+            captured.append(filters)
+            if filters.get("name") == ["in", ["SO-PAID-2"]]:
+                return ["SO-PAID-2"]
+            return []
+
+        sql_list = MagicMock(side_effect=[["SO-PAID-2"], []])
+        with patch.object(sales_orders.frappe, "get_all", side_effect=fake_get_all), patch.object(
+            sales_orders.frappe.db, "sql_list", sql_list, create=True
+        ):
+            names = sales_orders._search_managed_sales_order_names("#SECOND2", base_filters)
+
+        self.assertEqual(names, {"SO-PAID-2"})
+        self.assertEqual(sql_list.call_args_list[0].args[1], {"term": "%#SECOND2%"})
+        # The payment lookup stays inside the listing's scope.
+        scoped = [f for f in captured if f.get("name") == ["in", ["SO-PAID-2"]]]
+        self.assertEqual(scoped[0]["company"], "Test Company")

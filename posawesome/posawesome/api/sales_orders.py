@@ -31,6 +31,23 @@ MANAGED_SALES_ORDER_UPDATE_FIELDS = {
 }
 
 
+def _is_card_mode_of_payment(mode_of_payment):
+    """Card takings are keyed by the terminal's Revolut reference, as on the till."""
+    return "credit card" in cstr(mode_of_payment or "").strip().lower()
+
+
+def _validate_managed_payment_reference(mode_of_payment, reference_no):
+    """Each card payment needs its own Revolut reference, so a second payment on an
+    order can never be recorded under the first payment's one."""
+    if not _is_card_mode_of_payment(mode_of_payment):
+        return
+    reference = cstr(reference_no or "").strip()
+    if not reference or reference == "#":
+        frappe.throw(_("A Revolut reference is required for card payments."))
+    if not reference.startswith("#"):
+        frappe.throw(_("The Revolut reference must start with #"))
+
+
 def _generate_order_ref():
     return "OR" + "".join(secrets.choice(_ORDER_REF_ALPHABET) for _ in range(10))
 
@@ -626,6 +643,45 @@ def _managed_sales_order_filters(company, currency, pos_profile=None, status=Non
     return filters
 
 
+def _sales_order_names_by_payment_reference(like_term):
+    """Sales Orders with a submitted Payment Entry whose reference_no matches like_term.
+
+    Includes the portion an invoice split off (see
+    _managed_sales_order_payment_reference_condition), so a payment stays findable
+    after the order is invoiced.
+    """
+    names = set(
+        frappe.db.sql_list(
+            """
+            select distinct ref.reference_name
+            from `tabPayment Entry Reference` ref
+            inner join `tabPayment Entry` pe on pe.name = ref.parent
+            where pe.docstatus = 1
+              and ref.reference_doctype = 'Sales Order'
+              and pe.reference_no like %(term)s
+            """,
+            {"term": like_term},
+        )
+    )
+    if frappe.db.has_column("Payment Entry Reference", "advance_voucher_no") and frappe.db.has_column(
+        "Payment Entry Reference", "advance_voucher_type"
+    ):
+        names.update(
+            frappe.db.sql_list(
+                """
+                select distinct ref.advance_voucher_no
+                from `tabPayment Entry Reference` ref
+                inner join `tabPayment Entry` pe on pe.name = ref.parent
+                where pe.docstatus = 1
+                  and ref.advance_voucher_type = 'Sales Order'
+                  and pe.reference_no like %(term)s
+                """,
+                {"term": like_term},
+            )
+        )
+    return sorted(name for name in names if name)
+
+
 def _search_managed_sales_order_names(search_term, base_filters):
     """Sales Order names matching search_term on order name, customer name, payment ref, or postcode.
 
@@ -650,6 +706,15 @@ def _search_managed_sales_order_names(search_term, base_filters):
     names.update(
         frappe.get_all("Sales Order", filters=customer_order_ref_filters, pluck="name", limit_page_length=0)
     )
+
+    # Later payments carry their own reference on their Payment Entry only.
+    paid_order_names = _sales_order_names_by_payment_reference(like_term)
+    if paid_order_names:
+        payment_ref_filters = dict(base_filters)
+        payment_ref_filters["name"] = ["in", paid_order_names]
+        names.update(
+            frappe.get_all("Sales Order", filters=payment_ref_filters, pluck="name", limit_page_length=0)
+        )
 
     address_names = frappe.get_all(
         "Address", filters={"pincode": ["like", like_term]}, pluck="name", limit_page_length=0
@@ -1022,6 +1087,50 @@ def _get_managed_sales_order_payment_types(sales_order):
     return payments
 
 
+def _get_managed_sales_order_payments(sales_order):
+    """Every payment taken against the order, each with its own reference.
+
+    An order can be paid in several goes, and each one is its own Payment Entry, so the
+    Payment Entry's reference_no is where each payment's reference lives. The order's
+    customer_order_ref only ever holds the first one.
+    """
+    rows = frappe.db.sql(
+        """
+        select
+            pe.name as name,
+            pe.posting_date as posting_date,
+            pe.mode_of_payment as mode_of_payment,
+            pe.payment_type as payment_type,
+            pe.reference_no as reference_no,
+            sum(
+                case
+                    when pe.payment_type = 'Pay' then -abs(coalesce(ref.allocated_amount, 0))
+                    else abs(coalesce(ref.allocated_amount, 0))
+                end
+            ) as amount
+        from `tabPayment Entry Reference` ref
+        inner join `tabPayment Entry` pe on pe.name = ref.parent
+        where pe.docstatus = 1
+          and ({reference_condition})
+        group by pe.name, pe.posting_date, pe.mode_of_payment, pe.payment_type, pe.reference_no, pe.creation
+        order by pe.posting_date asc, pe.creation asc
+        """.format(reference_condition=_managed_sales_order_payment_reference_condition()),
+        {"sales_order": sales_order},
+        as_dict=True,
+    )
+    return [
+        {
+            "name": row.get("name"),
+            "posting_date": cstr(row.get("posting_date") or ""),
+            "mode_of_payment": cstr(row.get("mode_of_payment") or "").strip(),
+            "payment_type": row.get("payment_type"),
+            "reference_no": cstr(row.get("reference_no") or "").strip(),
+            "amount": flt(row.get("amount") or 0),
+        }
+        for row in rows or []
+    ]
+
+
 def _is_ns_item_code(item_code):
     """NS lines are identified by their item code prefix, as they are in the POS cart."""
     return cstr(item_code or "").strip().lower().startswith("ns")
@@ -1150,6 +1259,7 @@ def _serialize_managed_sales_order(doc):
         "pos_sales_person": pos_sales_person,
         "pos_sales_person_name": pos_sales_person_name or pos_sales_person,
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
+        "payments": _get_managed_sales_order_payments(doc.name),
         "stream_pick_lists": stream_pick_lists,
         "order_level_lock": _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists),
         "surplus": _get_managed_sales_order_surplus(doc),
@@ -1965,6 +2075,7 @@ def update_managed_sales_order_items_with_payment(data):
 
     if not mode_of_payment:
         frappe.throw(_("Mode of Payment is required."))
+    _validate_managed_payment_reference(mode_of_payment, payment.get("reference_no"))
 
     payment_entry = create_payment_entry(
         company=doc.company,
@@ -2279,6 +2390,7 @@ def pay_managed_sales_order_balance(
         frappe.throw(_("Payment amount must be greater than zero."))
     if payment_amount - outstanding_balance > 0.001:
         frappe.throw(_("Payment amount cannot exceed the remaining balance."))
+    _validate_managed_payment_reference(mode, reference_no)
 
     payment_entry = create_payment_entry(
         company=doc.company,
@@ -2736,12 +2848,13 @@ def _create_payment_entries(so_doc, payments):
         if not pay.get("amount"):
             continue
 
+        # The till keeps the payment's Revolut reference on the order, not on the
+        # payment rows, so carry it onto the Payment Entry here.
         reference_no = (
             pay.get("reference_no")
             or pay.get("transaction_id")
             or pay.get("authorization_code")
-            or so_doc.get("posa_authorization_code")
-            or so_doc.get("posa_pos_opening_shift")
+            or cstr(so_doc.get("customer_order_ref") or "").strip()
             or so_doc.name
         )
         reference_date = pay.get("reference_date") or nowdate()

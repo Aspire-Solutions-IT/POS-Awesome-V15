@@ -28,6 +28,16 @@
 						></span>
 					</div>
 				</div>
+				<div class="payment-context">
+					<span class="payment-context__item">
+						<span class="payment-context__label">{{ __("Customer") }}:</span>
+						<span class="payment-context__value">{{ paymentCustomerName || "-" }}</span>
+					</span>
+					<span class="payment-context__item">
+						<span class="payment-context__label">{{ __("Delivery Charge") }}:</span>
+						<span class="payment-context__value">{{ paymentDeliveryChargeText }}</span>
+					</span>
+				</div>
 				<div
 					:class="[
 						'payment-sections',
@@ -574,6 +584,26 @@ const needsFulfillmentStep = computed(
 	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
 );
 const isWizardFlow = computed(() => needsFulfillmentStep.value);
+
+// Read-only context shown at the top of every payment step.
+const paymentCustomerName = computed(
+	() => invoice_doc.value?.customer_name || invoice_doc.value?.customer || "",
+);
+const paymentDeliveryChargeText = computed(() => {
+	const rate = flt(invoice_doc.value?.posa_delivery_charges_rate);
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	if (!selectedName && !rate) {
+		return __("None");
+	}
+	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+		(row) => String(row?.name || "").trim() === selectedName,
+	);
+	const amount = `${currencySymbol(invoice_doc.value?.currency)} ${formatCurrency(rate)}`;
+	const title = selectedRow?.title || selectedName;
+	return title ? `${title} (${amount})` : amount;
+});
 const isSplitDeliveryEnabled = computed(
 	() => Boolean(invoice_doc.value?.posa_split_delivery) && invoiceType.value === "Order",
 );
@@ -3351,6 +3381,24 @@ onBeforeUnmount(() => {
 
 .payment-wizard-header__dot--active {
 	background: rgb(var(--v-theme-primary));
+}
+
+.payment-context {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 20px;
+	padding: 6px 2px;
+	font-size: 0.9rem;
+	color: var(--pos-text-primary);
+}
+
+.payment-context__label {
+	color: var(--pos-text-secondary);
+	margin-right: 4px;
+}
+
+.payment-context__value {
+	font-weight: 600;
 }
 
 .payment-sections--dialog {

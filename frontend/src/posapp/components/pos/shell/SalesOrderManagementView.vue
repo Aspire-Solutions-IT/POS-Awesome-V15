@@ -404,11 +404,30 @@
 								<v-col cols="12" md="6">
 									<v-text-field
 										:model-value="selectedOrder.customer_order_ref || ''"
-										:label="__('Payment Ref')"
+										:label="__('Order Ref')"
 										density="compact"
 										readonly
 										hide-details
 									/>
+								</v-col>
+								<!-- Each payment keeps its own reference on its Payment Entry; the
+								     Order Ref above is only ever the first one. -->
+								<v-col v-if="selectedOrder.payments?.length" cols="12">
+									<div class="order-payments">
+										<span class="order-payments__label">{{ __("Payments") }}</span>
+										<div
+											v-for="payment in selectedOrder.payments"
+											:key="payment.name"
+											class="order-payments__row"
+										>
+											<span>{{ formatDate(payment.posting_date) }}</span>
+											<span>{{ payment.mode_of_payment }}</span>
+											<span class="order-payments__ref">{{ payment.reference_no || "\u2014" }}</span>
+											<strong class="order-payments__amount">
+												{{ formatCurrency(payment.amount, selectedOrder.currency) }}
+											</strong>
+										</div>
+									</div>
 								</v-col>
 								<v-col cols="12" md="6">
 									<v-text-field
@@ -773,10 +792,15 @@
 					/>
 					<v-text-field
 						v-model="paymentForm.reference_no"
-						:label="__('Reference No')"
+						:label="isCardMode(paymentForm.mode_of_payment) ? __('Revolut Reference') : __('Reference No')"
+						:hint="
+							isCardMode(paymentForm.mode_of_payment)
+								? __('The reference for this payment, starting with #')
+								: __('Optional')
+						"
+						persistent-hint
+						:error-messages="visibleReferenceError(paymentForm.mode_of_payment, paymentForm.reference_no)"
 						density="compact"
-						readonly
-						hide-details
 						class="pos-themed-input"
 					/>
 				</v-card-text>
@@ -788,7 +812,11 @@
 						color="success"
 						variant="flat"
 						:loading="paymentLoading"
-						:disabled="paymentLoading || !paymentForm.mode_of_payment"
+						:disabled="
+							paymentLoading ||
+							!paymentForm.mode_of_payment ||
+							!!paymentReferenceError(paymentForm.mode_of_payment, paymentForm.reference_no)
+						"
 						@click="submitRemainingBalancePayment"
 					>
 						{{ __("Pay Now") }}
@@ -1141,6 +1169,20 @@
 						:label="__('Mode of Payment')"
 						density="compact"
 						hide-details
+						class="pos-themed-input mb-4"
+					/>
+					<v-text-field
+						v-if="itemPaymentTillAmount > 0.001"
+						v-model="itemPaymentReference"
+						:label="isCardMode(itemPaymentMode) ? __('Revolut Reference') : __('Reference No')"
+						:hint="
+							isCardMode(itemPaymentMode)
+								? __('The reference for this payment, starting with #')
+								: __('Optional')
+						"
+						persistent-hint
+						:error-messages="visibleReferenceError(itemPaymentMode, itemPaymentReference)"
+						density="compact"
 						class="pos-themed-input"
 					/>
 				</v-card-text>
@@ -1153,7 +1195,11 @@
 						color="success"
 						variant="flat"
 						:loading="itemPaymentLoading"
-						:disabled="(itemPaymentTillAmount > 0 && !itemPaymentMode) || itemPaymentLoading"
+						:disabled="
+							(itemPaymentTillAmount > 0 &&
+								(!itemPaymentMode || !!paymentReferenceError(itemPaymentMode, itemPaymentReference))) ||
+							itemPaymentLoading
+						"
 						@click="confirmItemPayment"
 					>
 						{{ itemPaymentTillAmount > 0.001 ? __("Take Payment and Save") : __("Apply Credit and Save") }}
@@ -1295,6 +1341,15 @@ type ManagedSalesOrderStreamPickList = {
 	tracking_link: string;
 };
 
+type ManagedSalesOrderPayment = {
+	name: string;
+	posting_date?: string | null;
+	mode_of_payment?: string | null;
+	payment_type?: string | null;
+	reference_no?: string | null;
+	amount?: number | null;
+};
+
 type ManagedSalesOrderPaymentType = {
 	mode_of_payment: string;
 	amount?: number | null;
@@ -1312,6 +1367,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	pos_sales_person?: string | null;
 	pos_sales_person_name?: string | null;
 	payment_types?: ManagedSalesOrderPaymentType[] | null;
+	payments?: ManagedSalesOrderPayment[] | null;
 	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
 	order_level_lock?: ManagedSalesOrderOrderLevelLock | null;
 	surplus?: ManagedSalesOrderSurplus | null;
@@ -1470,6 +1526,7 @@ const deleteRevolutError = ref("");
 const itemPaymentDialogOpen = ref(false);
 const itemPaymentPreview = ref<any>(null);
 const itemPaymentMode = ref("");
+const itemPaymentReference = ref("");
 const itemPaymentError = ref("");
 const itemPaymentLoading = ref(false);
 // Opt-in: spending a customer's credit is their decision, not a silent netting off.
@@ -1491,6 +1548,47 @@ const paymentForm = reactive({
 	amount: "",
 	mode_of_payment: "",
 	reference_no: "",
+});
+
+// Same rule as the till: card takings are keyed by the terminal's Revolut reference,
+// and every payment needs its own, so a later payment is never filed under the first.
+const isCardMode = (mode?: string | null) =>
+	String(mode || "")
+		.trim()
+		.toLowerCase()
+		.includes("credit card");
+
+const paymentReferenceError = (mode?: string | null, reference?: string | null) => {
+	if (!isCardMode(mode)) return "";
+	const value = String(reference || "").trim();
+	if (!value || value === "#") return __("Enter the Revolut reference for this payment");
+	if (!value.startsWith("#")) return __("The Revolut reference must start with #");
+	return "";
+};
+
+/** Only complain once something is typed; the empty "#" prompt is not an error yet. */
+const visibleReferenceError = (mode?: string | null, reference?: string | null) => {
+	const value = String(reference || "").trim();
+	if (!value || value === "#") return "";
+	return paymentReferenceError(mode, reference);
+};
+
+/** Seed "#" for card modes and drop a lone "#" when switching away from one. */
+const referenceForMode = (mode?: string | null, reference?: string | null) => {
+	const value = String(reference || "").trim();
+	if (isCardMode(mode)) return value || "#";
+	return value === "#" ? "" : value;
+};
+
+watch(
+	() => paymentForm.mode_of_payment,
+	(mode) => {
+		paymentForm.reference_no = referenceForMode(mode, paymentForm.reference_no);
+	},
+);
+
+watch(itemPaymentMode, (mode) => {
+	itemPaymentReference.value = referenceForMode(mode, itemPaymentReference.value);
 });
 
 const form = reactive({
@@ -2253,7 +2351,8 @@ const openPaymentDialog = () => {
 	paymentError.value = "";
 	paymentForm.amount = String(selectedOrder.value.outstanding_balance || "");
 	paymentForm.mode_of_payment = paymentModeOptions.value[0]?.value || "";
-	paymentForm.reference_no = selectedOrder.value.customer_order_ref || selectedOrder.value.name || "";
+	// A fresh reference for this payment; the order's first one stays on the order.
+	paymentForm.reference_no = referenceForMode(paymentForm.mode_of_payment, "");
 	paymentDialogOpen.value = true;
 };
 
@@ -2436,6 +2535,12 @@ const closeItemPaymentDialog = () => {
 
 const confirmItemPayment = async () => {
 	if (!selectedOrder.value || !itemPaymentMode.value || itemPaymentLoading.value) return;
+	if (
+		itemPaymentTillAmount.value > 0.001 &&
+		paymentReferenceError(itemPaymentMode.value, itemPaymentReference.value)
+	) {
+		return;
+	}
 	itemPaymentLoading.value = true;
 	itemPaymentError.value = "";
 	try {
@@ -2448,7 +2553,7 @@ const confirmItemPayment = async () => {
 					payment: {
 						use_credit: useCustomerCredit.value ? 1 : 0,
 						mode_of_payment: itemPaymentMode.value,
-						reference_no: selectedOrder.value.customer_order_ref || selectedOrder.value.name,
+						reference_no: itemPaymentReference.value.trim() || null,
 						// Guards against the total moving while the dialog was open.
 						expected_amount: Number(itemPaymentPreview.value?.amount_due || 0),
 					},
@@ -2520,6 +2625,7 @@ const saveOrder = async () => {
 		if (Number(preview.amount_due || 0) > 0.001) {
 			itemPaymentPreview.value = preview;
 			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
+			itemPaymentReference.value = referenceForMode(itemPaymentMode.value, "");
 			itemPaymentError.value = "";
 			useCustomerCredit.value = false;
 			itemPaymentDialogOpen.value = true;
@@ -2614,6 +2720,7 @@ const saveOrder = async () => {
 
 const submitRemainingBalancePayment = async () => {
 	if (!selectedOrder.value || !paymentForm.mode_of_payment) return;
+	if (paymentReferenceError(paymentForm.mode_of_payment, paymentForm.reference_no)) return;
 
 	paymentLoading.value = true;
 	paymentError.value = "";
@@ -2946,6 +3053,41 @@ watch(
 	border-radius: 16px;
 	padding: 12px 14px;
 	background: var(--pos-surface);
+}
+
+.order-payments {
+	border: 1px solid var(--pos-border);
+	border-radius: 16px;
+	padding: 12px 14px;
+	background: var(--pos-surface);
+	display: grid;
+	gap: 6px;
+}
+
+.order-payments__label {
+	font-size: 0.82rem;
+	color: var(--pos-text-muted);
+}
+
+.order-payments__row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr) auto;
+	gap: 8px;
+	align-items: baseline;
+	font-size: 0.9rem;
+}
+
+.order-payments__row > span {
+	overflow-wrap: anywhere;
+}
+
+.order-payments__ref {
+	font-family: monospace;
+}
+
+.order-payments__amount {
+	text-align: right;
+	white-space: nowrap;
 }
 
 .summary-chip__label {
