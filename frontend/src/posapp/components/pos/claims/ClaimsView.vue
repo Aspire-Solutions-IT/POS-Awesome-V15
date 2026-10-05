@@ -432,7 +432,7 @@ const filters = reactive({
 	claim_type: "",
 	assigned_to: "",
 	sales_order: typeof route.query.sales_order === "string" ? route.query.sales_order : "",
-	// Not yet Closed and not Rejected -- the default landing view. Deliberately
+	// Not yet Closed and not Rejected/Cancelled -- the default landing view. Deliberately
 	// NOT the same as the literal "Open" progress value (the very first step,
 	// before a decision even exists), which stays a precise, separately
 	// selectable choice in the Progress dropdown -- see workspace.get_overview's
@@ -454,6 +454,7 @@ const approvalItems = computed(() => [
 	{ title: "Pending Approval", value: "Pending Approval" },
 	{ title: "Approved", value: "Approved" },
 	{ title: "Rejected", value: "Rejected" },
+	{ title: "Cancelled", value: "Cancelled" },
 ]);
 
 const progressItems = computed(() => [
@@ -493,6 +494,7 @@ function badgeClass(state?: string) {
 		{
 			Approved: "is-approved",
 			Rejected: "is-rejected",
+			Cancelled: "is-rejected",
 			Superseded: "is-rejected",
 			"Pending Approval": "is-pending",
 		}[state || ""] || "is-draft"
@@ -507,6 +509,7 @@ function progressBadgeClass(state?: string) {
 			Cancelled: "is-rejected",
 			"In Progress": "is-pending",
 			Queued: "is-pending",
+			"Awaiting Spare Parts": "is-pending",
 		}[state || ""] || "is-draft"
 	);
 }

@@ -12,6 +12,9 @@ import binascii
 import frappe
 from customer_due_dates.customer_claims import workspace as claim_workspace
 from customer_due_dates.customer_claims.api import get_order_items
+from customer_due_dates.customer_claims.doctype.customer_claim_type.customer_claim_type import (
+	available_claim_types,
+)
 from customer_due_dates.customer_claims.evidence import evidence_kind, size_error
 from customer_due_dates.customer_claims.evidence import evidence_limits as _evidence_limits
 from frappe import _
@@ -46,7 +49,7 @@ def _require_rfs_order(sales_order):
 def get_sales_order_claim_context(sales_order):
 	"""Everything the Raise Claim dialog needs for one Sales Order.
 
-	Returns the order's claimable lines, the enabled claim types (with their
+	Returns the order's claimable lines, the claim types usable on this order (with their
 	evidence rules), the fixed outcome/service option lists, and any claims that
 	already exist against this order so the user can be warned about an overlap.
 	"""
@@ -54,12 +57,10 @@ def get_sales_order_claim_context(sales_order):
 	_require_rfs_order(sales_order)
 	context = get_order_items(sales_order)
 
-	claim_types = frappe.get_list(
-		"Customer Claim Type",
-		filters={"disabled": 0},
+	claim_types = available_claim_types(
+		sales_order,
 		fields=["name", "claim_type_name", "evidence_required", "evidence_instructions"],
 		order_by="claim_type_name",
-		limit=0,
 	)
 
 	existing = frappe.get_list(
