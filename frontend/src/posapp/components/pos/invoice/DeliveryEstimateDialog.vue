@@ -25,7 +25,6 @@
 							<th>{{ __("Item") }}</th>
 							<th class="text-right">{{ __("Qty") }}</th>
 							<th>{{ __("Supply") }}</th>
-							<th>{{ __("Quoted Date") }}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -33,7 +32,6 @@
 							<td>{{ line.item_name || line.item_code }}</td>
 							<td class="text-right">{{ line.qty }}</td>
 							<td>{{ __(line.source) }}</td>
-							<td>{{ formatDate(line.quoted_date) }}</td>
 						</tr>
 					</tbody>
 				</v-table>
@@ -68,14 +66,6 @@ const emit = defineEmits(["update:modelValue"]);
 const __ = window.__;
 
 const emptyMessage = computed(() => __("No delivery window could be estimated for this cart."));
-
-function formatDate(value) {
-	if (!value) {
-		return "—";
-	}
-	const [year, month, day] = String(value).slice(0, 10).split("-");
-	return year && month && day ? `${day}-${month}-${year}` : value;
-}
 </script>
 
 <style scoped>

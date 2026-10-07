@@ -91,7 +91,7 @@ class TestPreviewQuotedDeliveryWindow(TestCase):
         self.assertEqual(result["window"], "23-11-2026 - 27-11-2026")
         self.assertEqual(result["latest_quoted_date"], "2026-11-18")
         self.assertFalse(result["is_rfs"])
-        self.assertEqual([line["source"] for line in result["lines"]], ["Pre Allocated", "Allocated"])
+        self.assertEqual([line["source"] for line in result["lines"]], ["On Order", "In Stock"])
         self.assertEqual([line["posa_row_id"] for line in result["lines"]], ["row-a", "row-b"])
         self.assertEqual(self.doc.saved_with_docstatus, 0)
         self.assertIn(("allocate", 1), self.calls)
@@ -109,7 +109,7 @@ class TestPreviewQuotedDeliveryWindow(TestCase):
 
         result = sales_orders.preview_quoted_delivery_window(self._order())
 
-        self.assertEqual(result["lines"][2]["source"], "Allocated")
+        self.assertEqual(result["lines"][2]["source"], "In Stock")
 
     def test_payments_are_dropped_and_submit_prep_applied(self):
         sales_orders.preview_quoted_delivery_window(self._order())
@@ -185,8 +185,8 @@ class TestPreviewQuotedDeliveryWindow(TestCase):
 
         sys.modules["customer_due_dates.kit_items.overrides.sales_order"].auto_allocate_on_so_submit = auto_allocate
         built = [
-            {"group_id": "default", "label": "Allocated", "doc": first},
-            {"group_id": "supply-lead-time", "label": "Lead Time", "doc": second},
+            {"group_id": "default", "label": "In Stock", "doc": first},
+            {"group_id": "supply-back-order", "label": "Back Order", "doc": second},
         ]
         with patch.object(sales_orders, "_build_split_group_documents", return_value=built) as build:
             result = sales_orders.preview_split_group_delivery_windows(self._order(posa_split_groups=[{}]))
@@ -201,8 +201,8 @@ class TestPreviewQuotedDeliveryWindow(TestCase):
         self.assertEqual(
             result["groups"],
             [
-                {"group_id": "default", "label": "Allocated", "window": "06-07-2026 - 10-07-2026"},
-                {"group_id": "supply-lead-time", "label": "Lead Time", "window": "13-07-2026 - 17-07-2026"},
+                {"group_id": "default", "label": "In Stock", "window": "06-07-2026 - 10-07-2026"},
+                {"group_id": "supply-back-order", "label": "Back Order", "window": "13-07-2026 - 17-07-2026"},
             ],
         )
         self.db.rollback.assert_called_once_with()

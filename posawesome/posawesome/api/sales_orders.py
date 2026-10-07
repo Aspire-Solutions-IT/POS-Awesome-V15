@@ -2317,12 +2317,12 @@ def _preview_line_source(soi_name, item_code=None):
     # NS items are never reserved, but they are quoted the order date like
     # allocated stock, so they're labelled (and suggested-grouped) as such.
     if _is_ns_item(item_code):
-        return "Allocated"
+        return "In Stock"
     if flt(_preallocated_outstanding_for_soi(soi_name)) > 0:
-        return "Pre Allocated"
+        return "On Order"
     if flt(_reserved_for_soi(soi_name)) > 0:
-        return "Allocated"
-    return "Lead Time"
+        return "In Stock"
+    return "Back Order"
 
 
 @frappe.whitelist()

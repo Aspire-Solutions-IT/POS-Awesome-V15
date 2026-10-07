@@ -30,8 +30,8 @@ const ButtonStub = defineComponent({
 });
 
 const groups = [
-	{ group_id: "default", label: "Allocated", row_ids: ["r1"] },
-	{ group_id: "supply-lead-time", label: "Lead Time", row_ids: ["r2"] },
+	{ group_id: "default", label: "In Stock", row_ids: ["r1"] },
+	{ group_id: "supply-back-order", label: "Back Order", row_ids: ["r2"] },
 ];
 const items = [
 	{ posa_row_id: "r1", item_code: "TABLE", qty: 1, rate: 100 },
@@ -68,7 +68,7 @@ describe("PaymentSplitGroups estimate delivery", () => {
 
 	it("shows each group's window beside its title", () => {
 		const wrapper = mountGroups({
-			groupWindows: { default: "12-10-2026 - 16-10-2026", "supply-lead-time": "18-01-2027 - 22-01-2027" },
+			groupWindows: { default: "12-10-2026 - 16-10-2026", "supply-back-order": "18-01-2027 - 22-01-2027" },
 		});
 
 		const windows = wrapper.findAll('[data-test="split-group-window"]').map((node) => node.text());

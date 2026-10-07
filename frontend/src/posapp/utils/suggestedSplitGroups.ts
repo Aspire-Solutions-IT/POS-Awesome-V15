@@ -12,7 +12,7 @@ declare const __: (_text: string, _args?: any[]) => string;
 export const SUPPLY_TYPE_FIELD = "posa_supply_type";
 
 // Earliest supply first; this is also the order the suggested groups appear in.
-const SUPPLY_ORDER = ["Allocated", "Pre Allocated", "Lead Time"];
+const SUPPLY_ORDER = ["In Stock", "On Order", "Back Order"];
 
 const supplyRank = (supply: string) => {
 	const index = SUPPLY_ORDER.indexOf(supply);
@@ -102,7 +102,7 @@ export function buildSuggestedSplitGroups(
 		if (!id) {
 			return;
 		}
-		const supply = supplies[id] || "Lead Time";
+		const supply = supplies[id] || "Back Order";
 		if (!buckets.has(supply)) {
 			buckets.set(supply, []);
 		}
