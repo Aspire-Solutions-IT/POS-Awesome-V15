@@ -99,6 +99,7 @@
 					:printLoading="printLoading"
 					:paymentLoading="paymentLoading"
 					:customerDisplayLoading="customerDisplayLoading"
+					:estimateLoading="estimateLoading"
 					@save-and-clear="handleSaveAndClear"
 					@load-drafts="handleLoadDrafts"
 					@cancel-sale="handleCancelSale"
@@ -107,6 +108,7 @@
 					@print-draft="handlePrintDraft"
 					@show-payment="handleShowPayment"
 					@open-customer-display="handleOpenCustomerDisplay"
+					@estimate-delivery="emit('estimate-delivery')"
 				/>
 			</v-col>
 		</v-row>
@@ -187,6 +189,8 @@ const props = defineProps({
 	discount_percentage_offer_name: [String, Number],
 	isNumber: Function,
 	return_discount_meta: Object,
+	// Owned by the parent: the spinner has to last for the server round trip.
+	estimateLoading: Boolean,
 });
 
 const emit = defineEmits([
@@ -202,6 +206,7 @@ const emit = defineEmits([
 	"print-draft",
 	"show-payment",
 	"open-customer-display",
+	"estimate-delivery",
 	"resume-parked-order",
 ]);
 

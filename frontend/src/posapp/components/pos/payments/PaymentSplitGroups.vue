@@ -4,6 +4,16 @@
 			<v-btn color="primary" variant="tonal" :disabled="atMaxGroups" @click="createGroup">
 				{{ $frappe._("Add Group") }}
 			</v-btn>
+			<v-btn
+				color="info"
+				variant="tonal"
+				prepend-icon="mdi-truck-fast-outline"
+				:loading="windowsLoading"
+				data-test="estimate-group-windows"
+				@click="$emit('estimate-windows')"
+			>
+				{{ $frappe._("Estimate Delivery") }}
+			</v-btn>
 		</div>
 		<div v-if="atMaxGroups" class="split-groups__limit-note">
 			{{ $frappe._("Maximum of {0} groups reached.", [maxGroups]) }}
@@ -13,7 +23,12 @@
 			<v-col v-for="group in groups" :key="group.group_id" cols="12" md="6" xl="4">
 				<div class="split-groups__summary-card">
 					<div class="split-groups__summary-head">
-						<span class="split-groups__summary-label">{{ group.label }}</span>
+						<span class="split-groups__summary-label">
+							{{ group.label }}
+							<span v-if="groupWindows[group.group_id]" class="split-groups__window">
+								{{ groupWindows[group.group_id] }}
+							</span>
+						</span>
 						<span class="split-groups__summary-value">
 							{{ formatCurrency(groupTotals[group.group_id] || 0) }}
 						</span>
@@ -28,7 +43,17 @@
 		<div class="split-groups__list">
 			<div v-for="group in groups" :key="group.group_id" class="split-groups__group">
 				<div class="split-groups__group-head">
-					<div class="split-groups__group-title">{{ group.label }}</div>
+					<div class="split-groups__group-title">
+						{{ group.label }}
+						<span
+							v-if="groupWindows[group.group_id]"
+							class="split-groups__window"
+							:title="$frappe._('Estimated delivery window')"
+							data-test="split-group-window"
+						>
+							{{ groupWindows[group.group_id] }}
+						</span>
+					</div>
 					<v-btn
 						v-if="group.group_id !== defaultGroupId"
 						color="error"
@@ -99,6 +124,12 @@ const props = defineProps({
 		type: String,
 		required: true,
 	},
+	// Estimated delivery window per group id, from "Estimate Delivery".
+	groupWindows: {
+		type: Object,
+		default: () => ({}),
+	},
+	windowsLoading: Boolean,
 	maxGroups: {
 		type: Number,
 		default: 4,
@@ -109,7 +140,7 @@ const props = defineProps({
 	},
 });
 
-const emit = defineEmits(["create-group", "remove-group", "move-item"]);
+const emit = defineEmits(["create-group", "remove-group", "move-item", "estimate-windows"]);
 
 const $frappe = inject("frappe", window.frappe);
 
@@ -169,7 +200,9 @@ const createGroup = () => {
 
 .split-groups__toolbar {
 	display: flex;
+	flex-wrap: wrap;
 	justify-content: flex-end;
+	gap: 8px;
 }
 
 .split-groups__limit-note {
@@ -234,6 +267,17 @@ const createGroup = () => {
 .split-groups__group-title {
 	font-size: 1rem;
 	font-weight: 700;
+}
+
+.split-groups__window {
+	margin-left: 8px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	background: rgba(var(--v-theme-primary), 0.1);
+	color: rgb(var(--v-theme-primary));
+	font-size: 0.8rem;
+	font-weight: 600;
+	white-space: nowrap;
 }
 
 .split-groups__items {

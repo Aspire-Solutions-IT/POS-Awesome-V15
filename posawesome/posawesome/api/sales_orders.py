@@ -2276,6 +2276,173 @@ def get_pos_order_summary(sales_order):
     }
 
 
+class _PreviewCommitBlocked(Exception):
+    pass
+
+
+@contextmanager
+def _rolled_back_transaction():
+    """Run the body in a transaction that is always fully rolled back.
+
+    A full rollback (not a savepoint) is required: it also resets the
+    after_commit queue, which is where the allocation hooks defer their own
+    commits and realtime pushes. Commits are blocked while the body runs so
+    nothing in the allocation path can persist the simulated order.
+    """
+    db = frappe.db
+    if db._disable_transaction_control:
+        frappe.throw(_("Delivery estimate is unavailable here: transaction control is disabled."))
+
+    def _blocked_commit(*args, **kwargs):
+        raise _PreviewCommitBlocked("commit attempted during delivery window preview")
+
+    original_commit = db.commit
+    db.commit = _blocked_commit
+    try:
+        yield
+    finally:
+        try:
+            db.rollback()
+        finally:
+            db.commit = original_commit
+
+
+def _preview_line_source(soi_name, item_code=None):
+    from customer_due_dates.item_due_dates.prealloc.due_dates import _is_ns_item
+    from customer_due_dates.item_due_dates.prealloc.so_alloc_fields import (
+        _preallocated_outstanding_for_soi,
+        _reserved_for_soi,
+    )
+
+    # NS items are never reserved, but they are quoted the order date like
+    # allocated stock, so they're labelled (and suggested-grouped) as such.
+    if _is_ns_item(item_code):
+        return "Allocated"
+    if flt(_preallocated_outstanding_for_soi(soi_name)) > 0:
+        return "Pre Allocated"
+    if flt(_reserved_for_soi(soi_name)) > 0:
+        return "Allocated"
+    return "Lead Time"
+
+
+@frappe.whitelist()
+def preview_quoted_delivery_window(order):
+    """Estimate the quoted delivery window the cart would get if submitted now.
+
+    The quoted dates only exist once before_submit has reserved stock and
+    pre-allocated incoming supply, so this runs the real submit preparation and
+    auto_allocate_on_so_submit, reads the window, and rolls everything back.
+    on_submit is never run, so no POs, emails or dispatches are triggered.
+
+    The stock reservations hold Bin row locks until the rollback, so a
+    concurrent submit of the same items waits briefly. The result is a snapshot:
+    another order can take the same PO room before this one is submitted.
+    """
+    from customer_due_dates.kit_items.overrides.sales_order import auto_allocate_on_so_submit
+    from customer_due_dates.utils.rfs_customer import apply_sales_order_naming_series, is_rfs_customer
+
+    order = json.loads(order) if isinstance(order, str) else order
+    # Always the cart as one order, as the cart builds it without Split Delivery.
+    # Split Delivery stays on the cart after backing out of the payment flow, but
+    # each group's window comes from preview_split_group_delivery_windows.
+    order["posa_split_delivery"] = 0
+    order["must_be_fully_allocated"] = 1
+    order.pop("posa_split_groups", None)
+    order.pop("payments", None)
+
+    _map_delivery_dates(order)
+    _apply_ns_default_warehouse(order)
+    _force_peterborough_store_collection(order)
+
+    existing_name = order.get("name")
+    if existing_name and not frappe.db.exists("Sales Order", existing_name):
+        existing_name = None
+
+    try:
+        with _rolled_back_transaction():
+            if existing_name:
+                so_doc = frappe.get_doc("Sales Order", existing_name)
+                so_doc.update(order)
+            else:
+                so_doc = frappe.get_doc(order)
+                apply_sales_order_naming_series(so_doc, force=True)
+
+            so_doc.flags.ignore_permissions = True
+            frappe.flags.ignore_account_permission = True
+            so_doc.docstatus = 0
+            _sync_shopify_notes_from_posa(so_doc)
+            _apply_kit_meta_fields(so_doc)
+            _apply_delivery_charges_tax_row(so_doc)
+            so_doc.save()
+
+            # Real submit runs before_submit with docstatus 1 in memory while the
+            # DB row is still a draft; mirror that without calling submit().
+            so_doc.docstatus = 1
+            auto_allocate_on_so_submit(so_doc)
+
+            result = {
+                "window": so_doc.quoted_estimated_delivery_window,
+                "latest_quoted_date": cstr(so_doc.latest_quoted_date or "") or None,
+                "is_rfs": bool(is_rfs_customer(so_doc.customer)),
+                "lines": [
+                    {
+                        "posa_row_id": getattr(row, "posa_row_id", None),
+                        "item_code": row.item_code,
+                        "item_name": row.item_name,
+                        "qty": flt(row.qty),
+                        "quoted_date": cstr(row.quoted_date or "") or None,
+                        "source": _preview_line_source(row.name, row.item_code),
+                    }
+                    for row in so_doc.items
+                ],
+            }
+    finally:
+        if existing_name:
+            frappe.clear_document_cache("Sales Order", existing_name)
+
+    return result
+
+
+@frappe.whitelist()
+def preview_split_group_delivery_windows(order):
+    """Estimate the quoted delivery window of each split group's Sales Order.
+
+    Mirrors _submit_split_group_documents: every group order is built first,
+    then allocated in group order, so a later group only gets the supply the
+    earlier groups left. Each group is "must be fully allocated", exactly as on
+    a real split submit. Everything is rolled back afterwards; see
+    preview_quoted_delivery_window for why that is safe.
+    """
+    from customer_due_dates.kit_items.overrides.sales_order import auto_allocate_on_so_submit
+    from customer_due_dates.utils.rfs_customer import is_rfs_customer
+
+    order = json.loads(order) if isinstance(order, str) else order
+    _map_delivery_dates(order)
+    _apply_ns_default_warehouse(order)
+    _force_peterborough_store_collection(order)
+    order["posa_split_delivery"] = 1
+    order.pop("payments", None)
+    frappe.flags.ignore_account_permission = True
+
+    with _rolled_back_transaction():
+        built = _build_split_group_documents(order)
+        groups = []
+        for entry in built:
+            so_doc = entry["doc"]
+            so_doc.docstatus = 1
+            auto_allocate_on_so_submit(so_doc)
+            groups.append(
+                {
+                    "group_id": entry["group_id"],
+                    "label": entry["label"],
+                    "window": so_doc.quoted_estimated_delivery_window,
+                }
+            )
+        is_rfs = bool(is_rfs_customer(order.get("customer")))
+
+    return {"groups": groups, "is_rfs": is_rfs}
+
+
 @frappe.whitelist()
 def update_managed_sales_order(data):
     payload = _unwrap_managed_sales_order_payload(data)

@@ -198,8 +198,23 @@
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Split Order Groups") }}</h3>
 						</div>
+						<v-checkbox
+							v-if="hasSuggestedSplitGroups"
+							:model-value="useSuggestedSplitGroups"
+							:label="__('Use suggested groups')"
+							:hint="__('Groups items by supply from the delivery estimate')"
+							persistent-hint
+							color="primary"
+							density="compact"
+							class="mb-3"
+							data-test="use-suggested-split-groups"
+							@update:model-value="toggleSuggestedSplitGroups"
+						></v-checkbox>
 						<PaymentSplitGroups
 							:groups="splitOrderGroups"
+							:group-windows="splitGroupDeliveryWindows"
+							:windows-loading="splitGroupWindowsLoading"
+							@estimate-windows="estimateSplitGroupWindows"
 							:items="invoice_doc.items || []"
 							:default-group-id="defaultSplitGroupId"
 							:max-groups="MAX_SPLIT_GROUPS"
@@ -427,6 +442,12 @@ import {
 import { resolvePaymentPrintFormatDoctypes } from "../../utils/paymentPrintDoctype";
 import { resolvePaymentPrintFormat } from "../../utils/paymentPrintFormat";
 import { parseBooleanSetting } from "../../utils/stock";
+import {
+	buildSuggestedSplitGroups,
+	hasCompleteSupplyTypes,
+	storedSupplyByRowId,
+} from "../../utils/suggestedSplitGroups";
+import api from "../../services/api";
 
 // Components
 import PaymentSummary from "./payments/PaymentSummary.vue";
@@ -767,9 +788,80 @@ const syncSplitGroupsState = () => {
 	invoice_doc.value.posa_split_groups = normalized;
 };
 
+// Supply types are stored on the cart rows by "Estimate Delivery" and wiped
+// whenever the cart changes, so their presence means the estimate is current.
+const hasSuggestedSplitGroups = computed(() => hasCompleteSupplyTypes(invoiceStore.items));
+const useSuggestedSplitGroups = ref(false);
+
+const toggleSuggestedSplitGroups = (enabled) => {
+	useSuggestedSplitGroups.value = Boolean(enabled);
+	if (!invoice_doc.value) {
+		return;
+	}
+	if (!useSuggestedSplitGroups.value) {
+		invoice_doc.value.posa_split_groups = [createDefaultSplitGroup()];
+		return;
+	}
+	invoice_doc.value.posa_split_groups = buildSuggestedSplitGroups(
+		invoice_doc.value.items || [],
+		storedSupplyByRowId(invoiceStore.items),
+		defaultSplitGroupId,
+	);
+};
+
+watch(
+	() => [invoiceStore.invoiceDoc, invoice_doc.value?.posa_split_delivery, hasSuggestedSplitGroups.value],
+	() => {
+		useSuggestedSplitGroups.value = false;
+	},
+);
+
 const splitOrderGroups = computed(() =>
 	normalizeSplitGroupsState(invoice_doc.value?.posa_split_groups, invoice_doc.value?.items || []),
 );
+
+// Each group's window, estimated on the server as its own "must be fully
+// allocated" Sales Order. Any change to the groups or their items clears it.
+const splitGroupDeliveryWindows = ref({});
+const splitGroupWindowsLoading = ref(false);
+const splitGroupsKey = computed(() =>
+	JSON.stringify([
+		splitOrderGroups.value.map((group) => [group.group_id, group.row_ids]),
+		(invoice_doc.value?.items || []).map((item) => [item.posa_row_id, item.item_code, item.qty, item.uom]),
+	]),
+);
+watch(splitGroupsKey, () => {
+	splitGroupDeliveryWindows.value = {};
+});
+
+const estimateSplitGroupWindows = async () => {
+	if (!invoice_doc.value || splitGroupWindowsLoading.value) {
+		return;
+	}
+	const requestKey = splitGroupsKey.value;
+	splitGroupWindowsLoading.value = true;
+	try {
+		const result = await api.call("posawesome.posawesome.api.sales_orders.preview_split_group_delivery_windows", {
+			order: JSON.stringify({ ...invoice_doc.value, posa_split_groups: splitOrderGroups.value }),
+		});
+		if (requestKey !== splitGroupsKey.value) {
+			return;
+		}
+		const windows = {};
+		(result?.groups || []).forEach((group) => {
+			windows[group.group_id] = group.window || __("Not available");
+		});
+		splitGroupDeliveryWindows.value = windows;
+	} catch (error) {
+		console.error("Failed to estimate split group delivery windows:", error);
+		// frappe.call already shows server-side validation messages.
+		if (!error?._server_messages) {
+			toastStore.show({ title: __("Unable to estimate delivery windows"), color: "error" });
+		}
+	} finally {
+		splitGroupWindowsLoading.value = false;
+	}
+};
 
 const canProceedFromGrouping = computed(() => {
 	const itemRowIds = (invoice_doc.value?.items || [])
