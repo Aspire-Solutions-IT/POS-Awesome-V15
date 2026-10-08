@@ -97,7 +97,7 @@
 					:invoiceManagementLoading="invoiceManagementLoading"
 					:returnsLoading="returnsLoading"
 					:printLoading="printLoading"
-					:paymentLoading="paymentLoading"
+					:paymentLoading="paymentLoading || payLoading"
 					:customerDisplayLoading="customerDisplayLoading"
 					:estimateLoading="estimateLoading"
 					@save-and-clear="handleSaveAndClear"
@@ -189,8 +189,9 @@ const props = defineProps({
 	discount_percentage_offer_name: [String, Number],
 	isNumber: Function,
 	return_discount_meta: Object,
-	// Owned by the parent: the spinner has to last for the server round trip.
+	// Owned by the parent: the spinners have to last for the server round trip.
 	estimateLoading: Boolean,
+	payLoading: Boolean,
 });
 
 const emit = defineEmits([

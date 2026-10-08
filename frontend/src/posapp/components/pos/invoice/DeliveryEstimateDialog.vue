@@ -42,7 +42,21 @@
 			</v-card-text>
 			<v-card-actions class="px-6 pb-4">
 				<v-spacer />
-				<v-btn color="primary" variant="tonal" @click="emit('update:modelValue', false)">
+				<template v-if="continueToPayment">
+					<v-btn variant="text" data-test="estimate-back-to-cart" @click="emit('update:modelValue', false)">
+						{{ __("Back to Cart") }}
+					</v-btn>
+					<v-btn
+						color="success"
+						variant="flat"
+						prepend-icon="mdi-credit-card"
+						data-test="estimate-continue-to-payment"
+						@click="emit('continue')"
+					>
+						{{ __("Continue to Payment") }}
+					</v-btn>
+				</template>
+				<v-btn v-else color="primary" variant="tonal" @click="emit('update:modelValue', false)">
 					{{ __("Close") }}
 				</v-btn>
 			</v-card-actions>
@@ -59,9 +73,11 @@ const props = defineProps({
 		type: Object,
 		default: null,
 	},
+	// Opened from PAY: offer to carry on to the payment flow.
+	continueToPayment: Boolean,
 });
 
-const emit = defineEmits(["update:modelValue"]);
+const emit = defineEmits(["update:modelValue", "continue"]);
 
 const __ = window.__;
 
