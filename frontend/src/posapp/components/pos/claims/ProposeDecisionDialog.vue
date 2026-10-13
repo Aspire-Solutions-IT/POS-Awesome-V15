@@ -264,7 +264,7 @@ const emit = defineEmits<{
 }>();
 
 const outcomes = ["Exchange", "Refund", "Credit", "Replace", "Service Call"];
-const serviceCallTypes = ["Maintenance Visit", "Spare Part"];
+const serviceCallTypes = ["Maintenance Visit", "Spare Part", "Castalan"];
 
 const submitting = ref(false);
 const submitError = ref("");

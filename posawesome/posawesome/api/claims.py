@@ -23,7 +23,7 @@ from frappe.utils import cstr
 from posawesome.posawesome.api.employees import _get_terminal_users
 
 PREFERRED_OUTCOMES = ("Exchange", "Refund", "Credit", "Replace", "Service Call")
-SERVICE_CALL_TYPES = ("Maintenance Visit", "Spare Part")
+SERVICE_CALL_TYPES = ("Maintenance Visit", "Spare Part", "Castalan")
 
 
 def _require_claim_create():
