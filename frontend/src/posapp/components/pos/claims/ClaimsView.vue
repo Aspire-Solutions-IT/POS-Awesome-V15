@@ -342,6 +342,17 @@
 								</div>
 								<p>{{ action.description }}</p>
 								<p v-if="action.amount">{{ action.currency }} {{ action.amount }}</p>
+								<p v-if="actionLinks(action).length" class="claims-view__action-links">
+									<a
+										v-for="link in actionLinks(action)"
+										:key="`${link.doctype}-${link.name}`"
+										:href="docLink(link.doctype, link.name)"
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										{{ link.name }} ↗
+									</a>
+								</p>
 							</article>
 						</div>
 					</article>
@@ -516,6 +527,26 @@ function progressBadgeClass(state?: string) {
 
 function formLink(name: string) {
 	return `/app/customer-claim/${encodeURIComponent(name)}`;
+}
+
+function docLink(doctype: string, name: string) {
+	// result_doctype is a DocType label ("Sales Order"), not the route slug.
+	return `/app/${doctype.toLowerCase().replace(/\s+/g, "-")}/${encodeURIComponent(name)}`;
+}
+
+// Documents the action created: the result document (e.g. the replacement
+// Sales Order), the Pick List get_detail looks up for it, and the return
+// Delivery Note.
+function actionLinks(action: Record<string, any>) {
+	const links: Array<{ doctype: string; name: string }> = [];
+	if (action.result_document && action.result_doctype) {
+		links.push({ doctype: action.result_doctype, name: action.result_document });
+	}
+	if (action.pick_list) links.push({ doctype: "Pick List", name: action.pick_list });
+	if (action.return_delivery_note) {
+		links.push({ doctype: "Delivery Note", name: action.return_delivery_note });
+	}
+	return links;
 }
 
 function formatDate(value?: string | null) {
@@ -873,6 +904,11 @@ defineExpose({ reload, selectClaim });
 	display: block;
 	font-size: 11px;
 	opacity: 0.6;
+}
+.claims-view__action-links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 14px;
 }
 .claims-view__action {
 	border: 1px solid var(--pos-border-color, rgba(0, 0, 0, 0.12));
