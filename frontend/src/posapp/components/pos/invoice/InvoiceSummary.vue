@@ -7,7 +7,7 @@
 			<v-col
 				v-if="!useCompactSaleDock || showReturnDiscountAlert"
 				cols="12"
-				:md="useCompactSaleDock ? 12 : 7"
+				:md="stackSummary ? 12 : 7"
 			>
 				<v-alert
 					v-if="showReturnDiscountAlert"
@@ -87,7 +87,7 @@
 				</div>
 			</v-col>
 
-			<v-col cols="12" :md="useCompactSaleDock ? 12 : 5" class="invoice-summary-actions">
+			<v-col cols="12" :md="stackSummary ? 12 : 5" class="invoice-summary-actions">
 				<InvoiceActionButtons
 					:pos_profile="pos_profile"
 					:saveLoading="saveLoading"
@@ -97,8 +97,9 @@
 					:invoiceManagementLoading="invoiceManagementLoading"
 					:returnsLoading="returnsLoading"
 					:printLoading="printLoading"
-					:paymentLoading="paymentLoading"
+					:paymentLoading="paymentLoading || payLoading"
 					:customerDisplayLoading="customerDisplayLoading"
+					:estimateLoading="estimateLoading"
 					@save-and-clear="handleSaveAndClear"
 					@load-drafts="handleLoadDrafts"
 					@cancel-sale="handleCancelSale"
@@ -107,6 +108,7 @@
 					@print-draft="handlePrintDraft"
 					@show-payment="handleShowPayment"
 					@open-customer-display="handleOpenCustomerDisplay"
+					@estimate-delivery="emit('estimate-delivery')"
 				/>
 			</v-col>
 		</v-row>
@@ -187,6 +189,9 @@ const props = defineProps({
 	discount_percentage_offer_name: [String, Number],
 	isNumber: Function,
 	return_discount_meta: Object,
+	// Owned by the parent: the spinners have to last for the server round trip.
+	estimateLoading: Boolean,
+	payLoading: Boolean,
 });
 
 const emit = defineEmits([
@@ -202,6 +207,7 @@ const emit = defineEmits([
 	"print-draft",
 	"show-payment",
 	"open-customer-display",
+	"estimate-delivery",
 	"resume-parked-order",
 ]);
 
@@ -237,7 +243,11 @@ const discountFieldsDisabled = computed(
 		!props.pos_profile?.posa_allow_user_to_edit_additional_discount ||
 		!!props.discount_percentage_offer_name,
 );
-const useCompactSaleDock = computed(() => responsive.windowWidth.value < 1100);
+// The bottom sale dock in Pos.vue shows the total below 1024px; must match its showBottomDock
+// breakpoint or the total disappears on tablets in between.
+const useCompactSaleDock = computed(() => responsive.windowWidth.value < 1024);
+// On tablet widths the invoice panel is too narrow to sit the total beside the buttons.
+const stackSummary = computed(() => responsive.windowWidth.value < 1280);
 const showDesktopDrafts = computed(() => Boolean(responsive.isDesktop.value));
 const showReturnDiscountAlert = computed(
 	() =>

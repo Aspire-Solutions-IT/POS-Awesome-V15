@@ -39,20 +39,6 @@
 <!--				{{ __("Invoice Mgmt") }}-->
 <!--			</v-btn>-->
 <!--		</v-col>-->
-		<v-col cols="12">
-			<v-btn
-				block
-				color="error"
-				theme="dark"
-				prepend-icon="mdi-close-circle"
-				@click="$emit('cancel-sale')"
-				class="summary-btn"
-				:loading="cancelLoading"
-			>
-				{{ __("Cancel Sale") }}
-			</v-btn>
-		</v-col>
-
 		<v-col cols="12" sm="6" v-if="pos_profile.posa_allow_return == 1">
 			<v-btn
 				block
@@ -92,7 +78,34 @@
 				{{ __("Customer Screen") }}
 			</v-btn>
 		</v-col>
-		<v-col cols="12">
+		<v-col cols="12" v-if="showEstimateDeliveryButton">
+			<v-btn
+				block
+				color="info"
+				theme="dark"
+				prepend-icon="mdi-truck-fast-outline"
+				@click="$emit('estimate-delivery')"
+				class="summary-btn"
+				:loading="estimateLoading"
+			>
+				{{ __("Estimate Delivery") }}
+			</v-btn>
+		</v-col>
+		<v-col cols="6">
+			<v-btn
+				block
+				color="error"
+				theme="dark"
+				size="large"
+				prepend-icon="mdi-close-circle"
+				@click="$emit('cancel-sale')"
+				class="summary-btn"
+				:loading="cancelLoading"
+			>
+				{{ __("Cancel Sale") }}
+			</v-btn>
+		</v-col>
+		<v-col cols="6">
 			<v-btn
 				block
 				color="success"
@@ -127,6 +140,7 @@ const props = defineProps({
 	printLoading: Boolean,
 	paymentLoading: Boolean,
 	customerDisplayLoading: Boolean,
+	estimateLoading: Boolean,
 });
 
 defineEmits([
@@ -138,11 +152,16 @@ defineEmits([
 	"print-draft",
 	"show-payment",
 	"open-customer-display",
+	"estimate-delivery",
 ]);
 
 const __ = window.__;
 const showCustomerDisplayButton = computed(() =>
 	parseBooleanSetting(props.pos_profile?.posa_enable_customer_display),
+);
+// The estimate comes from Sales Order allocation, so only offer it when the cart submits as one.
+const showEstimateDeliveryButton = computed(() =>
+	parseBooleanSetting(props.pos_profile?.posa_create_only_sales_order),
 );
 </script>
 

@@ -282,6 +282,12 @@
 
 	<QzTrayDialog v-model="showQzTrayDialog" />
 
+	<ProcessNotesDialog
+		v-model="showProcessNotesDialog"
+		:notes="screenProcessNotes"
+		:screen="currentPosScreen"
+	/>
+
 	<!-- Notification Snackbars -->
 	<v-snackbar
 		v-model="notification.show"
@@ -311,11 +317,19 @@ import { useUpdateStore } from "../../stores/updateStore";
 import { useEmployeeStore } from "../../stores/employeeStore";
 import { storeToRefs } from "pinia";
 import QzTrayDialog from "./QzTrayDialog.vue";
+import ProcessNotesDialog from "./ProcessNotesDialog.vue";
+import {
+	loadProcessNotes,
+	notesForPosScreen,
+	onProcessNotesUpdated,
+	posScreenForRoute,
+} from "../../utils/processNotes";
 
 export default {
 	name: "NavbarMenu",
 	components: {
 		QzTrayDialog,
+		ProcessNotesDialog,
 	},
 	props: {
 		posProfile: { type: Object, default: () => ({}) },
@@ -337,6 +351,8 @@ export default {
 			activePanel: "main",
 			showLanguageDialog: false,
 			showQzTrayDialog: false,
+			showProcessNotesDialog: false,
+			processNotes: [],
 			selectedLanguage: "en",
 			currentLanguage: "en",
 			availableLanguages: FALLBACK_LANGUAGES,
@@ -356,6 +372,7 @@ export default {
 	beforeUnmount() {
 		// Clean up the event listener
 		window.removeEventListener("resize", this.handleResize);
+		this.stopProcessNotesListener?.();
 	},
 	watch: {
 		menuOpen(isOpen) {
@@ -394,7 +411,14 @@ export default {
 				? __("Grouped controls for terminal, UI, and session settings.")
 				: __("Fast cashier actions for active shifts.");
 		},
+		currentPosScreen() {
+			return posScreenForRoute(this.$route);
+		},
+		screenProcessNotes() {
+			return notesForPosScreen(this.processNotes, this.currentPosScreen);
+		},
 		quickActions() {
+			const noteCount = this.screenProcessNotes.length;
 			const actions = [
 				{
 					id: "switch-cashier",
@@ -438,6 +462,19 @@ export default {
 							icon: "mdi-content-save-move-outline",
 							tone: "primary",
 							handler: "closeShift",
+						}
+					: null,
+				noteCount
+					? {
+							id: "process-notes",
+							label: __("View Documents"),
+							subtitle:
+								noteCount === 1
+									? __("1 process note for this screen")
+									: __("{0} process notes for this screen", [noteCount]),
+							icon: "mdi-file-document-multiple-outline",
+							tone: "info",
+							handler: "openProcessNotes",
 						}
 					: null,
 			];
@@ -608,6 +645,12 @@ export default {
 			this.windowWidth = window.innerWidth;
 		};
 		window.addEventListener("resize", this.handleResize);
+		this.stopProcessNotesListener = onProcessNotesUpdated((notes) => {
+			this.processNotes = notes;
+		});
+		void loadProcessNotes().then((notes) => {
+			this.processNotes = notes;
+		});
 		await this.initializeLanguage();
 		this.initializeWesternNumerals();
 	},
@@ -690,6 +733,10 @@ export default {
 				case "openDashboard":
 					this.closeMenu();
 					this.openDashboard();
+					break;
+				case "openProcessNotes":
+					this.closeMenu();
+					this.showProcessNotesDialog = true;
 					break;
 				default:
 					break;

@@ -547,6 +547,13 @@ export default {
 					to: "/sales-orders",
 				});
 			}
+			if (this.posProfile?.posa_allow_customer_claims == 1) {
+				items.push({
+					text: "Claims",
+					icon: "mdi-clipboard-alert-outline",
+					to: "/claims",
+				});
+			}
 			this.items = items;
 		},
 		async fetchTerminalEmployees() {

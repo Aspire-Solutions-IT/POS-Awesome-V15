@@ -130,15 +130,35 @@
 				</span>
 			</template>
 			<template v-slot:item.next_due_date="{ item }">
-				<span>{{ formatDueDate(item.next_due_date) }}</span>
+				<div class="due-date-cell">
+					<span>{{ formatDueDate(item.next_due_date) }}</span>
+					<v-btn
+						v-if="isKit(item)"
+						icon="mdi-file-tree"
+						variant="text"
+						size="x-small"
+						density="comfortable"
+						color="primary"
+						:title="__('Show component due dates')"
+						@click.stop="openKitTree(item)"
+					/>
+				</div>
 			</template>
 		</v-data-table>
+		<KitDueTreeDialog
+			v-model="kitTreeOpen"
+			:item-code="kitTreeItem?.item_code || ''"
+			:item-name="kitTreeItem?.custom_tfw_name || kitTreeItem?.item_name || ''"
+			:format-qty="formatActualQty"
+			:format-due-date="formatDueDate"
+		/>
 	</div>
 </template>
 
 <script setup>
 import { ref } from "vue";
 import ItemRateInfoMenu from "./ItemRateInfoMenu.vue";
+import KitDueTreeDialog from "./KitDueTreeDialog.vue";
 
 const props = defineProps({
 	displayedItems: { type: Array, default: () => [] },
@@ -192,6 +212,18 @@ const formatDueDate = (value) => {
 	return normalized;
 };
 
+const __ = window.__ || ((text) => text);
+
+const isKit = (item) => Boolean(Number(item?.is_kit_item || 0) || Number(item?.is_kit_set || 0));
+
+const kitTreeOpen = ref(false);
+const kitTreeItem = ref(null);
+
+const openKitTree = (item) => {
+	kitTreeItem.value = item;
+	kitTreeOpen.value = true;
+};
+
 const tableRef = ref(null);
 
 const getTableElement = () => {
@@ -240,6 +272,13 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 	font-weight: 600;
 	color: rgb(var(--v-theme-primary));
 	background-color: rgba(var(--v-theme-primary), 0.32);
+}
+
+.due-date-cell {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	white-space: nowrap;
 }
 
 .rate-cell-primary {

@@ -1,11 +1,7 @@
 <template>
 	<div class="sticky-header">
 		<v-row class="items">
-			<v-col
-				class="pb-0"
-				:cols="posProfile.posa_input_qty ? 8 : 12"
-				:sm="posProfile.posa_input_qty ? 9 : 12"
-			>
+			<v-col class="pb-0" cols="12" :sm="posProfile.posa_input_qty ? 6 : 8">
 				<v-text-field
 					density="compact"
 					clearable
@@ -65,6 +61,29 @@
 					</template>
 				</v-text-field>
 			</v-col>
+			<v-col class="pb-0" :cols="posProfile.posa_input_qty ? 8 : 12" :sm="posProfile.posa_input_qty ? 3 : 4">
+				<v-text-field
+					density="compact"
+					clearable
+					variant="solo"
+					color="primary"
+					class="pos-themed-input"
+					:label="frappe._('SKU')"
+					hide-details
+					autocomplete="off"
+					prepend-inner-icon="mdi-barcode"
+					:model-value="skuInput"
+					@update:model-value="
+						(val) => {
+							$emit('update:skuInput', val ?? '');
+							$emit('sku-input', val ?? '');
+						}
+					"
+					@keydown.enter="$emit('sku-enter')"
+					@keydown.esc="$emit('clear-sku')"
+					@click:clear="$emit('clear-sku')"
+				></v-text-field>
+			</v-col>
 			<v-col cols="4" sm="3" class="pb-0" v-if="posProfile.posa_input_qty">
 				<v-text-field
 					density="compact"
@@ -98,6 +117,16 @@
 						class="settings-btn"
 					>
 						{{ __("New Item") }}
+					</v-btn>
+					<v-btn
+						density="compact"
+						variant="text"
+						color="primary"
+						prepend-icon="mdi-text-search"
+						@click="$emit('open-advanced-search')"
+						class="settings-btn"
+					>
+						{{ __("Advanced Search") }}
 					</v-btn>
 					<v-btn
 						density="compact"
@@ -141,6 +170,7 @@ import { ref } from "vue";
 
 defineProps({
 	searchInput: { type: String, default: "" },
+	skuInput: { type: String, default: "" },
 	qtyInput: { type: [String, Number], default: 1 },
 	posProfile: { type: Object, required: true },
 	scannerLocked: { type: Boolean, default: false },
@@ -152,6 +182,10 @@ defineProps({
 
 defineEmits([
 	"update:searchInput",
+	"update:skuInput",
+	"sku-input",
+	"sku-enter",
+	"clear-sku",
 	"update:qtyInput",
 	"esc",
 	"enter",
@@ -164,6 +198,7 @@ defineEmits([
 	"blur-qty",
 	"start-camera",
 	"open-new-item",
+	"open-advanced-search",
 	"toggle-settings",
 	"reload-items",
 ]);

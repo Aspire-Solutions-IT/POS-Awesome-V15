@@ -72,10 +72,18 @@ def _install_stub_modules():
     update_child_qty_rate_module = types.ModuleType("customer_due_dates.api.update_child_qty_rate")
     update_child_qty_rate_module.update_child_qty_rate = lambda *args, **kwargs: None
 
+    class _StubDocument:
+        def validate_higher_perm_levels(self):
+            self.permlevel_reset_ran = True
+
+    frappe_model = types.ModuleType("frappe.model")
+    frappe_model_document = types.ModuleType("frappe.model.document")
+    frappe_model_document.Document = _StubDocument
+
     package_roots = {
-        "posawesome": Path(__file__).resolve().parents[3],
-        "posawesome.posawesome": Path(__file__).resolve().parents[2],
-        "posawesome.posawesome.api": Path(__file__).resolve().parents[1],
+        "posawesome": Path(__file__).resolve().parents[2],
+        "posawesome.posawesome": Path(__file__).resolve().parents[1],
+        "posawesome.posawesome.api": Path(__file__).resolve().parents[0],
     }
 
     for name, path in package_roots.items():
@@ -85,6 +93,8 @@ def _install_stub_modules():
 
     sys.modules["frappe"] = frappe_module
     sys.modules["frappe.utils"] = frappe_utils
+    sys.modules["frappe.model"] = frappe_model
+    sys.modules["frappe.model.document"] = frappe_model_document
     sys.modules["erpnext.accounts.party"] = erpnext_accounts_party
     sys.modules["erpnext.accounts.utils"] = erpnext_accounts_utils
     sys.modules["erpnext.selling.doctype.sales_order.sales_order"] = erpnext_sales_order
@@ -1791,6 +1801,53 @@ class TestSalesOrderSubmit(TestCase):
             1093.72,
         )
 
+    def _build_store_pickup_split_groups(self, collect_from_store_flag):
+        order = {
+            "doctype": "Sales Order",
+            "customer_order_ref": "ORBASE1234",
+            "conversion_rate": 1,
+            "posa_delivery_charges": "Store Pickup",
+            "posa_delivery_charges_rate": 25,
+            "posa_split_delivery": 1,
+            "items": [
+                {"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 100, "amount": 100},
+                {"item_code": "ITEM-2", "posa_row_id": "row-2", "qty": 1, "rate": 50, "amount": 50},
+            ],
+            "posa_split_groups": [
+                {"group_id": "living", "label": "Living", "row_ids": ["row-1"]},
+                {"group_id": "bedroom", "label": "Bedroom", "row_ids": ["row-2"]},
+            ],
+        }
+
+        def fake_save_sales_order_doc(payload):
+            doc = FakeGroupedSalesOrder(name=f"SO-GROUP-{payload['items'][0]['posa_row_id']}", grand_total=100)
+            doc.update(payload)
+            return doc
+
+        with patch.object(
+            sales_orders, "_save_sales_order_doc_from_payload", side_effect=fake_save_sales_order_doc
+        ), patch.object(sales_orders.frappe, "get_all", return_value=[]), patch.object(
+            sales_orders, "_add_tag_ignore_permissions"
+        ) as add_tag, self._collect_from_store_lookup(collect_from_store_flag):
+            built = sales_orders._build_split_group_documents(order)
+
+        return built, add_tag
+
+    def test_build_split_group_documents_tags_every_collect_from_store_group(self):
+        built, add_tag = self._build_store_pickup_split_groups(1)
+
+        self.assertEqual(built[1]["payload"]["posa_delivery_charges"], "")
+        tagged = [(call.args[0].name, call.args[1]) for call in add_tag.call_args_list]
+        self.assertEqual(
+            tagged,
+            [("SO-GROUP-row-1", "Collect from Store"), ("SO-GROUP-row-2", "Collect from Store")],
+        )
+
+    def test_build_split_group_documents_skips_tag_for_non_store_charges(self):
+        _built, add_tag = self._build_store_pickup_split_groups(0)
+
+        add_tag.assert_not_called()
+
     def test_submit_sales_order_forces_full_allocation_for_pos_split_delivery(self):
         order = {
             "customer": "CUST-0001",
@@ -2156,6 +2213,84 @@ class TestSalesOrderSubmit(TestCase):
         auto_dn.assert_called_once_with(so_doc)
         self.assertFalse(enqueue.called)
 
+    def _collect_from_store_lookup(self, flag):
+        def get_cached_value(doctype, name, fieldname):
+            self.assertEqual((doctype, name, fieldname), ("Delivery Charges", "Store Pickup", "collect_from_store"))
+            return flag
+
+        return patch.object(sales_orders.frappe, "get_cached_value", side_effect=get_cached_value, create=True)
+
+    def test_force_peterborough_store_collection_sets_is_collection(self):
+        order = {"pos_profile": "Peterborough", "posa_delivery_charges": "Store Pickup"}
+        with self._collect_from_store_lookup(1):
+            sales_orders._force_peterborough_store_collection(order)
+        self.assertEqual(order["is_collection"], 1)
+
+    def test_force_peterborough_store_collection_ignores_other_profiles(self):
+        order = {"pos_profile": "Wolverhampton", "posa_delivery_charges": "Store Pickup"}
+        with self._collect_from_store_lookup(1):
+            sales_orders._force_peterborough_store_collection(order)
+        self.assertNotIn("is_collection", order)
+
+    def test_force_peterborough_store_collection_ignores_non_store_charges(self):
+        order = {"pos_profile": "Peterborough", "posa_delivery_charges": "Store Pickup", "is_collection": 0}
+        with self._collect_from_store_lookup(0):
+            sales_orders._force_peterborough_store_collection(order)
+        self.assertEqual(order["is_collection"], 0)
+
+    def test_force_peterborough_store_collection_ignores_missing_charge(self):
+        order = {"pos_profile": "Peterborough"}
+        with patch.object(sales_orders.frappe, "get_cached_value", create=True) as lookup:
+            sales_orders._force_peterborough_store_collection(order)
+        lookup.assert_not_called()
+        self.assertNotIn("is_collection", order)
+
+    def test_update_sales_order_forces_peterborough_store_collection(self):
+        order = {"doctype": "Sales Order", "pos_profile": "Peterborough", "posa_delivery_charges": "Store Pickup"}
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders, "_ensure_unique_customer_order_ref"), patch.object(
+            sales_orders, "_save_sales_order_doc_from_payload"
+        ) as save, self._collect_from_store_lookup(1):
+            sales_orders.update_sales_order(json.dumps(order))
+
+        self.assertEqual(save.call_args.args[0]["is_collection"], 1)
+
+    def test_submit_sales_order_forces_peterborough_store_collection(self):
+        so_doc = FakeSalesOrder(grand_total=300)
+        order = {
+            "doctype": "Sales Order",
+            "pos_profile": "Peterborough",
+            "posa_delivery_charges": "Store Pickup",
+            "payments": [{"mode_of_payment": "Cash", "amount": 300}],
+        }
+
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=so_doc) as get_doc, patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(
+            sales_orders, "_apply_kit_meta_fields"
+        ), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(
+            sales_orders, "_apply_collection_flow_tag"
+        ), patch.object(
+            sales_orders, "_apply_collect_from_store_tag"
+        ), patch.object(
+            sales_orders, "_is_collection_delivery_charge_selected", return_value=False
+        ), patch.object(
+            sales_orders, "make_sales_invoice"
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ), self._collect_from_store_lookup(1):
+            sales_orders.submit_sales_order(
+                json.dumps(order),
+                json.dumps({"sales_order_settlement_state": "full"}),
+            )
+
+        self.assertEqual(get_doc.call_args.args[0]["is_collection"], 1)
+
     def test_submit_sales_order_adds_collect_from_store_tag(self):
         so_doc = FakeSalesOrder(grand_total=300)
         order = {
@@ -2348,3 +2483,190 @@ class TestSalesOrderSubmit(TestCase):
         self.assertIn(("db_set", "status", "Requested"), pr.calls)
         self.assertIn(("cancel",), pr.calls)
         self.assertLess(pr.calls.index(("db_set", "status", "Requested")), pr.calls.index(("cancel",)))
+
+
+class _RecordingPaymentEntry:
+    def __init__(self, name="PE-0002"):
+        self.name = name
+        self.references = []
+        self.flags = SimpleNamespace(ignore_permissions=False)
+
+    def append(self, fieldname, value):
+        if fieldname == "references":
+            self.references.append(value)
+
+    def save(self):
+        self.saved = True
+
+    def submit(self):
+        self.submitted = True
+
+
+class TestManagedSalesOrderPaymentReferences(TestCase):
+    """Each payment on an order keeps its own reference on its own Payment Entry."""
+
+    def _balance_order(self):
+        doc = FakeSalesOrder(grand_total=300)
+        doc.docstatus = 1
+        doc.advance_paid = 100
+        doc.customer_order_ref = "#FIRST1"
+        doc.reload = lambda: None
+        return doc
+
+    def _pay_balance(self, doc, mode, reference_no):
+        created = []
+
+        def fake_create_payment_entry(**kwargs):
+            created.append(kwargs)
+            return _RecordingPaymentEntry()
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(sales_orders, "_release_managed_sales_order_from_hold"), patch.object(
+            sales_orders, "_serialize_managed_sales_order", side_effect=lambda d: {"name": d.name}
+        ), patch.object(sales_orders, "create_payment_entry", side_effect=fake_create_payment_entry):
+            result = sales_orders.pay_managed_sales_order_balance(
+                doc.name, mode, amount=50, reference_no=reference_no
+            )
+        return result, created
+
+    def test_till_payment_entry_carries_the_order_revolut_reference(self):
+        so_doc = FakeSalesOrder(grand_total=300)
+        so_doc.customer_order_ref = " #TILL01 "
+        created = []
+
+        def fake_create_payment_entry(**kwargs):
+            created.append(kwargs)
+            return _RecordingPaymentEntry()
+
+        with patch.object(sales_orders, "create_payment_entry", side_effect=fake_create_payment_entry):
+            sales_orders._create_payment_entries(so_doc, [{"mode_of_payment": "Credit Card", "amount": 100}])
+
+        self.assertEqual(created[0]["reference_no"], "#TILL01")
+
+    def test_balance_payment_records_its_own_reference_and_leaves_the_order_ref(self):
+        doc = self._balance_order()
+
+        result, created = self._pay_balance(doc, "Credit Card", "#SECOND2")
+
+        self.assertEqual(created[0]["reference_no"], "#SECOND2")
+        self.assertEqual(doc.customer_order_ref, "#FIRST1")
+        self.assertEqual(result["payment_entry"], "PE-0002")
+
+    def test_card_balance_payment_needs_a_hash_reference(self):
+        for reference in (None, "", "#", "SECOND2"):
+            with self.subTest(reference=reference):
+                with self.assertRaises(RuntimeError):
+                    self._pay_balance(self._balance_order(), "Credit Card", reference)
+
+    def test_non_card_balance_payment_falls_back_to_the_order_name(self):
+        _result, created = self._pay_balance(self._balance_order(), "Cash", None)
+
+        self.assertEqual(created[0]["reference_no"], "SO-TEST-0001")
+
+    def test_payments_list_one_row_per_entry_with_its_reference(self):
+        captured = {}
+        rows = [
+            {"name": "PE-1", "posting_date": "2026-09-01", "mode_of_payment": "Credit Card",
+             "payment_type": "Receive", "reference_no": "#FIRST1", "amount": 100},
+            {"name": "PE-2", "posting_date": "2026-09-20", "mode_of_payment": "Credit Card",
+             "payment_type": "Receive", "reference_no": "#SECOND2", "amount": 50},
+        ]
+
+        def fake_sql(query, values=None, **kwargs):
+            captured["query"] = query
+            captured["values"] = values
+            return rows
+
+        with patch.object(sales_orders.frappe.db, "sql", side_effect=fake_sql):
+            payments = sales_orders._get_managed_sales_order_payments("SO-1")
+
+        self.assertEqual([p["reference_no"] for p in payments], ["#FIRST1", "#SECOND2"])
+        self.assertEqual([p["amount"] for p in payments], [100.0, 50.0])
+        # Still counts the portion an invoice split off the order's advance.
+        self.assertIn("ref.advance_voucher_no = %(sales_order)s", captured["query"])
+        self.assertEqual(captured["values"], {"sales_order": "SO-1"})
+
+    def test_search_matches_a_later_payment_reference(self):
+        base_filters = {"company": "Test Company", "docstatus": 1}
+        captured = []
+
+        def fake_get_all(doctype, filters=None, **kwargs):
+            captured.append(filters)
+            if filters.get("name") == ["in", ["SO-PAID-2"]]:
+                return ["SO-PAID-2"]
+            return []
+
+        sql_list = MagicMock(side_effect=[["SO-PAID-2"], []])
+        with patch.object(sales_orders.frappe, "get_all", side_effect=fake_get_all), patch.object(
+            sales_orders.frappe.db, "sql_list", sql_list, create=True
+        ):
+            names = sales_orders._search_managed_sales_order_names("#SECOND2", base_filters)
+
+        self.assertEqual(names, {"SO-PAID-2"})
+        self.assertEqual(sql_list.call_args_list[0].args[1], {"term": "%#SECOND2%"})
+        # The payment lookup stays inside the listing's scope.
+        scoped = [f for f in captured if f.get("name") == ["in", ["SO-PAID-2"]]]
+        self.assertEqual(scoped[0]["company"], "Test Company")
+
+
+class TestManagedSalesOrderPermlevelReset(TestCase):
+    """A till login cannot write the order totals (permlevel 4/5). Frappe must not revert
+    them on the item update's save, or the payment that follows sees the old total and
+    fails with "has already been fully paid"."""
+
+    def _document(self, doctype, name):
+        from frappe.model.document import Document
+
+        doc = Document()
+        doc.doctype = doctype
+        doc.name = name
+        doc.permlevel_reset_ran = False
+        return doc
+
+    def test_reset_is_skipped_for_the_order_being_updated_only(self):
+        from frappe.model.document import Document
+
+        original = Document.validate_higher_perm_levels
+        target = self._document("Sales Order", "SO-1")
+        other_order = self._document("Sales Order", "SO-2")
+        other_doctype = self._document("Payment Entry", "SO-1")
+
+        with sales_orders._keep_computed_fields_on_save("Sales Order", "SO-1"):
+            for doc in (target, other_order, other_doctype):
+                doc.validate_higher_perm_levels()
+
+        self.assertFalse(target.permlevel_reset_ran)
+        self.assertTrue(other_order.permlevel_reset_ran)
+        self.assertTrue(other_doctype.permlevel_reset_ran)
+        self.assertIs(Document.validate_higher_perm_levels, original)
+
+    def test_reset_is_restored_when_the_update_fails(self):
+        from frappe.model.document import Document
+
+        original = Document.validate_higher_perm_levels
+        with self.assertRaises(RuntimeError):
+            with sales_orders._keep_computed_fields_on_save("Sales Order", "SO-1"):
+                raise RuntimeError("update failed")
+
+        self.assertIs(Document.validate_higher_perm_levels, original)
+
+    def test_item_update_saves_inside_the_guard(self):
+        seen = {}
+
+        def fake_update(**kwargs):
+            doc = self._document("Sales Order", kwargs["parent_doctype_name"])
+            doc.validate_higher_perm_levels()
+            seen["reset_ran"] = doc.permlevel_reset_ran
+
+        order = SimpleNamespace(name="SO-1", reload=MagicMock())
+        with patch(
+            "customer_due_dates.api.update_child_qty_rate.update_child_qty_rate", side_effect=fake_update
+        ), patch.object(sales_orders, "_settle_managed_sales_order_surplus"):
+            sales_orders._apply_managed_sales_order_items(order, "SO-1", [])
+
+        self.assertFalse(seen["reset_ran"])
+        # Restored once the update returns, so later saves in the request are checked again.
+        after = self._document("Sales Order", "SO-1")
+        after.validate_higher_perm_levels()
+        self.assertTrue(after.permlevel_reset_ran)

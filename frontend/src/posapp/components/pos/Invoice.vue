@@ -246,6 +246,8 @@
 			:discount_percentage_offer_name="discount_percentage_offer_name"
 			:isNumber="isNumber"
 			:return_discount_meta="return_discount_meta"
+			:estimateLoading="estimate_delivery_loading && !estimate_for_payment"
+			:payLoading="estimate_delivery_loading && estimate_for_payment"
 			@update:additional_discount="set_additional_discount_input"
 			@update:additional_discount_percentage="set_additional_discount_percentage_input"
 			@commit_discount_amount="commit_discount_amount"
@@ -258,7 +260,14 @@
 			@print-draft="print_draft_invoice"
 			@show-payment="handleShowPaymentRequest"
 			@open-customer-display="handleOpenCustomerDisplayRequest"
+			@estimate-delivery="estimate_delivery_window"
 			@resume-parked-order="resume_parked_order"
+		/>
+		<DeliveryEstimateDialog
+			v-model="estimate_delivery_dialog"
+			:estimate="delivery_estimate"
+			:continue-to-payment="estimate_for_payment"
+			@continue="continue_to_payment_from_estimate"
 		/>
 	</div>
 </template>
@@ -276,6 +285,15 @@ import InvoiceItemsActionToolbar from "./invoice/InvoiceItemsActionToolbar.vue";
 import PackedItemsDialog from "./invoice/PackedItemsDialog.vue";
 import PaymentConfirmationDialog from "./payments/PaymentConfirmationDialog.vue";
 import PriceListRateDialog from "./invoice/PriceListRateDialog.vue";
+import DeliveryEstimateDialog from "./invoice/DeliveryEstimateDialog.vue";
+import api from "../../services/api";
+import { parseBooleanSetting } from "../../utils/stock";
+import {
+	applySupplyTypes,
+	cartSupplySignature,
+	clearSupplyTypes,
+	supplyByRowId,
+} from "../../utils/suggestedSplitGroups";
 import invoiceItemMethods from "./invoice/invoiceItemMethods";
 import invoiceComputed from "./invoice/invoiceComputed";
 import invoiceWatchers from "./invoice/invoiceWatchers";
@@ -413,6 +431,10 @@ export default {
 			price_list_rate_dialog_initial_rate: "",
 			price_list_rate_dialog_item_label: "",
 			price_list_rate_dialog_resolver: null,
+			estimate_delivery_loading: false,
+			estimate_delivery_dialog: false,
+			delivery_estimate: null,
+			estimate_for_payment: false,
 		};
 	},
 
@@ -428,8 +450,12 @@ export default {
 		PackedItemsDialog,
 		PaymentConfirmationDialog,
 		PriceListRateDialog,
+		DeliveryEstimateDialog,
 	},
 	computed: {
+		cart_supply_signature() {
+			return cartSupplySignature(this.items);
+		},
 		items: {
 			get() {
 				return this.invoiceStore.items;
@@ -524,6 +550,54 @@ export default {
 	},
 
 	methods: {
+		/**
+		 * Estimate the cart's delivery window and show it. From PAY the dialog
+		 * offers "Continue to Payment". Returns true when the dialog was shown.
+		 */
+		async estimate_delivery_window({ forPayment = false } = {}) {
+			if (this.estimate_delivery_loading) {
+				return false;
+			}
+			if (!this.customer) {
+				this.toastStore.show({ title: __("Select a customer to estimate delivery"), color: "warning" });
+				return false;
+			}
+			if (!this.items.length) {
+				this.toastStore.show({ title: __("Add items to estimate delivery"), color: "warning" });
+				return false;
+			}
+
+			this.estimate_for_payment = forPayment;
+			this.estimate_delivery_loading = true;
+			const signature = this.cart_supply_signature;
+			try {
+				const doc = this.get_invoice_doc();
+				this.delivery_estimate = await api.call(
+					"posawesome.posawesome.api.sales_orders.preview_quoted_delivery_window",
+					{ order: JSON.stringify(doc) },
+				);
+				// Only record supply against the cart the estimate was run for; the
+				// split step uses it to suggest groups.
+				if (signature === this.cart_supply_signature) {
+					applySupplyTypes(this.items, supplyByRowId(this.delivery_estimate?.lines));
+				}
+				this.estimate_delivery_dialog = true;
+				return true;
+			} catch (error) {
+				console.error("Failed to estimate delivery window:", error);
+				// frappe.call already shows server-side validation messages.
+				if (!error?._server_messages) {
+					this.toastStore.show({ title: __("Unable to estimate delivery window"), color: "error" });
+				}
+				return false;
+			} finally {
+				this.estimate_delivery_loading = false;
+			}
+		},
+		continue_to_payment_from_estimate() {
+			this.estimate_delivery_dialog = false;
+			this.show_payment();
+		},
 		formatDateForDisplay(date) {
 			if (!date) return "";
 			const parts = date.split("-");
@@ -885,7 +959,20 @@ export default {
 		handleSetNewLine(data) {
 			this.new_line = data;
 		},
-		handleShowPaymentRequest() {
+		async handleShowPaymentRequest() {
+			// Orders quote the delivery window before payment. Anything the estimate
+			// can't run on (no customer, empty cart) goes straight to show_payment,
+			// which reports it, and a failed estimate never blocks taking payment.
+			const quotesDelivery =
+				this.invoiceType === "Order" && parseBooleanSetting(this.pos_profile?.posa_create_only_sales_order);
+			if (quotesDelivery && this.customer && this.items.length) {
+				if (await this.estimate_delivery_window({ forPayment: true })) {
+					return;
+				}
+				if (this.estimate_delivery_loading) {
+					return;
+				}
+			}
 			this.show_payment();
 		},
 		async resume_parked_order(draft) {
@@ -1104,6 +1191,10 @@ export default {
 	},
 	watch: {
 		...invoiceWatchers,
+		// Adding, removing or changing the qty of a line invalidates the estimate.
+		cart_supply_signature() {
+			clearSupplyTypes(this.items);
+		},
 		confirm_payment_dialog(val) {
 			if (val) {
 				this.$nextTick(() => {

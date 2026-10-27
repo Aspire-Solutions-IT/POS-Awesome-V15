@@ -26,6 +26,10 @@ def _item_has_custom_tfw_name() -> bool:
     return frappe.db.has_column("Item", "custom_tfw_name")
 
 
+def _item_kit_flag_fields() -> List[str]:
+    return [f for f in ("is_kit_item", "is_kit_set") if frappe.db.has_column("Item", f)]
+
+
 def _item_has_custom_exclude_from_pos() -> bool:
     return frappe.db.has_column("Item", "custom_exclude_from_pos")
 
@@ -228,6 +232,7 @@ def _build_search_plan(
     ]
     if has_custom_tfw_name:
         fields.append("custom_tfw_name")
+    fields.extend(_item_kit_flag_fields())
     if include_description:
         fields.append("description")
     if include_image:
@@ -763,6 +768,97 @@ def search_items(
         groups=len(groups_ctx.groups),
     )
     return result
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@frappe.whitelist()
+def search_items_by_code(
+    pos_profile,
+    price_list=None,
+    item_group="",
+    search_value="",
+    customer=None,
+    limit=50,
+    include_description=False,
+    include_image=False,
+    item_groups=None,
+    exact=0,
+):
+    """Return items whose item code contains ``search_value``, shaped like ``get_items`` rows.
+
+    With ``exact`` set, only the item whose code equals ``search_value`` is returned.
+    """
+
+    search_value = cstr(search_value).strip()
+    if not search_value:
+        return []
+
+    profile_ctx = _normalize_profile_context(pos_profile)
+    groups_ctx = _prepare_item_groups(profile_ctx.profile_name, item_groups)
+    search_limit = _to_positive_int(limit) or 50
+    search_limit = max(1, min(search_limit, 100))
+
+    search_profile = dict(profile_ctx.pos_profile)
+    search_profile["posa_force_reload_items"] = 0
+
+    if not price_list:
+        price_list = search_profile.get("selling_price_list")
+
+    # Build the plan without a search value so the name/word filters stay off,
+    # then restrict on item_code alone.
+    plan = _build_search_plan(
+        search_profile,
+        item_group,
+        "",
+        search_limit,
+        None,
+        None,
+        None,
+        include_description,
+        include_image,
+        groups_ctx.groups,
+    )
+    if cint(exact):
+        plan.filters["item_code"] = search_value
+    else:
+        plan.filters["item_code"] = ["like", f"%{_escape_like(search_value)}%"]
+    object.__setattr__(plan, "order_by", "item_code asc")
+
+    started_at = time.perf_counter()
+    result = _run_item_query(
+        search_profile,
+        price_list,
+        customer,
+        plan,
+    )
+    log_perf_event(
+        "search_items_by_code",
+        started_at,
+        profile=profile_ctx.profile_name,
+        rows=len(result or []),
+        search=1,
+        groups=len(groups_ctx.groups),
+    )
+    return result
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def item_advanced_search_query(doctype, txt, searchfield, start, page_len, filters, as_dict=False):
+    """ERPNext's Item link query for the POS Advanced Search dialog, minus POS-excluded items."""
+
+    from erpnext.controllers.queries import item_query
+
+    if isinstance(filters, str):
+        filters = json.loads(filters) if filters else {}
+    filters = dict(filters or {})
+    if _item_has_custom_exclude_from_pos():
+        filters["custom_exclude_from_pos"] = ["!=", 1]
+
+    return item_query(doctype, txt, searchfield, start, page_len, filters, as_dict=as_dict)
 
 
 @frappe.whitelist()

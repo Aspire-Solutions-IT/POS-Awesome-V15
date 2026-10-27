@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
@@ -5,6 +7,7 @@ import { useEmployeeStore } from "../src/posapp/stores/employeeStore";
 
 describe("employeeStore", () => {
 	beforeEach(() => {
+		localStorage.clear();
 		setActivePinia(createPinia());
 		(globalThis as any).frappe = {
 			session: {
@@ -51,6 +54,19 @@ describe("employeeStore", () => {
 		store.unlockTerminal();
 		expect(store.lockDialogOpen).toBe(false);
 		expect(store.isLocked).toBe(false);
+	});
+
+	it("keeps the lock state across a page refresh", () => {
+		const store = useEmployeeStore();
+		expect(store.isLocked).toBe(false);
+
+		store.lockTerminal();
+		setActivePinia(createPinia());
+		expect(useEmployeeStore().isLocked).toBe(true);
+
+		useEmployeeStore().unlockTerminal();
+		setActivePinia(createPinia());
+		expect(useEmployeeStore().isLocked).toBe(false);
 	});
 
 	it("upgrades the session cashier with supervisor metadata from terminal employees", () => {

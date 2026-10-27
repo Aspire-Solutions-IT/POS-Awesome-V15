@@ -1,4 +1,7 @@
 const DEFAULT_POSAPP_BASE_PATH = "/app/posapp";
+// Frappe v16 server-redirects /app/* to /desk/*, so a full page load (refresh,
+// deep link) lands on /desk/posapp/... even though links still say /app/posapp.
+const DESK_POSAPP_BASE_PATH = "/desk/posapp";
 
 function trimTrailingSlash(path: string): string {
 	if (!path) {
@@ -35,6 +38,17 @@ function resolvePosAppPathMatch(pathname: string, basePath: string) {
 		normalizedBasePath,
 		suffix: match[1] || "",
 	};
+}
+
+/**
+ * The prefix the POS app is actually mounted under for this page load. The
+ * router base must match it, or every sub-route falls through to the catch-all
+ * and a refresh on e.g. /desk/posapp/claims ends up back on /pos.
+ */
+export function resolvePosAppBasePath(pathname: string | null | undefined): string {
+	return pathname && resolvePosAppPathMatch(pathname, DESK_POSAPP_BASE_PATH)
+		? DESK_POSAPP_BASE_PATH
+		: DEFAULT_POSAPP_BASE_PATH;
 }
 
 export function resolvePosAppNormalizedPath(

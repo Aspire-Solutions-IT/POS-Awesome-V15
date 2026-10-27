@@ -300,6 +300,7 @@ export function useItemsIntegration(options: IntegrationOptions = {}) {
 		// Store actions
 		loadItems: itemsStore.loadItems,
 		searchItems: itemsStore.searchItems,
+		searchItemsByCode: itemsStore.searchItemsByCode,
 		filterByGroup: itemsStore.filterByGroup,
 		updatePriceList: itemsStore.updatePriceList,
 		refreshItems: itemsStore.refreshItems,

@@ -1,5 +1,10 @@
 <template>
-	<v-container fluid class="sales-order-management">
+	<v-container
+		ref="rootEl"
+		fluid
+		class="sales-order-management"
+		:class="{ 'sales-order-management--phone-save': showPhoneSaveBar }"
+	>
 		<v-row>
 			<v-col cols="12">
 				<div class="page-header">
@@ -32,7 +37,9 @@
 		</v-row>
 
 		<v-row v-else class="content-grid">
-			<v-col cols="12" lg="4" class="left-panel-col">
+			<!-- Below lg the panels would stack, burying the detail under the whole list, so
+			     show one at a time and switch between them instead. -->
+			<v-col v-show="isSplitLayout || mobilePane === 'list'" cols="12" lg="4" class="left-panel-col">
 				<v-card class="pos-themed-card left-panel">
 					<v-card-title class="panel-title">
 						<span>{{ __("RFS Sales Orders") }}</span>
@@ -117,7 +124,7 @@
 								type="button"
 								class="order-list-item"
 								:class="{ 'order-list-item--active': order.name === selectedOrderName }"
-								@click="selectOrder(order.name)"
+								@click="openOrder(order.name)"
 							>
 								<div class="order-list-item__top">
 									<strong>{{ order.customer_name || order.customer }}</strong>
@@ -137,35 +144,56 @@
 				</v-card>
 			</v-col>
 
-			<v-col cols="12" lg="8" class="right-panel-col">
+			<v-col v-show="isSplitLayout || mobilePane === 'detail'" cols="12" lg="8" class="right-panel-col">
 				<v-card class="pos-themed-card right-panel">
 					<v-card-title class="panel-title">
-						<span>{{
-							selectedOrder
-								? selectedOrder.customer_name || selectedOrder.customer
-								: __("Sales Order Details")
-						}}</span>
+						<div class="panel-title__main">
+							<v-btn
+								v-if="!isSplitLayout"
+								variant="text"
+								prepend-icon="mdi-arrow-left"
+								class="back-to-orders"
+								@click="backToOrders"
+							>
+								{{ __("Orders") }}
+							</v-btn>
+							<span class="panel-title__text">{{
+								selectedOrder
+									? selectedOrder.customer_name || selectedOrder.customer
+									: __("Sales Order Details")
+							}}</span>
+						</div>
 						<div class="panel-actions">
-							<v-select
-								v-if="streamPickLists.length"
-								v-model="selectedStreamPickList"
-								:items="streamPickListItems"
-								item-title="title"
-								item-value="value"
-								:label="__('Stream Pick List')"
-								density="compact"
-								hide-details
-								class="pos-themed-input stream-select"
-							/>
+							<template v-if="isSplitLayout && streamPickLists.length">
+								<v-select
+									v-model="selectedStreamPickList"
+									:items="streamPickListItems"
+									item-title="title"
+									item-value="value"
+									:label="__('Stream Pick List')"
+									density="compact"
+									hide-details
+									class="pos-themed-input stream-select"
+								/>
+								<v-btn
+									color="primary"
+									variant="tonal"
+									:disabled="!selectedStreamPickListLink"
+									@click="openStreamLink()"
+								>
+									{{ __("Open Stream") }}
+								</v-btn>
+							</template>
 							<v-menu v-model="takePaymentOpen" location="bottom end" :close-on-content-click="true">
-								<template #activator="{ props }">
+								<template #activator="{ props: takePaymentProps }">
 									<v-btn
 										v-if="hasTakePaymentOptions"
-										v-bind="props"
+										v-bind="takePaymentProps"
 										color="success"
 										variant="flat"
 										prepend-icon="mdi-cash-register"
 										append-icon="mdi-chevron-down"
+										:loading="paymentLoading"
 										:class="{ 'revolut-flash': flashRevolutButton }"
 									>
 										{{ __("Take Payment") }}
@@ -203,36 +231,80 @@
 									/>
 								</v-list>
 							</v-menu>
-							<v-menu v-model="otherOptionsOpen" location="bottom end" :close-on-content-click="true">
-								<template #activator="{ props }">
+							<template v-if="isSplitLayout">
+								<v-btn
+									v-if="selectedOrder"
+									color="primary"
+									variant="tonal"
+									prepend-icon="mdi-email-outline"
+									:disabled="receiptLoading"
+									@click="openReceiptDialog"
+								>
+									{{ __("Email Receipt") }}
+								</v-btn>
+								<v-btn
+									v-if="selectedOrder && claimsEnabled && claimCount > 0"
+									color="warning"
+									variant="text"
+									prepend-icon="mdi-clipboard-list-outline"
+									@click="showClaims"
+								>
+									{{ __("Show Claims ({0})", [claimCount]) }}
+								</v-btn>
+								<v-btn
+									v-if="selectedOrder && claimsEnabled"
+									color="warning"
+									variant="tonal"
+									prepend-icon="mdi-clipboard-alert-outline"
+									@click="raiseClaimOpen = true"
+								>
+									{{ __("Raise Claim") }}
+								</v-btn>
+							</template>
+							<v-menu v-else-if="selectedOrder" location="bottom end">
+								<template #activator="{ props: menuProps }">
 									<v-btn
-										v-if="hasOtherOptions"
-										v-bind="props"
-										color="primary"
-										variant="tonal"
-										append-icon="mdi-chevron-down"
-									>
-										{{ __("Other Options") }}
-									</v-btn>
-								</template>
-								<v-list density="compact" class="pos-themed-card">
-									<v-list-item
-										v-if="streamPickLists.length"
-										:disabled="!selectedStreamPickListLink"
-										prepend-icon="mdi-open-in-new"
-										:title="__('Open Stream')"
-										@click="openStreamLink"
+										v-bind="menuProps"
+										icon="mdi-dots-vertical"
+										variant="text"
+										:aria-label="__('More actions')"
 									/>
+								</template>
+								<v-list density="compact">
 									<v-list-item
-										v-if="selectedOrder"
-										:disabled="receiptLoading"
 										prepend-icon="mdi-email-outline"
 										:title="__('Email Receipt')"
+										:disabled="receiptLoading"
 										@click="openReceiptDialog"
 									/>
+									<v-list-item
+										v-if="claimsEnabled && claimCount > 0"
+										prepend-icon="mdi-clipboard-list-outline"
+										:title="__('Show Claims ({0})', [claimCount])"
+										@click="showClaims"
+									/>
+									<v-list-item
+										v-if="claimsEnabled"
+										prepend-icon="mdi-clipboard-alert-outline"
+										:title="__('Raise Claim')"
+										@click="raiseClaimOpen = true"
+									/>
+									<template v-if="streamPickLists.length">
+										<v-divider />
+										<v-list-subheader>{{ __("Open Stream") }}</v-list-subheader>
+										<v-list-item
+											v-for="pickList in streamPickListItems"
+											:key="pickList.value"
+											prepend-icon="mdi-open-in-new"
+											:title="pickList.title"
+											:disabled="!streamLinkFor(pickList.value)"
+											@click="openStreamLink(pickList.value)"
+										/>
+									</template>
 								</v-list>
 							</v-menu>
 							<v-btn
+								v-if="!isPhone"
 								color="primary"
 								:loading="saveLoading"
 								:disabled="!selectedOrder || !isDirty"
@@ -332,11 +404,30 @@
 								<v-col cols="12" md="6">
 									<v-text-field
 										:model-value="selectedOrder.customer_order_ref || ''"
-										:label="__('Payment Ref')"
+										:label="__('Order Ref')"
 										density="compact"
 										readonly
 										hide-details
 									/>
+								</v-col>
+								<!-- Each payment keeps its own reference on its Payment Entry; the
+								     Order Ref above is only ever the first one. -->
+								<v-col v-if="selectedOrder.payments?.length" cols="12">
+									<div class="order-payments">
+										<span class="order-payments__label">{{ __("Payments") }}</span>
+										<div
+											v-for="payment in selectedOrder.payments"
+											:key="payment.name"
+											class="order-payments__row"
+										>
+											<span>{{ formatDate(payment.posting_date) }}</span>
+											<span>{{ payment.mode_of_payment }}</span>
+											<span class="order-payments__ref">{{ payment.reference_no || "\u2014" }}</span>
+											<strong class="order-payments__amount">
+												{{ formatCurrency(payment.amount, selectedOrder.currency) }}
+											</strong>
+										</div>
+									</div>
 								</v-col>
 								<v-col cols="12" md="6">
 									<v-text-field
@@ -641,6 +732,21 @@
 						</div>
 					</v-card-text>
 				</v-card>
+				<!-- Phones: the header Save scrolls away with a long order, so pin it here instead. -->
+				<div v-if="showPhoneSaveBar" class="phone-save-bar">
+					<span class="phone-save-bar__status">
+						{{ isDirty ? __("Unsaved changes") : __("No changes") }}
+					</span>
+					<v-btn
+						color="primary"
+						size="large"
+						:loading="saveLoading"
+						:disabled="!isDirty"
+						@click="saveOrder"
+					>
+						{{ __("Save") }}
+					</v-btn>
+				</div>
 			</v-col>
 		</v-row>
 
@@ -686,10 +792,15 @@
 					/>
 					<v-text-field
 						v-model="paymentForm.reference_no"
-						:label="__('Reference No')"
+						:label="isCardMode(paymentForm.mode_of_payment) ? __('Revolut Reference') : __('Reference No')"
+						:hint="
+							isCardMode(paymentForm.mode_of_payment)
+								? __('The reference for this payment, starting with #')
+								: __('Optional')
+						"
+						persistent-hint
+						:error-messages="visibleReferenceError(paymentForm.mode_of_payment, paymentForm.reference_no)"
 						density="compact"
-						readonly
-						hide-details
 						class="pos-themed-input"
 					/>
 				</v-card-text>
@@ -701,7 +812,11 @@
 						color="success"
 						variant="flat"
 						:loading="paymentLoading"
-						:disabled="paymentLoading || !paymentForm.mode_of_payment"
+						:disabled="
+							paymentLoading ||
+							!paymentForm.mode_of_payment ||
+							!!paymentReferenceError(paymentForm.mode_of_payment, paymentForm.reference_no)
+						"
 						@click="submitRemainingBalancePayment"
 					>
 						{{ __("Pay Now") }}
@@ -981,6 +1096,14 @@
 			</div>
 		</v-navigation-drawer>
 
+		<RaiseClaimDialog
+			v-if="selectedOrder && claimsEnabled"
+			v-model="raiseClaimOpen"
+			:sales-order="selectedOrder.name"
+			:customer-name="selectedOrder.customer_name || selectedOrder.customer || ''"
+			@created="loadClaimSummary(selectedOrder?.name)"
+		/>
+
 		<!-- Payment before save: the rows are only written once this succeeds, so
 		     cancelling leaves the edits staged and the order untouched. -->
 		<v-dialog v-model="itemPaymentDialogOpen" max-width="480" persistent>
@@ -1046,6 +1169,20 @@
 						:label="__('Mode of Payment')"
 						density="compact"
 						hide-details
+						class="pos-themed-input mb-4"
+					/>
+					<v-text-field
+						v-if="itemPaymentTillAmount > 0.001"
+						v-model="itemPaymentReference"
+						:label="isCardMode(itemPaymentMode) ? __('Revolut Reference') : __('Reference No')"
+						:hint="
+							isCardMode(itemPaymentMode)
+								? __('The reference for this payment, starting with #')
+								: __('Optional')
+						"
+						persistent-hint
+						:error-messages="visibleReferenceError(itemPaymentMode, itemPaymentReference)"
+						density="compact"
 						class="pos-themed-input"
 					/>
 				</v-card-text>
@@ -1058,7 +1195,11 @@
 						color="success"
 						variant="flat"
 						:loading="itemPaymentLoading"
-						:disabled="(itemPaymentTillAmount > 0 && !itemPaymentMode) || itemPaymentLoading"
+						:disabled="
+							(itemPaymentTillAmount > 0 &&
+								(!itemPaymentMode || !!paymentReferenceError(itemPaymentMode, itemPaymentReference))) ||
+							itemPaymentLoading
+						"
 						@click="confirmItemPayment"
 					>
 						{{ itemPaymentTillAmount > 0.001 ? __("Take Payment and Save") : __("Apply Credit and Save") }}
@@ -1071,9 +1212,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { useDisplay } from "vuetify";
 import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
+import RaiseClaimDialog from "../claims/RaiseClaimDialog.vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { isValidOptionalEmail } from "../../../utils/emailValidation";
@@ -1198,6 +1341,15 @@ type ManagedSalesOrderStreamPickList = {
 	tracking_link: string;
 };
 
+type ManagedSalesOrderPayment = {
+	name: string;
+	posting_date?: string | null;
+	mode_of_payment?: string | null;
+	payment_type?: string | null;
+	reference_no?: string | null;
+	amount?: number | null;
+};
+
 type ManagedSalesOrderPaymentType = {
 	mode_of_payment: string;
 	amount?: number | null;
@@ -1215,6 +1367,7 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	pos_sales_person?: string | null;
 	pos_sales_person_name?: string | null;
 	payment_types?: ManagedSalesOrderPaymentType[] | null;
+	payments?: ManagedSalesOrderPayment[] | null;
 	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
 	order_level_lock?: ManagedSalesOrderOrderLevelLock | null;
 	surplus?: ManagedSalesOrderSurplus | null;
@@ -1242,11 +1395,60 @@ const { posProfile } = storeToRefs(uiStore);
 
 const profileReady = computed(() => Boolean(posProfile.value?.name));
 const canAccess = computed(() => Number(posProfile.value?.custom_allow_select_sales_order || 0) === 1);
+const claimsEnabled = computed(
+	() => Number(posProfile.value?.posa_allow_customer_claims || 0) === 1,
+);
+const raiseClaimOpen = ref(false);
+const claimCount = ref(0);
+const router = useRouter();
+const route = useRoute();
+
+const loadClaimSummary = async (salesOrder?: string | null) => {
+	claimCount.value = 0;
+	if (!salesOrder || !claimsEnabled.value) return;
+	try {
+		const summary = await api.call<{ count?: number }>(
+			"posawesome.posawesome.api.claims.get_sales_order_claim_summary",
+			{ sales_order: salesOrder },
+		);
+		if (selectedOrder.value?.name === salesOrder) {
+			claimCount.value = Number(summary?.count || 0);
+		}
+	} catch (error) {
+		console.error("Failed to load claim summary", error);
+	}
+};
+
+const showClaims = () => {
+	if (!selectedOrder.value) return;
+	void router.push({ path: "/claims", query: { sales_order: selectedOrder.value.name } });
+};
 
 const orders = ref<ManagedSalesOrderListRow[]>([]);
 const selectedOrder = ref<ManagedSalesOrderDetail | null>(null);
 const selectedOrderName = ref("");
 const searchTerm = ref("");
+
+// Deep link from the Claims screen: land with this order searched for and selected.
+const requestedSalesOrder =
+	typeof route.query.sales_order === "string" ? route.query.sales_order.trim() : "";
+if (requestedSalesOrder) {
+	searchTerm.value = requestedSalesOrder;
+	selectedOrderName.value = requestedSalesOrder;
+}
+
+// Side by side from lg (matching the columns' lg breakpoint); one pane at a time below it.
+const { lgAndUp, xs } = useDisplay();
+const isSplitLayout = computed(() => lgAndUp.value);
+const isPhone = computed(() => xs.value);
+const mobilePane = ref<"list" | "detail">(requestedSalesOrder ? "detail" : "list");
+const rootEl = ref<{ $el: HTMLElement } | null>(null);
+onMounted(() => {
+	// The search box now shows the order, so the query param has done its job.
+	if (route.query.sales_order) {
+		void router.replace({ path: "/sales-orders", query: {} });
+	}
+});
 const posProfileOptions = ref<ManagedSalesOrderPosProfile[]>([]);
 const selectedPosProfile = ref("");
 const selectedSortBy = ref<ManagedSalesOrderSortKey>("transaction_date");
@@ -1258,8 +1460,6 @@ const detailTab = ref("details");
 // Deep link from the "Order Placed" dialog (submit-without-payment): preselect the
 // order and, once its payment-link button is on screen, flash it a few times so the
 // till is nudged to actually send the link.
-const route = useRoute();
-const router = useRouter();
 const deepLinkedOrder = String(route.query.order || "").trim();
 const pendingPaymentLinkFlash = ref(String(route.query.prompt || "") === "payment-link");
 const flashRevolutButton = ref(false);
@@ -1326,6 +1526,7 @@ const deleteRevolutError = ref("");
 const itemPaymentDialogOpen = ref(false);
 const itemPaymentPreview = ref<any>(null);
 const itemPaymentMode = ref("");
+const itemPaymentReference = ref("");
 const itemPaymentError = ref("");
 const itemPaymentLoading = ref(false);
 // Opt-in: spending a customer's credit is their decision, not a silent netting off.
@@ -1347,6 +1548,47 @@ const paymentForm = reactive({
 	amount: "",
 	mode_of_payment: "",
 	reference_no: "",
+});
+
+// Same rule as the till: card takings are keyed by the terminal's Revolut reference,
+// and every payment needs its own, so a later payment is never filed under the first.
+const isCardMode = (mode?: string | null) =>
+	String(mode || "")
+		.trim()
+		.toLowerCase()
+		.includes("credit card");
+
+const paymentReferenceError = (mode?: string | null, reference?: string | null) => {
+	if (!isCardMode(mode)) return "";
+	const value = String(reference || "").trim();
+	if (!value || value === "#") return __("Enter the Revolut reference for this payment");
+	if (!value.startsWith("#")) return __("The Revolut reference must start with #");
+	return "";
+};
+
+/** Only complain once something is typed; the empty "#" prompt is not an error yet. */
+const visibleReferenceError = (mode?: string | null, reference?: string | null) => {
+	const value = String(reference || "").trim();
+	if (!value || value === "#") return "";
+	return paymentReferenceError(mode, reference);
+};
+
+/** Seed "#" for card modes and drop a lone "#" when switching away from one. */
+const referenceForMode = (mode?: string | null, reference?: string | null) => {
+	const value = String(reference || "").trim();
+	if (isCardMode(mode)) return value || "#";
+	return value === "#" ? "" : value;
+};
+
+watch(
+	() => paymentForm.mode_of_payment,
+	(mode) => {
+		paymentForm.reference_no = referenceForMode(mode, paymentForm.reference_no);
+	},
+);
+
+watch(itemPaymentMode, (mode) => {
+	itemPaymentReference.value = referenceForMode(mode, itemPaymentReference.value);
 });
 
 const form = reactive({
@@ -1433,6 +1675,9 @@ const isItemDirty = computed(() => {
 });
 
 const isDirty = computed(() => isHeaderDirty.value || isItemDirty.value);
+const showPhoneSaveBar = computed(
+	() => isPhone.value && mobilePane.value === "detail" && Boolean(selectedOrder.value),
+);
 
 const orderLevelLock = computed(() => selectedOrder.value?.order_level_lock || null);
 
@@ -1555,14 +1800,13 @@ const streamPickListItems = computed(() =>
 	}),
 );
 
-const selectedStreamPickListLink = computed(
-	() =>
-		streamPickLists.value.find((pickList) => pickList.name === selectedStreamPickList.value)?.tracking_link ||
-		"",
-);
+const streamLinkFor = (name: string) =>
+	streamPickLists.value.find((pickList) => pickList.name === name)?.tracking_link || "";
 
-const openStreamLink = () => {
-	const link = selectedStreamPickListLink.value;
+const selectedStreamPickListLink = computed(() => streamLinkFor(selectedStreamPickList.value));
+
+const openStreamLink = (name = selectedStreamPickList.value) => {
+	const link = streamLinkFor(name);
 	if (!link) return;
 	window.open(link, "_blank", "noopener,noreferrer");
 };
@@ -2107,7 +2351,8 @@ const openPaymentDialog = () => {
 	paymentError.value = "";
 	paymentForm.amount = String(selectedOrder.value.outstanding_balance || "");
 	paymentForm.mode_of_payment = paymentModeOptions.value[0]?.value || "";
-	paymentForm.reference_no = selectedOrder.value.customer_order_ref || selectedOrder.value.name || "";
+	// A fresh reference for this payment; the order's first one stays on the order.
+	paymentForm.reference_no = referenceForMode(paymentForm.mode_of_payment, "");
 	paymentDialogOpen.value = true;
 };
 
@@ -2190,6 +2435,28 @@ const loadOrders = async () => {
 	}
 };
 
+const openOrder = async (name: string) => {
+	if (isSplitLayout.value) {
+		await selectOrder(name);
+		return;
+	}
+	mobilePane.value = "detail";
+	await nextTick();
+	rootEl.value?.$el?.scrollIntoView({ block: "start" });
+	// Going back to the list keeps the order (and any unsaved edits) loaded, so reopening
+	// the same one must not refetch over them.
+	if (name === selectedOrderName.value && selectedOrder.value?.name === name) return;
+	await selectOrder(name);
+};
+
+const backToOrders = async () => {
+	mobilePane.value = "list";
+	await nextTick();
+	rootEl.value?.$el
+		?.querySelector(".order-list-item--active")
+		?.scrollIntoView({ block: "center" });
+};
+
 const selectOrder = async (name: string) => {
 	if (!name || detailLoading.value) return;
 
@@ -2207,6 +2474,7 @@ const selectOrder = async (name: string) => {
 		selectedOrder.value = message || null;
 		resetForm(selectedOrder.value);
 		void loadWarehouseOptions(selectedOrder.value?.company);
+		void loadClaimSummary(selectedOrder.value?.name);
 	} catch (error) {
 		console.error("Failed to load Sales Order detail", error);
 		detailError.value = __("Unable to load the selected Sales Order");
@@ -2267,6 +2535,12 @@ const closeItemPaymentDialog = () => {
 
 const confirmItemPayment = async () => {
 	if (!selectedOrder.value || !itemPaymentMode.value || itemPaymentLoading.value) return;
+	if (
+		itemPaymentTillAmount.value > 0.001 &&
+		paymentReferenceError(itemPaymentMode.value, itemPaymentReference.value)
+	) {
+		return;
+	}
 	itemPaymentLoading.value = true;
 	itemPaymentError.value = "";
 	try {
@@ -2279,7 +2553,7 @@ const confirmItemPayment = async () => {
 					payment: {
 						use_credit: useCustomerCredit.value ? 1 : 0,
 						mode_of_payment: itemPaymentMode.value,
-						reference_no: selectedOrder.value.customer_order_ref || selectedOrder.value.name,
+						reference_no: itemPaymentReference.value.trim() || null,
 						// Guards against the total moving while the dialog was open.
 						expected_amount: Number(itemPaymentPreview.value?.amount_due || 0),
 					},
@@ -2351,6 +2625,7 @@ const saveOrder = async () => {
 		if (Number(preview.amount_due || 0) > 0.001) {
 			itemPaymentPreview.value = preview;
 			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
+			itemPaymentReference.value = referenceForMode(itemPaymentMode.value, "");
 			itemPaymentError.value = "";
 			useCustomerCredit.value = false;
 			itemPaymentDialogOpen.value = true;
@@ -2445,6 +2720,7 @@ const saveOrder = async () => {
 
 const submitRemainingBalancePayment = async () => {
 	if (!selectedOrder.value || !paymentForm.mode_of_payment) return;
+	if (paymentReferenceError(paymentForm.mode_of_payment, paymentForm.reference_no)) return;
 
 	paymentLoading.value = true;
 	paymentError.value = "";
@@ -2583,8 +2859,56 @@ watch(
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	flex-wrap: wrap;
 	gap: 12px;
 	border-bottom: 1px solid var(--pos-border);
+}
+
+/* Give the customer name room of its own; the actions wrap beneath it rather than
+   squeezing it down to a few letters. */
+.panel-title__main {
+	display: flex;
+	flex: 1 1 200px;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+}
+
+.panel-title__text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.back-to-orders {
+	flex-shrink: 0;
+	margin-left: -8px;
+}
+
+.phone-save-bar {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 5;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+	border-top: 1px solid var(--pos-border);
+	background: var(--pos-surface);
+	box-shadow: 0 -6px 16px var(--pos-shadow);
+}
+
+.phone-save-bar__status {
+	color: var(--pos-text-muted);
+	font-size: 0.9rem;
+}
+
+/* Keep the end of the order clear of the pinned bar. */
+.sales-order-management--phone-save {
+	padding-bottom: 96px;
 }
 
 .panel-actions {
@@ -2729,6 +3053,41 @@ watch(
 	border-radius: 16px;
 	padding: 12px 14px;
 	background: var(--pos-surface);
+}
+
+.order-payments {
+	border: 1px solid var(--pos-border);
+	border-radius: 16px;
+	padding: 12px 14px;
+	background: var(--pos-surface);
+	display: grid;
+	gap: 6px;
+}
+
+.order-payments__label {
+	font-size: 0.82rem;
+	color: var(--pos-text-muted);
+}
+
+.order-payments__row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr) auto;
+	gap: 8px;
+	align-items: baseline;
+	font-size: 0.9rem;
+}
+
+.order-payments__row > span {
+	overflow-wrap: anywhere;
+}
+
+.order-payments__ref {
+	font-family: monospace;
+}
+
+.order-payments__amount {
+	text-align: right;
+	white-space: nowrap;
 }
 
 .summary-chip__label {

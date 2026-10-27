@@ -6,6 +6,7 @@ from copy import deepcopy
 import secrets
 import string
 from collections import defaultdict
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
@@ -29,6 +30,23 @@ MANAGED_SALES_ORDER_UPDATE_FIELDS = {
     "preferred_earliest_delivery_date",
     "posa_notes",
 }
+
+
+def _is_card_mode_of_payment(mode_of_payment):
+    """Card takings are keyed by the terminal's Revolut reference, as on the till."""
+    return "credit card" in cstr(mode_of_payment or "").strip().lower()
+
+
+def _validate_managed_payment_reference(mode_of_payment, reference_no):
+    """Each card payment needs its own Revolut reference, so a second payment on an
+    order can never be recorded under the first payment's one."""
+    if not _is_card_mode_of_payment(mode_of_payment):
+        return
+    reference = cstr(reference_no or "").strip()
+    if not reference or reference == "#":
+        frappe.throw(_("A Revolut reference is required for card payments."))
+    if not reference.startswith("#"):
+        frappe.throw(_("The Revolut reference must start with #"))
 
 
 def _generate_order_ref():
@@ -626,6 +644,45 @@ def _managed_sales_order_filters(company, currency, pos_profile=None, status=Non
     return filters
 
 
+def _sales_order_names_by_payment_reference(like_term):
+    """Sales Orders with a submitted Payment Entry whose reference_no matches like_term.
+
+    Includes the portion an invoice split off (see
+    _managed_sales_order_payment_reference_condition), so a payment stays findable
+    after the order is invoiced.
+    """
+    names = set(
+        frappe.db.sql_list(
+            """
+            select distinct ref.reference_name
+            from `tabPayment Entry Reference` ref
+            inner join `tabPayment Entry` pe on pe.name = ref.parent
+            where pe.docstatus = 1
+              and ref.reference_doctype = 'Sales Order'
+              and pe.reference_no like %(term)s
+            """,
+            {"term": like_term},
+        )
+    )
+    if frappe.db.has_column("Payment Entry Reference", "advance_voucher_no") and frappe.db.has_column(
+        "Payment Entry Reference", "advance_voucher_type"
+    ):
+        names.update(
+            frappe.db.sql_list(
+                """
+                select distinct ref.advance_voucher_no
+                from `tabPayment Entry Reference` ref
+                inner join `tabPayment Entry` pe on pe.name = ref.parent
+                where pe.docstatus = 1
+                  and ref.advance_voucher_type = 'Sales Order'
+                  and pe.reference_no like %(term)s
+                """,
+                {"term": like_term},
+            )
+        )
+    return sorted(name for name in names if name)
+
+
 def _search_managed_sales_order_names(search_term, base_filters):
     """Sales Order names matching search_term on order name, customer name, payment ref, or postcode.
 
@@ -650,6 +707,15 @@ def _search_managed_sales_order_names(search_term, base_filters):
     names.update(
         frappe.get_all("Sales Order", filters=customer_order_ref_filters, pluck="name", limit_page_length=0)
     )
+
+    # Later payments carry their own reference on their Payment Entry only.
+    paid_order_names = _sales_order_names_by_payment_reference(like_term)
+    if paid_order_names:
+        payment_ref_filters = dict(base_filters)
+        payment_ref_filters["name"] = ["in", paid_order_names]
+        names.update(
+            frappe.get_all("Sales Order", filters=payment_ref_filters, pluck="name", limit_page_length=0)
+        )
 
     address_names = frappe.get_all(
         "Address", filters={"pincode": ["like", like_term]}, pluck="name", limit_page_length=0
@@ -1022,6 +1088,50 @@ def _get_managed_sales_order_payment_types(sales_order):
     return payments
 
 
+def _get_managed_sales_order_payments(sales_order):
+    """Every payment taken against the order, each with its own reference.
+
+    An order can be paid in several goes, and each one is its own Payment Entry, so the
+    Payment Entry's reference_no is where each payment's reference lives. The order's
+    customer_order_ref only ever holds the first one.
+    """
+    rows = frappe.db.sql(
+        """
+        select
+            pe.name as name,
+            pe.posting_date as posting_date,
+            pe.mode_of_payment as mode_of_payment,
+            pe.payment_type as payment_type,
+            pe.reference_no as reference_no,
+            sum(
+                case
+                    when pe.payment_type = 'Pay' then -abs(coalesce(ref.allocated_amount, 0))
+                    else abs(coalesce(ref.allocated_amount, 0))
+                end
+            ) as amount
+        from `tabPayment Entry Reference` ref
+        inner join `tabPayment Entry` pe on pe.name = ref.parent
+        where pe.docstatus = 1
+          and ({reference_condition})
+        group by pe.name, pe.posting_date, pe.mode_of_payment, pe.payment_type, pe.reference_no, pe.creation
+        order by pe.posting_date asc, pe.creation asc
+        """.format(reference_condition=_managed_sales_order_payment_reference_condition()),
+        {"sales_order": sales_order},
+        as_dict=True,
+    )
+    return [
+        {
+            "name": row.get("name"),
+            "posting_date": cstr(row.get("posting_date") or ""),
+            "mode_of_payment": cstr(row.get("mode_of_payment") or "").strip(),
+            "payment_type": row.get("payment_type"),
+            "reference_no": cstr(row.get("reference_no") or "").strip(),
+            "amount": flt(row.get("amount") or 0),
+        }
+        for row in rows or []
+    ]
+
+
 def _is_ns_item_code(item_code):
     """NS lines are identified by their item code prefix, as they are in the POS cart."""
     return cstr(item_code or "").strip().lower().startswith("ns")
@@ -1150,6 +1260,7 @@ def _serialize_managed_sales_order(doc):
         "pos_sales_person": pos_sales_person,
         "pos_sales_person_name": pos_sales_person_name or pos_sales_person,
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
+        "payments": _get_managed_sales_order_payments(doc.name),
         "stream_pick_lists": stream_pick_lists,
         "order_level_lock": _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists),
         "surplus": _get_managed_sales_order_surplus(doc),
@@ -1297,16 +1408,48 @@ def _validate_managed_sales_order_item_mutations(doc, normalized_items):
             )
 
 
+@contextmanager
+def _keep_computed_fields_on_save(doctype, name):
+    """Stop Frappe reverting fields above the user's permlevel when `name` is saved.
+
+    ERPNext's update_child_qty_rate loads and saves the order itself, as the session
+    user. On a till login the totals (grand_total at permlevel 4, the rest at 5) are
+    above what the Shop role can write, so Document.validate_higher_perm_levels quietly
+    puts them back to their stored values: the new rows land but grand_total does not
+    move. The follow-up Payment Entry then sees nothing outstanding and fails with
+    "Sales Order ... has already been fully paid".
+
+    Those fields are computed by the save, never taken from the cashier, and write
+    permission on the order is still checked, so skipping the reset is safe here. The
+    patch is limited to this one document and always restored.
+    """
+    from frappe.model.document import Document
+
+    original = Document.validate_higher_perm_levels
+
+    def validate_higher_perm_levels(self):
+        if self.doctype == doctype and self.name == name:
+            return
+        return original(self)
+
+    Document.validate_higher_perm_levels = validate_higher_perm_levels
+    try:
+        yield
+    finally:
+        Document.validate_higher_perm_levels = original
+
+
 def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items):
     """Write the prepared rows through the shared Sales Order update path."""
     from customer_due_dates.api.update_child_qty_rate import update_child_qty_rate as update_sales_order_items
 
-    update_sales_order_items(
-        parent_doctype="Sales Order",
-        trans_items=json.dumps(normalized_items),
-        parent_doctype_name=sales_order_name,
-        child_docname="items",
-    )
+    with _keep_computed_fields_on_save("Sales Order", sales_order_name):
+        update_sales_order_items(
+            parent_doctype="Sales Order",
+            trans_items=json.dumps(normalized_items),
+            parent_doctype_name=sales_order_name,
+            child_docname="items",
+        )
 
     # A reduction can leave money stranded on the order. Settle it here so the order
     # always ends up holding exactly its own value, whichever route made the change.
@@ -1577,9 +1720,84 @@ def _apply_managed_sales_order_credit(doc, max_amount):
         remaining = flt(remaining - take)
         applied = flt(applied + take)
 
+    remaining = flt(max_amount - applied)
+    if remaining >= 0.01:
+        applied = flt(applied + _apply_managed_sales_order_journal_credit(doc, remaining))
+
     if applied:
         doc.set_total_advance_paid()
         doc.reload()
+    return applied
+
+
+def _apply_managed_sales_order_journal_credit(doc, max_amount):
+    """The Journal Entry equivalent of the Payment Entry handling above -- spends
+    a Customer Claims goodwill credit (or any other unreferenced Journal Entry
+    credit against the customer's receivable account; see
+    customer_due_dates.customer_claims.execution.credit.issue_credit and
+    payments.get_available_credit) on this Sales Order.
+
+    A Journal Entry Account row can't natively split its amount across several
+    orders the way a Payment Entry's own references table can, so the original
+    entry is never edited -- only an Advance Payment Ledger Entry earmark is
+    recorded against it, exactly as for a Payment Entry advance.
+    calculate_total_advance_from_ledger (erpnext.controllers.accounts_controller)
+    sums those purely by against_voucher_type/against_voucher_no, regardless of
+    voucher_type, so this raises advance_paid the same way. get_available_credit
+    nets out these earmarks (and any till-checkout redemption) when reporting how
+    much of the original entry is still free, so the same credit can never be
+    double-spent between this and the till.
+
+    Returns the amount applied.
+    """
+    max_amount = flt(max_amount)
+    if max_amount < 0.01:
+        return 0.0
+
+    customer = cstr(getattr(doc, "customer", "") or "").strip()
+    company = cstr(getattr(doc, "company", "") or "").strip()
+    if not customer or not company:
+        return 0.0
+
+    from posawesome.posawesome.api.payments import get_available_credit
+
+    remaining = max_amount
+    applied = 0.0
+    for row in get_available_credit(customer=customer, company=company) or []:
+        if remaining < 0.01:
+            break
+        if cstr(row.get("type") or "").strip() != "Journal Entry":
+            continue
+        take = min(flt(row.get("total_credit")), remaining)
+        if take < 0.01:
+            continue
+
+        je_name = row["credit_origin"]
+        currency = frappe.db.get_value(
+            "Journal Entry Account",
+            {"parent": je_name, "party_type": "Customer", "party": customer},
+            "account_currency",
+        )
+
+        frappe.get_doc(
+            {
+                "doctype": "Advance Payment Ledger Entry",
+                "company": company,
+                "voucher_type": "Journal Entry",
+                "voucher_no": je_name,
+                "against_voucher_type": "Sales Order",
+                "against_voucher_no": doc.name,
+                # Negative, matching an original allocation, so advance_paid rises.
+                "amount": -take,
+                "currency": currency,
+                "event": "Adjustment",
+                "delinked": 0,
+            }
+        ).insert(ignore_permissions=True)
+
+        remaining = flt(remaining - take)
+        applied = flt(applied + take)
+
     return applied
 
 
@@ -1890,6 +2108,7 @@ def update_managed_sales_order_items_with_payment(data):
 
     if not mode_of_payment:
         frappe.throw(_("Mode of Payment is required."))
+    _validate_managed_payment_reference(mode_of_payment, payment.get("reference_no"))
 
     payment_entry = create_payment_entry(
         company=doc.company,
@@ -2057,6 +2276,173 @@ def get_pos_order_summary(sales_order):
     }
 
 
+class _PreviewCommitBlocked(Exception):
+    pass
+
+
+@contextmanager
+def _rolled_back_transaction():
+    """Run the body in a transaction that is always fully rolled back.
+
+    A full rollback (not a savepoint) is required: it also resets the
+    after_commit queue, which is where the allocation hooks defer their own
+    commits and realtime pushes. Commits are blocked while the body runs so
+    nothing in the allocation path can persist the simulated order.
+    """
+    db = frappe.db
+    if db._disable_transaction_control:
+        frappe.throw(_("Delivery estimate is unavailable here: transaction control is disabled."))
+
+    def _blocked_commit(*args, **kwargs):
+        raise _PreviewCommitBlocked("commit attempted during delivery window preview")
+
+    original_commit = db.commit
+    db.commit = _blocked_commit
+    try:
+        yield
+    finally:
+        try:
+            db.rollback()
+        finally:
+            db.commit = original_commit
+
+
+def _preview_line_source(soi_name, item_code=None):
+    from customer_due_dates.item_due_dates.prealloc.due_dates import _is_ns_item
+    from customer_due_dates.item_due_dates.prealloc.so_alloc_fields import (
+        _preallocated_outstanding_for_soi,
+        _reserved_for_soi,
+    )
+
+    # NS items are never reserved, but they are quoted the order date like
+    # allocated stock, so they're labelled (and suggested-grouped) as such.
+    if _is_ns_item(item_code):
+        return "In Stock"
+    if flt(_preallocated_outstanding_for_soi(soi_name)) > 0:
+        return "On Order"
+    if flt(_reserved_for_soi(soi_name)) > 0:
+        return "In Stock"
+    return "Back Order"
+
+
+@frappe.whitelist()
+def preview_quoted_delivery_window(order):
+    """Estimate the quoted delivery window the cart would get if submitted now.
+
+    The quoted dates only exist once before_submit has reserved stock and
+    pre-allocated incoming supply, so this runs the real submit preparation and
+    auto_allocate_on_so_submit, reads the window, and rolls everything back.
+    on_submit is never run, so no POs, emails or dispatches are triggered.
+
+    The stock reservations hold Bin row locks until the rollback, so a
+    concurrent submit of the same items waits briefly. The result is a snapshot:
+    another order can take the same PO room before this one is submitted.
+    """
+    from customer_due_dates.kit_items.overrides.sales_order import auto_allocate_on_so_submit
+    from customer_due_dates.utils.rfs_customer import apply_sales_order_naming_series, is_rfs_customer
+
+    order = json.loads(order) if isinstance(order, str) else order
+    # Always the cart as one order, as the cart builds it without Split Delivery.
+    # Split Delivery stays on the cart after backing out of the payment flow, but
+    # each group's window comes from preview_split_group_delivery_windows.
+    order["posa_split_delivery"] = 0
+    order["must_be_fully_allocated"] = 1
+    order.pop("posa_split_groups", None)
+    order.pop("payments", None)
+
+    _map_delivery_dates(order)
+    _apply_ns_default_warehouse(order)
+    _force_peterborough_store_collection(order)
+
+    existing_name = order.get("name")
+    if existing_name and not frappe.db.exists("Sales Order", existing_name):
+        existing_name = None
+
+    try:
+        with _rolled_back_transaction():
+            if existing_name:
+                so_doc = frappe.get_doc("Sales Order", existing_name)
+                so_doc.update(order)
+            else:
+                so_doc = frappe.get_doc(order)
+                apply_sales_order_naming_series(so_doc, force=True)
+
+            so_doc.flags.ignore_permissions = True
+            frappe.flags.ignore_account_permission = True
+            so_doc.docstatus = 0
+            _sync_shopify_notes_from_posa(so_doc)
+            _apply_kit_meta_fields(so_doc)
+            _apply_delivery_charges_tax_row(so_doc)
+            so_doc.save()
+
+            # Real submit runs before_submit with docstatus 1 in memory while the
+            # DB row is still a draft; mirror that without calling submit().
+            so_doc.docstatus = 1
+            auto_allocate_on_so_submit(so_doc)
+
+            result = {
+                "window": so_doc.quoted_estimated_delivery_window,
+                "latest_quoted_date": cstr(so_doc.latest_quoted_date or "") or None,
+                "is_rfs": bool(is_rfs_customer(so_doc.customer)),
+                "lines": [
+                    {
+                        "posa_row_id": getattr(row, "posa_row_id", None),
+                        "item_code": row.item_code,
+                        "item_name": row.item_name,
+                        "qty": flt(row.qty),
+                        "quoted_date": cstr(row.quoted_date or "") or None,
+                        "source": _preview_line_source(row.name, row.item_code),
+                    }
+                    for row in so_doc.items
+                ],
+            }
+    finally:
+        if existing_name:
+            frappe.clear_document_cache("Sales Order", existing_name)
+
+    return result
+
+
+@frappe.whitelist()
+def preview_split_group_delivery_windows(order):
+    """Estimate the quoted delivery window of each split group's Sales Order.
+
+    Mirrors _submit_split_group_documents: every group order is built first,
+    then allocated in group order, so a later group only gets the supply the
+    earlier groups left. Each group is "must be fully allocated", exactly as on
+    a real split submit. Everything is rolled back afterwards; see
+    preview_quoted_delivery_window for why that is safe.
+    """
+    from customer_due_dates.kit_items.overrides.sales_order import auto_allocate_on_so_submit
+    from customer_due_dates.utils.rfs_customer import is_rfs_customer
+
+    order = json.loads(order) if isinstance(order, str) else order
+    _map_delivery_dates(order)
+    _apply_ns_default_warehouse(order)
+    _force_peterborough_store_collection(order)
+    order["posa_split_delivery"] = 1
+    order.pop("payments", None)
+    frappe.flags.ignore_account_permission = True
+
+    with _rolled_back_transaction():
+        built = _build_split_group_documents(order)
+        groups = []
+        for entry in built:
+            so_doc = entry["doc"]
+            so_doc.docstatus = 1
+            auto_allocate_on_so_submit(so_doc)
+            groups.append(
+                {
+                    "group_id": entry["group_id"],
+                    "label": entry["label"],
+                    "window": so_doc.quoted_estimated_delivery_window,
+                }
+            )
+        is_rfs = bool(is_rfs_customer(order.get("customer")))
+
+    return {"groups": groups, "is_rfs": is_rfs}
+
+
 @frappe.whitelist()
 def update_managed_sales_order(data):
     payload = _unwrap_managed_sales_order_payload(data)
@@ -2204,6 +2590,7 @@ def pay_managed_sales_order_balance(
         frappe.throw(_("Payment amount must be greater than zero."))
     if payment_amount - outstanding_balance > 0.001:
         frappe.throw(_("Payment amount cannot exceed the remaining balance."))
+    _validate_managed_payment_reference(mode, reference_no)
 
     payment_entry = create_payment_entry(
         company=doc.company,
@@ -2463,6 +2850,27 @@ def _apply_ns_default_warehouse(order_data):
             item["warehouse"] = ns_warehouse
 
 
+PETERBOROUGH_POS_PROFILE = "Peterborough"
+
+
+def _force_peterborough_store_collection(order_data):
+    """Mark Peterborough collect-from-store orders as collections.
+
+    Applied to the raw payload so every Sales Order built from it - including each
+    split group, of which only the first carries the delivery charge - gets the flag.
+    """
+    if not isinstance(order_data, dict):
+        return
+    if cstr(order_data.get("pos_profile")).strip() != PETERBOROUGH_POS_PROFILE:
+        return
+    charge_name = cstr(order_data.get("posa_delivery_charges")).strip()
+    if not charge_name:
+        return
+    if not cint(frappe.get_cached_value("Delivery Charges", charge_name, "collect_from_store")):
+        return
+    order_data["is_collection"] = 1
+
+
 def _is_collection_delivery_charge_selected(so_doc):
     charge_name = str(getattr(so_doc, "posa_delivery_charges", "") or "").strip()
     if not charge_name:
@@ -2471,12 +2879,16 @@ def _is_collection_delivery_charge_selected(so_doc):
     return bool(flt(collection))
 
 
-def _is_collect_from_store_delivery_charge_selected(so_doc):
-    charge_name = str(getattr(so_doc, "posa_delivery_charges", "") or "").strip()
+def _is_collect_from_store_delivery_charge(charge_name):
+    charge_name = str(charge_name or "").strip()
     if not charge_name:
         return False
     collect_from_store = frappe.get_cached_value("Delivery Charges", charge_name, "collect_from_store")
     return bool(flt(collect_from_store))
+
+
+def _is_collect_from_store_delivery_charge_selected(so_doc):
+    return _is_collect_from_store_delivery_charge(getattr(so_doc, "posa_delivery_charges", ""))
 
 
 def _add_tag_ignore_permissions(doc, tag):
@@ -2592,6 +3004,7 @@ def update_sales_order(data):
     data = json.loads(data)
     _map_delivery_dates(data)
     _apply_ns_default_warehouse(data)
+    _force_peterborough_store_collection(data)
     data.pop("posa_split_groups", None)
     _ensure_unique_customer_order_ref(data, data.get("name"))
     so_doc = _save_sales_order_doc_from_payload(data)
@@ -2639,12 +3052,13 @@ def _create_payment_entries(so_doc, payments):
         if not pay.get("amount"):
             continue
 
+        # The till keeps the payment's Revolut reference on the order, not on the
+        # payment rows, so carry it onto the Payment Entry here.
         reference_no = (
             pay.get("reference_no")
             or pay.get("transaction_id")
             or pay.get("authorization_code")
-            or so_doc.get("posa_authorization_code")
-            or so_doc.get("posa_pos_opening_shift")
+            or cstr(so_doc.get("customer_order_ref") or "").strip()
             or so_doc.name
         )
         reference_date = pay.get("reference_date") or nowdate()
@@ -2962,6 +3376,9 @@ def _build_split_group_documents(order):
     groups, item_map = _validate_split_groups(order)
     discount_allocations = _allocate_group_discounts(order, groups, item_map)
     batch_root = _ensure_unique_customer_order_ref({"customer_order_ref": order.get("customer_order_ref")})
+    # Groups after the first have their delivery charge stripped, so they can't be
+    # recognised as collect-from-store from their own fields; use the original order's.
+    is_collect_from_store = _is_collect_from_store_delivery_charge(order.get("posa_delivery_charges"))
     built = []
     for index, group in enumerate(groups, start=1):
         preferred_ref = _build_group_customer_order_ref(batch_root, index)
@@ -2977,6 +3394,8 @@ def _build_split_group_documents(order):
         so_doc = _save_sales_order_doc_from_payload(payload)
         so_doc.must_be_fully_allocated = 1
         so_doc.save()
+        if is_collect_from_store:
+            _add_tag_ignore_permissions(so_doc, "Collect from Store")
         built.append(
             {
                 "group_id": group["group_id"],
@@ -3091,6 +3510,7 @@ def submit_sales_order(order, data=None):
         order["sales_order_settlement_state"] = "none"
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
+    _force_peterborough_store_collection(order)
     is_split_group_submit = _is_split_group_submit(order)
     if _should_force_full_allocation_for_pos_order(order):
         order["must_be_fully_allocated"] = 1

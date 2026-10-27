@@ -28,6 +28,16 @@
 						></span>
 					</div>
 				</div>
+				<div class="payment-context">
+					<span class="payment-context__item">
+						<span class="payment-context__label">{{ __("Customer") }}:</span>
+						<span class="payment-context__value">{{ paymentCustomerName || "-" }}</span>
+					</span>
+					<span class="payment-context__item">
+						<span class="payment-context__label">{{ __("Delivery Charge") }}:</span>
+						<span class="payment-context__value">{{ paymentDeliveryChargeText }}</span>
+					</span>
+				</div>
 				<div
 					:class="[
 						'payment-sections',
@@ -123,7 +133,7 @@
 							:addresses="availableFulfillmentAddresses"
 							:show-address-action="showAddressAction"
 							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
-							:show-split-delivery="showDeliverySchedulingFields"
+							:show-split-delivery="showSplitDeliveryOption"
 							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
 							:show-collection-date="showCollectionDate"
 							:collection-date="collection_date"
@@ -188,8 +198,23 @@
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Split Order Groups") }}</h3>
 						</div>
+						<v-checkbox
+							v-if="hasSuggestedSplitGroups"
+							:model-value="useSuggestedSplitGroups"
+							:label="__('Use suggested groups')"
+							:hint="__('Groups items by supply from the delivery estimate')"
+							persistent-hint
+							color="primary"
+							density="compact"
+							class="mb-3"
+							data-test="use-suggested-split-groups"
+							@update:model-value="toggleSuggestedSplitGroups"
+						></v-checkbox>
 						<PaymentSplitGroups
 							:groups="splitOrderGroups"
+							:group-windows="splitGroupDeliveryWindows"
+							:windows-loading="splitGroupWindowsLoading"
+							@estimate-windows="estimateSplitGroupWindows"
 							:items="invoice_doc.items || []"
 							:default-group-id="defaultSplitGroupId"
 							:max-groups="MAX_SPLIT_GROUPS"
@@ -417,6 +442,12 @@ import {
 import { resolvePaymentPrintFormatDoctypes } from "../../utils/paymentPrintDoctype";
 import { resolvePaymentPrintFormat } from "../../utils/paymentPrintFormat";
 import { parseBooleanSetting } from "../../utils/stock";
+import {
+	buildSuggestedSplitGroups,
+	hasCompleteSupplyTypes,
+	storedSupplyByRowId,
+} from "../../utils/suggestedSplitGroups";
+import api from "../../services/api";
 
 // Components
 import PaymentSummary from "./payments/PaymentSummary.vue";
@@ -574,6 +605,26 @@ const needsFulfillmentStep = computed(
 	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
 );
 const isWizardFlow = computed(() => needsFulfillmentStep.value);
+
+// Read-only context shown at the top of every payment step.
+const paymentCustomerName = computed(
+	() => invoice_doc.value?.customer_name || invoice_doc.value?.customer || "",
+);
+const paymentDeliveryChargeText = computed(() => {
+	const rate = flt(invoice_doc.value?.posa_delivery_charges_rate);
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	if (!selectedName && !rate) {
+		return __("None");
+	}
+	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+		(row) => String(row?.name || "").trim() === selectedName,
+	);
+	const amount = `${currencySymbol(invoice_doc.value?.currency)} ${formatCurrency(rate)}`;
+	const title = selectedRow?.title || selectedName;
+	return title ? `${title} (${amount})` : amount;
+});
 const isSplitDeliveryEnabled = computed(
 	() => Boolean(invoice_doc.value?.posa_split_delivery) && invoiceType.value === "Order",
 );
@@ -609,6 +660,9 @@ const shouldUseStoreCollectionFlow = computed(
 const showDeliverySchedulingFields = computed(
 	() => !isCollectionDeliveryChargeSelected() && !shouldUseStoreCollectionFlow.value,
 );
+
+// Collect-from-store orders can still be split; only customer collections can't.
+const showSplitDeliveryOption = computed(() => !isCollectionDeliveryChargeSelected());
 
 const availableFulfillmentAddresses = computed(() =>
 	shouldUseStoreCollectionFlow.value ? storeCollectionAddresses.value : addresses.value,
@@ -734,9 +788,80 @@ const syncSplitGroupsState = () => {
 	invoice_doc.value.posa_split_groups = normalized;
 };
 
+// Supply types are stored on the cart rows by "Estimate Delivery" and wiped
+// whenever the cart changes, so their presence means the estimate is current.
+const hasSuggestedSplitGroups = computed(() => hasCompleteSupplyTypes(invoiceStore.items));
+const useSuggestedSplitGroups = ref(false);
+
+const toggleSuggestedSplitGroups = (enabled) => {
+	useSuggestedSplitGroups.value = Boolean(enabled);
+	if (!invoice_doc.value) {
+		return;
+	}
+	if (!useSuggestedSplitGroups.value) {
+		invoice_doc.value.posa_split_groups = [createDefaultSplitGroup()];
+		return;
+	}
+	invoice_doc.value.posa_split_groups = buildSuggestedSplitGroups(
+		invoice_doc.value.items || [],
+		storedSupplyByRowId(invoiceStore.items),
+		defaultSplitGroupId,
+	);
+};
+
+watch(
+	() => [invoiceStore.invoiceDoc, invoice_doc.value?.posa_split_delivery, hasSuggestedSplitGroups.value],
+	() => {
+		useSuggestedSplitGroups.value = false;
+	},
+);
+
 const splitOrderGroups = computed(() =>
 	normalizeSplitGroupsState(invoice_doc.value?.posa_split_groups, invoice_doc.value?.items || []),
 );
+
+// Each group's window, estimated on the server as its own "must be fully
+// allocated" Sales Order. Any change to the groups or their items clears it.
+const splitGroupDeliveryWindows = ref({});
+const splitGroupWindowsLoading = ref(false);
+const splitGroupsKey = computed(() =>
+	JSON.stringify([
+		splitOrderGroups.value.map((group) => [group.group_id, group.row_ids]),
+		(invoice_doc.value?.items || []).map((item) => [item.posa_row_id, item.item_code, item.qty, item.uom]),
+	]),
+);
+watch(splitGroupsKey, () => {
+	splitGroupDeliveryWindows.value = {};
+});
+
+const estimateSplitGroupWindows = async () => {
+	if (!invoice_doc.value || splitGroupWindowsLoading.value) {
+		return;
+	}
+	const requestKey = splitGroupsKey.value;
+	splitGroupWindowsLoading.value = true;
+	try {
+		const result = await api.call("posawesome.posawesome.api.sales_orders.preview_split_group_delivery_windows", {
+			order: JSON.stringify({ ...invoice_doc.value, posa_split_groups: splitOrderGroups.value }),
+		});
+		if (requestKey !== splitGroupsKey.value) {
+			return;
+		}
+		const windows = {};
+		(result?.groups || []).forEach((group) => {
+			windows[group.group_id] = group.window || __("Not available");
+		});
+		splitGroupDeliveryWindows.value = windows;
+	} catch (error) {
+		console.error("Failed to estimate split group delivery windows:", error);
+		// frappe.call already shows server-side validation messages.
+		if (!error?._server_messages) {
+			toastStore.show({ title: __("Unable to estimate delivery windows"), color: "error" });
+		}
+	} finally {
+		splitGroupWindowsLoading.value = false;
+	}
+};
 
 const canProceedFromGrouping = computed(() => {
 	const itemRowIds = (invoice_doc.value?.items || [])
@@ -3105,9 +3230,18 @@ watch(
 
 		preferred_delivery_date.value = null;
 		customer_unsure_delivery_date.value = true;
-		invoice_doc.value.posa_split_delivery = 0;
 		invoice_doc.value.prefered_earliest_delivery_date = null;
 		invoice_doc.value.preferred_earliest_delivery_date = null;
+	},
+	{ immediate: true },
+);
+
+watch(
+	showSplitDeliveryOption,
+	(enabled) => {
+		if (!enabled && invoice_doc.value) {
+			invoice_doc.value.posa_split_delivery = 0;
+		}
 	},
 	{ immediate: true },
 );
@@ -3351,6 +3485,24 @@ onBeforeUnmount(() => {
 
 .payment-wizard-header__dot--active {
 	background: rgb(var(--v-theme-primary));
+}
+
+.payment-context {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 20px;
+	padding: 6px 2px;
+	font-size: 0.9rem;
+	color: var(--pos-text-primary);
+}
+
+.payment-context__label {
+	color: var(--pos-text-secondary);
+	margin-right: 4px;
+}
+
+.payment-context__value {
+	font-weight: 600;
 }
 
 .payment-sections--dialog {

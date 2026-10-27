@@ -28,6 +28,7 @@
 				<v-card flat class="selector-section-card selector-header-card pos-themed-card">
 					<ItemHeader
 						v-model:search-input="search_input"
+						v-model:sku-input="sku_input"
 						v-model:qty-input="debounce_qty"
 						:pos-profile="pos_profile"
 						:scanner-locked="scannerLocked"
@@ -41,12 +42,16 @@
 						@clear-search="clearSearch"
 						@clear-search-and-qty="clearSearchAndQty"
 						@search-input="handleSearchInput"
+						@sku-input="handleSkuInput"
+						@sku-enter="flushSkuSearch"
+						@clear-sku="clearSkuSearch"
 						@search-paste="handleSearchPaste"
 						@focus="handleItemSearchFocus"
 						@clear-qty="clearQty"
 						@blur-qty="onQtyBlur"
 						@start-camera="startCameraScanning"
 						@open-new-item="openNewItemDialog"
+						@open-advanced-search="openAdvancedSearch"
 						@toggle-settings="toggleItemSettings"
 						@reload-items="forceReloadItems"
 						ref="itemHeader"
@@ -232,6 +237,8 @@ import { useInvoiceStore } from "../../../stores/invoiceStore";
 import { useEmployeeStore } from "../../../stores/employeeStore";
 
 import { parseBooleanSetting } from "../../../utils/stock";
+import { openItemAdvancedSearch } from "../../../utils/itemAdvancedSearch";
+import itemService from "../../../services/itemService";
 import {
 	buildSelectorRowProps,
 	createItemHighlightMatcher,
@@ -318,6 +325,7 @@ const newItemDialogScannedBarcode = ref("");
 const newItemDialogAwaitingScan = ref(false);
 const qty = ref(1);
 const search_input = ref("");
+const sku_input = ref("");
 const first_search = ref("");
 const items_view = ref("list");
 const itemsPerPage = ref(50);
@@ -752,6 +760,55 @@ const openNewItemDialog = () => {
 	newItemDialog.value = true;
 };
 
+// Advanced Search: desk's Item LinkSelector dialog; the picked code is resolved to a
+// full POS row (rate, stock, UOMs) before going through the normal add_item path.
+const resolveItemForCart = async (itemCode: string) => {
+	const loaded = (items.value || []).find((item: any) => item?.item_code === itemCode);
+	if (loaded) {
+		return loaded;
+	}
+	const results = await itemService.searchItemsByCode({
+		pos_profile: JSON.stringify(pos_profile.value),
+		price_list: active_price_list.value,
+		search_value: itemCode,
+		customer: selectedCustomer.value as any,
+		include_image: 1,
+		item_groups: pos_profile.value?.item_groups?.map((g: any) => g.item_group) || [],
+		limit: 1,
+		exact: 1,
+	});
+	return Array.isArray(results) && results.length ? results[0] : null;
+};
+
+const openAdvancedSearch = () => {
+	openItemAdvancedSearch({
+		txt: search_input.value,
+		context: props.context,
+		customer: selectedCustomer.value as any,
+		onSelect: async (itemCode: string) => {
+			try {
+				const item = await resolveItemForCart(itemCode);
+				if (!item) {
+					toastStore.show({
+						title: __("{0} is not available in this POS Profile", [itemCode]),
+						color: "warning",
+					});
+					return;
+				}
+				await add_item(item);
+			} catch (error) {
+				console.error("Advanced search add failed:", error);
+				toastStore.show({
+					title: __("Could not add {0}", [itemCode]),
+					color: "error",
+				});
+			} finally {
+				requestItemSearchFocus();
+			}
+		},
+	});
+};
+
 onMounted(async () => {
 	itemAvailability.initAvailability();
 
@@ -998,6 +1055,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
 	if (initTimeout.value) clearTimeout(initTimeout.value);
+	runSkuSearch.cancel();
 	itemSync.stopBackgroundSyncScheduler();
 	// @ts-ignore
 	if (itemWorker.value) itemWorker.value.terminate();
@@ -1172,7 +1230,41 @@ const hasVisibleDialog = () => {
 const esc_event = () => clearSearch();
 const onEnter = (e) => itemsSelectorSearch.onEnter(e);
 const handleSearchKeydown = (e) => itemsSelectorFocus.handleSearchKeydown(e);
+// SKU box: server-side item_code search. It and the main search are mutually
+// exclusive — typing in one clears the other.
+const runSkuSearch = _.debounce((term: string) => {
+	itemsIntegration.searchItemsByCode(term);
+}, 300);
+const handleSkuInput = (val) => {
+	const term = String(val ?? "");
+	sku_input.value = term;
+	itemSelection.clearHighlightedItem();
+	if (!term.trim()) {
+		clearSkuSearch();
+		return;
+	}
+	// Mark SKU mode now, not after the debounce, so the main search's own debounced
+	// clear (triggered above) doesn't reset the list back to the full catalogue.
+	itemsIntegration.itemsStore.codeSearchTerm = term.trim();
+	if (search_input.value) {
+		clearSearch();
+	}
+	runSkuSearch(term);
+};
+const flushSkuSearch = () => {
+	runSkuSearch.flush();
+};
+const clearSkuSearch = () => {
+	runSkuSearch.cancel();
+	sku_input.value = "";
+	if (itemsIntegration.itemsStore.codeSearchTerm) {
+		itemsIntegration.searchItemsByCode("");
+	}
+};
 const handleSearchInput = (val) => {
+	if (sku_input.value && String(val ?? "")) {
+		clearSkuSearch();
+	}
 	search_input.value = val;
 	first_search.value = String(val ?? "");
 	if (scannerInput.handleSearchInput) {
@@ -1319,6 +1411,7 @@ defineExpose({
 	format_number,
 	currencySymbol,
 	openNewItemDialog,
+	openAdvancedSearch,
 	clearSearch,
 	onDragStart,
 	onDragEnd,

@@ -1,7 +1,6 @@
 import { ref, getCurrentInstance, inject } from "vue";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
-import { useEmployeeStore } from "../../../stores/employeeStore";
 import {
 	initPromise,
 	checkDbHealth,
@@ -111,7 +110,6 @@ export function usePosShift(openDialog?: () => void) {
 		typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
 	const toastStore = useToastStore();
 	const uiStore = useUIStore();
-	const employeeStore = useEmployeeStore();
 
 	const pos_profile = ref<any>(null);
 	const pos_opening_shift = ref<any>(null);
@@ -138,9 +136,10 @@ export function usePosShift(openDialog?: () => void) {
 			console.warn("Realtime emit failed", e);
 		}
 
-		// Always require a cashier PIN unlock after the opening balance is
-		// confirmed, rather than silently continuing as the logged-in browser user.
-		employeeStore.lockTerminal();
+		// No lock here: this runs every time the POS page mounts (navigation,
+		// refresh), so locking would re-prompt a cashier who is already signed
+		// in. Locking is left to the inactivity timer, the manual lock, and
+		// Pos.vue's handleRegisterPosData when a new opening shift is confirmed.
 	}
 
 	async function check_opening_entry() {

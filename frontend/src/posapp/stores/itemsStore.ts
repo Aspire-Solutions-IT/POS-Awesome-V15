@@ -100,6 +100,11 @@ export const useItemsStore = defineStore("items", () => {
 	const totalItemCount = ref(0);
 	const itemsLoaded = ref(false);
 	const searchTerm = ref("");
+	// SKU box term. While set, filteredItems holds server item_code matches and
+	// must not be reset by background syncs or the main search clearing.
+	const codeSearchTerm = ref("");
+	let codeSearchToken = 0;
+	let codeSearchInFlight = false;
 	const itemGroup = ref("ALL");
 	const lastSearch = ref("");
 	const posProfile = ref<POSProfile | null>(null);
@@ -272,7 +277,7 @@ export const useItemsStore = defineStore("items", () => {
 			totalItemCount.value = items.value.length;
 		}
 
-		if (!searchTerm.value) {
+		if (!searchTerm.value && !codeSearchTerm.value) {
 			filteredItems.value = filterItemsByGroup(
 				items.value,
 				normalizedGroup,
@@ -777,6 +782,11 @@ export const useItemsStore = defineStore("items", () => {
 		searchTerm.value = term;
 		lastSearch.value = term;
 
+		if (!term && codeSearchTerm.value) {
+			// Main search was cleared because the SKU box took over; keep its results.
+			return filteredItems.value;
+		}
+
 		if (!term || term.length < 2) {
 			if (limitSearchEnabled.value) {
 				return clearLimitSearchResults({ preserveItems: true });
@@ -921,10 +931,88 @@ export const useItemsStore = defineStore("items", () => {
 		}
 	};
 
+	const searchItemsByCode = async (term: string) => {
+		const normalized = String(term ?? "").trim();
+		const token = ++codeSearchToken;
+		codeSearchTerm.value = normalized;
+		if (codeSearchInFlight) {
+			// The superseded request won't clear the spinner itself.
+			codeSearchInFlight = false;
+			isLoading.value = false;
+		}
+
+		if (!normalized) {
+			if (searchTerm.value) {
+				return await searchItems(searchTerm.value);
+			}
+			filteredItems.value = filterItemsByGroup(
+				items.value,
+				itemGroup.value,
+			);
+			return filteredItems.value;
+		}
+
+		if (!posProfile.value) {
+			return [];
+		}
+
+		const normalizedGroup =
+			typeof itemGroup.value === "string" && itemGroup.value.length > 0
+				? itemGroup.value
+				: "ALL";
+
+		try {
+			codeSearchInFlight = true;
+			isLoading.value = true;
+			const serverResults = await itemService.searchItemsByCode({
+				pos_profile: JSON.stringify(posProfile.value),
+				price_list: activePriceList.value,
+				item_group:
+					normalizedGroup !== "ALL" ? normalizedGroup.toLowerCase() : "",
+				search_value: normalized,
+				customer: customer.value,
+				include_image: 1,
+				item_groups:
+					posProfile.value?.item_groups?.map(
+						(g: any) => g.item_group,
+					) || [],
+				limit: resolvePageSize(DEFAULT_PAGE_SIZE),
+			});
+
+			// A newer keystroke (or a clear) superseded this request.
+			if (token !== codeSearchToken) {
+				return filteredItems.value;
+			}
+
+			const results = Array.isArray(serverResults) ? serverResults : [];
+			if (results.length > 0) {
+				setItems(results, {
+					append: true,
+					totalCount: totalItemCount.value,
+				});
+			}
+			filteredItems.value = results;
+			return results;
+		} catch (error) {
+			console.error("SKU search failed:", error);
+			if (token === codeSearchToken) {
+				filteredItems.value = [];
+			}
+			return [];
+		} finally {
+			if (token === codeSearchToken) {
+				codeSearchInFlight = false;
+				isLoading.value = false;
+			}
+		}
+	};
+
 	const filterByGroup = async (group: string) => {
 		itemGroup.value = group;
 
-		if (searchTerm.value) {
+		if (codeSearchTerm.value) {
+			await searchItemsByCode(codeSearchTerm.value);
+		} else if (searchTerm.value) {
 			await searchItems(searchTerm.value);
 		} else {
 			if (cachedPagination.value.enabled && shouldUseIndexedSearch()) {
@@ -1064,7 +1152,10 @@ export const useItemsStore = defineStore("items", () => {
 		});
 		clearSearchCache();
 
-		if (searchTerm.value) {
+		if (codeSearchTerm.value) {
+			// Re-fetch so SKU results carry the new price list's rates.
+			searchItemsByCode(codeSearchTerm.value);
+		} else if (searchTerm.value) {
 			filteredItems.value = performLocalSearch(
 				searchTerm.value,
 				items.value,
@@ -1220,7 +1311,7 @@ export const useItemsStore = defineStore("items", () => {
 		}
 
 		clearSearchCache();
-		if (searchTerm.value) {
+		if (searchTerm.value || codeSearchTerm.value) {
 			// Do NOT re-run the search over `items.value` here. Search results can come
 			// from IndexedDB or the server (see searchItems / searchServerItems), so they
 			// are not guaranteed to exist in the in-memory page — re-searching would drop
@@ -1276,6 +1367,7 @@ export const useItemsStore = defineStore("items", () => {
 		totalItemCount,
 		itemsLoaded,
 		searchTerm,
+		codeSearchTerm,
 		itemGroup,
 		lastSearch,
 		posProfile,
@@ -1297,6 +1389,7 @@ export const useItemsStore = defineStore("items", () => {
 		loadItemGroups,
 		loadCachedItems,
 		searchItems,
+		searchItemsByCode,
 		filterByGroup,
 		updatePriceList,
 		refreshItems,
