@@ -2753,6 +2753,32 @@ def _map_delivery_dates(data):
             item.setdefault("posa_delivery_date", item_delivery)
 
 
+def _absorb_excess_basket_discount_into_delivery(so_doc, charge_rate):
+    """Return the delivery amount left after any basket discount the items can't absorb.
+
+    The POS subtracts the basket discount from the whole order and then adds delivery,
+    so a discount larger than the item total (e.g. 100% off plus a discount matching the
+    delivery fee) nets to the delivery being waived. ERPNext can only discount the item
+    amounts and silently leaves the excess unapplied, so the order came out at the full
+    delivery charge and demanded payment. Cap the discount at the item total and take the
+    excess off the delivery row instead.
+    """
+    discount = flt(getattr(so_doc, "discount_amount", 0))
+    if discount <= 0 or flt(getattr(so_doc, "additional_discount_percentage", 0)):
+        return charge_rate
+
+    items_total = flt(
+        sum(flt(row.qty) * flt(row.rate) for row in so_doc.get("items") or []),
+        so_doc.precision("discount_amount"),
+    )
+    excess = flt(discount - items_total, so_doc.precision("discount_amount"))
+    if excess <= 0:
+        return charge_rate
+
+    so_doc.discount_amount = items_total
+    return max(flt(charge_rate - excess, so_doc.precision("discount_amount")), 0)
+
+
 def _apply_delivery_charges_tax_row(so_doc):
     """Mirror POS Awesome delivery-charge behavior for Sales Orders.
 
@@ -2811,12 +2837,14 @@ def _apply_delivery_charges_tax_row(so_doc):
         charge_rate = flt(charge_rate / conversion_rate, so_doc.precision("posa_delivery_charges_rate"))
         so_doc.posa_delivery_charges_rate = charge_rate
 
+    charge_amount = _absorb_excess_basket_discount_into_delivery(so_doc, charge_rate)
+
     so_doc.append(
         "taxes",
         {
             "charge_type": "Actual",
             "description": current_charge_name,
-            "tax_amount": charge_rate,
+            "tax_amount": charge_amount,
             "cost_center": charges_doc.cost_center,
             "account_head": charges_doc.shipping_account,
         },
@@ -3536,7 +3564,7 @@ def submit_sales_order(order, data=None):
             )(),
         )
         allow_no_payment_order_submit = cint(order.get("allow_no_payment_order_submit"))
-        if settlement_state == "none" and not allow_no_payment_order_submit:
+        if settlement_state == "none" and not allow_no_payment_order_submit and order_total > 0:
             frappe.throw(_("Please enter payment amount"))
 
         header_doc = type(
@@ -3568,7 +3596,9 @@ def submit_sales_order(order, data=None):
 
     settlement_state = _get_sales_order_settlement_state(order, so_doc)
     allow_no_payment_order_submit = cint(order.get("allow_no_payment_order_submit"))
-    if settlement_state == "none" and not allow_no_payment_order_submit:
+    # A fully discounted order has nothing to collect, so don't demand a payment for it.
+    nothing_to_pay = flt(getattr(so_doc, "rounded_total", 0) or getattr(so_doc, "grand_total", 0)) <= 0
+    if settlement_state == "none" and not allow_no_payment_order_submit and not nothing_to_pay:
         frappe.throw(_("Please enter payment amount"))
     if settlement_state == "deposit" and _is_collection_delivery_charge_selected(so_doc):
         frappe.throw(_("Deposits are not allowed when a collection delivery charge is selected"))

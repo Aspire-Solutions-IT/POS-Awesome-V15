@@ -1469,6 +1469,31 @@ class TestSalesOrderSubmit(TestCase):
         self.assertEqual(so_doc.docstatus, 0)
         self.assertFalse(enqueue.called)
 
+    def test_submit_sales_order_allows_fully_discounted_order_without_payment(self):
+        so_doc = FakeSalesOrder(grand_total=0)
+        order = {"doctype": "Sales Order", "payments": []}
+
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=so_doc), patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(
+            sales_orders, "_apply_kit_meta_fields"
+        ), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(
+            sales_orders, "_auto_create_delivery_note_for_non_ns_items"
+        ), patch.object(
+            sales_orders, "_apply_new_sales_order_customer_credit"
+        ), patch.object(
+            sales_orders.frappe, "enqueue"
+        ) as enqueue:
+            result = sales_orders.submit_sales_order(json.dumps(order), json.dumps({}))
+
+        self.assertEqual(so_doc.docstatus, 1)
+        self.assertEqual(result["name"], so_doc.name)
+        self.assertFalse(enqueue.called)
+
     def test_submit_sales_order_replaces_duplicate_customer_order_ref(self):
         so_doc = FakeSalesOrder()
         order = {
@@ -2500,6 +2525,52 @@ class _RecordingPaymentEntry:
 
     def submit(self):
         self.submitted = True
+
+
+class TestBasketDiscountAbsorbedByDelivery(TestCase):
+    """EB-5: a basket discount larger than the items must waive delivery, not leave it owed."""
+
+    @staticmethod
+    def _doc(discount, rows, percentage=0):
+        return SimpleNamespace(
+            discount_amount=discount,
+            additional_discount_percentage=percentage,
+            items=[SimpleNamespace(qty=qty, rate=rate) for qty, rate in rows],
+            get=lambda key, default=None: None,
+            precision=lambda _fieldname: 2,
+        )
+
+    def _absorb(self, doc, charge=39.99):
+        doc.get = lambda key, default=None: doc.items if key == "items" else default
+        return sales_orders._absorb_excess_basket_discount_into_delivery(doc, charge)
+
+    def test_full_item_discount_plus_delivery_sized_discount_waives_delivery(self):
+        doc = self._doc(39.99, [(1, 0)])
+
+        self.assertEqual(self._absorb(doc), 0)
+        self.assertEqual(doc.discount_amount, 0)
+
+    def test_partial_excess_reduces_delivery_only_by_the_excess(self):
+        doc = self._doc(60, [(1, 50)])
+
+        self.assertEqual(self._absorb(doc), 29.99)
+        self.assertEqual(doc.discount_amount, 50)
+
+    def test_excess_beyond_delivery_never_makes_delivery_negative(self):
+        doc = self._doc(100, [(1, 0)])
+
+        self.assertEqual(self._absorb(doc), 0)
+
+    def test_discount_within_items_is_untouched(self):
+        doc = self._doc(10, [(1, 50)])
+
+        self.assertEqual(self._absorb(doc), 39.99)
+        self.assertEqual(doc.discount_amount, 10)
+
+    def test_percentage_discount_is_untouched(self):
+        doc = self._doc(10, [(1, 0)], percentage=5)
+
+        self.assertEqual(self._absorb(doc), 39.99)
 
 
 class TestManagedSalesOrderPaymentReferences(TestCase):
