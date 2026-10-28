@@ -2,6 +2,15 @@
 
 All notable changes.
 
+Release 15.29.1 — October 28, 2026
+### ✨ Features
+- Sales Orders: when a POS Profile has Enable Stainguard ticked, an "Add stainguard" tick box, shown with the Stainguard logo, sits above the discount fields in the Active sale card. Ticking it adds the Stainguard item that covers the order value (total without the delivery charge) to the cart, priced like any other POS item, and keeps it on the right item as items are added, removed or repriced. It is removed when unticked, and the box starts unticked for each new sale. The Stainguard items must be sellable on the POS Profile (in one of its item groups and not excluded from the POS), otherwise no cover is offered
+- Split orders: every Sales Order created from one split now carries a shared Split Order Batch, so the Stainguard warranty can treat the split as a single order
+### 🐞 Bug Fixes
+- Sales Orders: a basket discount larger than the items (for example 100% off plus a discount matching the delivery fee) now waives the delivery charge, so the order no longer asks for payment of the delivery fee when submitted without payment (EB-5)
+- Sales Orders: a fully discounted order with nothing to pay can now be submitted from the pay screen without the "Please enter payment amount" error (EB-5)
+_Total: 4 changes_
+
 Release 15.29.0 — October 16, 2026
 ### ✨ Features
 - Claims screen: each action now links to the documents it created (replacement Sales Order, Pick List, return Delivery Note), opening in a new tab (claims)

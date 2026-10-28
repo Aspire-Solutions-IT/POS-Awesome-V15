@@ -1,6 +1,6 @@
 {
   "name": "posawesome",
-  "version": "15.29.0",
+  "version": "15.29.1",
   "main": "electron/main.js",
   "scripts": {
     "dev": "cd frontend && yarn dev",

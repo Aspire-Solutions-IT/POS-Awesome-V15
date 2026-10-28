@@ -139,12 +139,14 @@ export function useItemCreation() {
 			new_item.serial_no_selected = [];
 			new_item.serial_no_selected_count = 0;
 		}
-		// Expand row if batch/serial required
+		// Expand row if batch/serial required. Lines added by the POS itself
+		// (e.g. Stainguard cover) opt out, so the cashier isn't sent to the row.
 		if (
-			(!context?.pos_profile?.posa_auto_set_batch &&
+			!new_item._skip_row_expansion &&
+			((!context?.pos_profile?.posa_auto_set_batch &&
 				new_item.has_batch_no) ||
-			new_item.has_serial_no ||
-			isNsItem
+				new_item.has_serial_no ||
+				isNsItem)
 		) {
 			// Only store the row ID to keep expanded array consistent
 			if (Array.isArray(context.expanded)) {

@@ -3285,6 +3285,7 @@ def _copy_group_order_payload(
     customer_order_ref,
     carries_delivery_charge=True,
     discount_amount=None,
+    split_order_batch=None,
 ):
     group_payload = deepcopy(order)
     group_payload.pop("name", None)
@@ -3294,6 +3295,10 @@ def _copy_group_order_payload(
     group_payload["must_be_fully_allocated"] = 1
     group_payload["posa_split_delivery"] = 0
     group_payload["customer_order_ref"] = customer_order_ref
+    if split_order_batch:
+        # Ties the orders of one split together, so things that treat the split as
+        # a single order (e.g. the Staingard warranty) can find their siblings.
+        group_payload["split_order_batch"] = split_order_batch
 
     if not carries_delivery_charge:
         # Only the designated group should carry the order's delivery charge;
@@ -3407,6 +3412,7 @@ def _build_split_group_documents(order):
     # Groups after the first have their delivery charge stripped, so they can't be
     # recognised as collect-from-store from their own fields; use the original order's.
     is_collect_from_store = _is_collect_from_store_delivery_charge(order.get("posa_delivery_charges"))
+    split_order_batch = f"SPLIT-{secrets.token_hex(5).upper()}"
     built = []
     for index, group in enumerate(groups, start=1):
         preferred_ref = _build_group_customer_order_ref(batch_root, index)
@@ -3417,6 +3423,7 @@ def _build_split_group_documents(order):
             preferred_ref,
             carries_delivery_charge=(index == 1),
             discount_amount=discount_allocations.get(group["group_id"]),
+            split_order_batch=split_order_batch,
         )
         _ensure_unique_customer_order_ref(payload)
         so_doc = _save_sales_order_doc_from_payload(payload)

@@ -248,6 +248,10 @@
 			:return_discount_meta="return_discount_meta"
 			:estimateLoading="estimate_delivery_loading && !estimate_for_payment"
 			:payLoading="estimate_delivery_loading && estimate_for_payment"
+			:stainguardAvailable="stainguard_available"
+			:stainguardEnabled="stainguard_enabled"
+			:stainguardStatus="stainguard_status"
+			@update:stainguard-enabled="stainguard_enabled = $event"
 			@update:additional_discount="set_additional_discount_input"
 			@update:additional_discount_percentage="set_additional_discount_percentage_input"
 			@commit_discount_amount="commit_discount_amount"
@@ -294,6 +298,12 @@ import {
 	clearSupplyTypes,
 	supplyByRowId,
 } from "../../utils/suggestedSplitGroups";
+import {
+	emptyStainguardStatus,
+	flushStainguardSync,
+	scheduleStainguardSync,
+	stainguardAvailable,
+} from "./invoice_utils/stainguard";
 import invoiceItemMethods from "./invoice/invoiceItemMethods";
 import invoiceComputed from "./invoice/invoiceComputed";
 import invoiceWatchers from "./invoice/invoiceWatchers";
@@ -435,6 +445,9 @@ export default {
 			estimate_delivery_dialog: false,
 			delivery_estimate: null,
 			estimate_for_payment: false,
+			stainguard_enabled: false,
+			stainguard_item_code: null,
+			stainguard_status: emptyStainguardStatus(),
 		};
 	},
 
@@ -455,6 +468,25 @@ export default {
 	computed: {
 		cart_supply_signature() {
 			return cartSupplySignature(this.items);
+		},
+		stainguard_available() {
+			return stainguardAvailable(this);
+		},
+		// The cart as the Stainguard band sees it: everything but the cover line
+		// itself, so adding or swapping the cover doesn't set off another sync.
+		stainguard_signature() {
+			const lines = this.items
+				.filter((item) => item.item_code !== this.stainguard_item_code)
+				.map((item) => [item.item_code, item.qty, item.rate].join("|"))
+				.join(";");
+			return [
+				lines,
+				this.additional_discount,
+				this.delivery_charges_rate,
+				this.customer,
+				this.invoiceType,
+				this.stainguard_enabled,
+			].join("#");
 		},
 		items: {
 			get() {
@@ -960,6 +992,8 @@ export default {
 			this.new_line = data;
 		},
 		async handleShowPaymentRequest() {
+			// Let a pending Stainguard sync settle so payment sees the real cart.
+			await flushStainguardSync(this);
 			// Orders quote the delivery window before payment. Anything the estimate
 			// can't run on (no customer, empty cart) goes straight to show_payment,
 			// which reports it, and a failed estimate never blocks taking payment.
@@ -1194,6 +1228,18 @@ export default {
 		// Adding, removing or changing the qty of a line invalidates the estimate.
 		cart_supply_signature() {
 			clearSupplyTypes(this.items);
+		},
+		// Keep the Stainguard cover on the right band as the cart changes.
+		stainguard_signature() {
+			scheduleStainguardSync(this);
+		},
+		// An emptied cart (sale finished or cleared) starts the next one unticked.
+		"items.length"(length, previous) {
+			if (!length && previous) {
+				this.stainguard_enabled = false;
+				this.stainguard_item_code = null;
+				this.stainguard_status = emptyStainguardStatus();
+			}
 		},
 		confirm_payment_dialog(val) {
 			if (val) {

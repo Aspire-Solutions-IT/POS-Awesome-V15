@@ -41,50 +41,69 @@
 						</div>
 					</div>
 
-					<div class="summary-hero__field-wrap">
-						<v-text-field
-							ref="additionalDiscountField"
-							v-model="additionalDiscountDisplay"
-							@update:model-value="handleAdditionalDiscountUpdate"
-							@change="$emit('commit_discount_amount')"
-							@focus="handleAdditionalDiscountFocus"
-							@blur="handleAdditionalDiscountBlur"
-							:rules="[isNumber]"
-							:label="frappe._('Discount')"
-							prepend-inner-icon="mdi-cash-minus"
-							variant="solo"
-							density="compact"
-							color="warning"
-							hide-details="auto"
-							:prefix="currencySymbol(pos_profile.currency)"
-							:disabled="discountFieldsDisabled"
-							autocomplete="off"
-							name="posa-additional-discount"
-							class="summary-field summary-field--dock"
+					<div class="summary-hero__controls">
+						<StainguardToggle
+							:available="stainguardAvailable"
+							:model-value="stainguardEnabled"
+							:status="stainguardStatus"
+							:format-currency="formatCurrency"
+							@update:model-value="emit('update:stainguard-enabled', $event)"
 						/>
+						<div class="summary-hero__field-wrap">
+							<v-text-field
+								ref="additionalDiscountField"
+								v-model="additionalDiscountDisplay"
+								@update:model-value="handleAdditionalDiscountUpdate"
+								@change="$emit('commit_discount_amount')"
+								@focus="handleAdditionalDiscountFocus"
+								@blur="handleAdditionalDiscountBlur"
+								:rules="[isNumber]"
+								:label="frappe._('Discount')"
+								prepend-inner-icon="mdi-cash-minus"
+								variant="solo"
+								density="compact"
+								color="warning"
+								hide-details="auto"
+								:prefix="currencySymbol(pos_profile.currency)"
+								:disabled="discountFieldsDisabled"
+								autocomplete="off"
+								name="posa-additional-discount"
+								class="summary-field summary-field--dock"
+							/>
 
-						<v-text-field
-							ref="additionalDiscountPercentageField"
-							v-model="additionalDiscountPercentageDisplay"
-							@update:model-value="handleAdditionalDiscountPercentageUpdate"
-							@change="$emit('update_discount_umount')"
-							@focus="handleAdditionalDiscountPercentageFocus"
-							@blur="handleAdditionalDiscountPercentageBlur"
-							:rules="[isNumber]"
-							:label="frappe._('Discount %')"
-							suffix="%"
-							prepend-inner-icon="mdi-percent"
-							variant="solo"
-							density="compact"
-							color="warning"
-							hide-details="auto"
-							:disabled="discountFieldsDisabled"
-							autocomplete="off"
-							name="posa-additional-discount-percentage"
-							class="summary-field summary-field--dock"
-						/>
+							<v-text-field
+								ref="additionalDiscountPercentageField"
+								v-model="additionalDiscountPercentageDisplay"
+								@update:model-value="handleAdditionalDiscountPercentageUpdate"
+								@change="$emit('update_discount_umount')"
+								@focus="handleAdditionalDiscountPercentageFocus"
+								@blur="handleAdditionalDiscountPercentageBlur"
+								:rules="[isNumber]"
+								:label="frappe._('Discount %')"
+								suffix="%"
+								prepend-inner-icon="mdi-percent"
+								variant="solo"
+								density="compact"
+								color="warning"
+								hide-details="auto"
+								:disabled="discountFieldsDisabled"
+								autocomplete="off"
+								name="posa-additional-discount-percentage"
+								class="summary-field summary-field--dock"
+							/>
+						</div>
 					</div>
 				</div>
+			</v-col>
+
+			<v-col v-if="useCompactSaleDock && stainguardAvailable" cols="12">
+				<StainguardToggle
+					:available="stainguardAvailable"
+					:model-value="stainguardEnabled"
+					:status="stainguardStatus"
+					:format-currency="formatCurrency"
+					@update:model-value="emit('update:stainguard-enabled', $event)"
+				/>
 			</v-col>
 
 			<v-col cols="12" :md="stackSummary ? 12 : 5" class="invoice-summary-actions">
@@ -170,6 +189,7 @@ import { useResponsive } from "../../../composables/core/useResponsive";
 import { useUIStore } from "../../../stores/uiStore";
 import InvoiceActionButtons from "./InvoiceActionButtons.vue";
 import ParkedOrdersList from "./ParkedOrdersList.vue";
+import StainguardToggle from "./StainguardToggle.vue";
 
 defineOptions({
 	name: "InvoiceSummary",
@@ -192,6 +212,10 @@ const props = defineProps({
 	// Owned by the parent: the spinners have to last for the server round trip.
 	estimateLoading: Boolean,
 	payLoading: Boolean,
+	// "Add stainguard" tick box; the parent keeps the cart's cover line in step.
+	stainguardAvailable: Boolean,
+	stainguardEnabled: Boolean,
+	stainguardStatus: Object,
 });
 
 const emit = defineEmits([
@@ -199,6 +223,7 @@ const emit = defineEmits([
 	"update:additional_discount_percentage",
 	"update_discount_umount",
 	"commit_discount_amount",
+	"update:stainguard-enabled",
 	"save-and-clear",
 	"load-drafts",
 	"cancel-sale",
@@ -515,6 +540,13 @@ defineExpose({
 	color: var(--pos-text-secondary);
 }
 
+.summary-hero__controls {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	width: min(340px, 100%);
+}
+
 .summary-hero__field-wrap {
 	display: grid;
 	grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
@@ -575,6 +607,7 @@ defineExpose({
 		padding: 12px;
 	}
 
+	.summary-hero__controls,
 	.summary-hero__field-wrap {
 		width: 100%;
 	}

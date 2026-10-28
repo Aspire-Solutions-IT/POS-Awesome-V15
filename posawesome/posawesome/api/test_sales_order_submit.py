@@ -1666,6 +1666,27 @@ class TestSalesOrderSubmit(TestCase):
         self.assertEqual(second_payload["posa_delivery_charges_rate"], 0)
         self.assertEqual(second_payload["taxes"], [])
 
+    def test_group_payload_carries_the_split_order_batch(self):
+        order = {"items": [{"item_code": "ITEM-1", "posa_row_id": "row-1", "qty": 1, "rate": 100}]}
+        item_map = {item["posa_row_id"]: item for item in order["items"]}
+        group = {"group_id": "living", "label": "Living", "row_ids": ["row-1"]}
+
+        payload = sales_orders._copy_group_order_payload(
+            order, group, item_map, "ORBASE1234-01", split_order_batch="SPLIT-ABC123"
+        )
+        unbatched = sales_orders._copy_group_order_payload(order, group, item_map, "ORBASE1234-01")
+
+        self.assertEqual(payload["split_order_batch"], "SPLIT-ABC123")
+        self.assertNotIn("split_order_batch", unbatched)
+
+    def test_build_split_group_documents_gives_every_group_the_same_batch(self):
+        built, _add_tag = self._build_store_pickup_split_groups(0)
+
+        batches = {entry["payload"].get("split_order_batch") for entry in built}
+        self.assertEqual(len(built), 2)
+        self.assertEqual(len(batches), 1)
+        self.assertTrue(next(iter(batches)).startswith("SPLIT-"))
+
     def test_allocate_group_discounts_prorates_fixed_amount_by_net_total(self):
         # The till case: a whole-order discount larger than one of the groups.
         # Copied verbatim it would exceed that group's own total and ERPNext
