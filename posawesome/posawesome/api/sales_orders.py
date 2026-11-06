@@ -2817,7 +2817,7 @@ def _apply_delivery_charges_tax_row(so_doc):
             recalc_needed = True
 
     if not current_charge_name:
-        if hasattr(so_doc, "white_glove"):
+        if hasattr(so_doc, "white_glove") and not so_doc.get("split_order_batch"):
             so_doc.white_glove = 0
         if recalc_needed:
             so_doc.calculate_taxes_and_totals()
@@ -3412,6 +3412,10 @@ def _build_split_group_documents(order):
     # Groups after the first have their delivery charge stripped, so they can't be
     # recognised as collect-from-store from their own fields; use the original order's.
     is_collect_from_store = _is_collect_from_store_delivery_charge(order.get("posa_delivery_charges"))
+    charge_name = order.get("posa_delivery_charges")
+    is_white_glove = bool(
+        charge_name and flt(frappe.get_cached_value("Delivery Charges", charge_name, "white_glove"))
+    )
     split_order_batch = f"SPLIT-{secrets.token_hex(5).upper()}"
     built = []
     for index, group in enumerate(groups, start=1):
@@ -3425,6 +3429,9 @@ def _build_split_group_documents(order):
             discount_amount=discount_allocations.get(group["group_id"]),
             split_order_batch=split_order_batch,
         )
+        # The delivery fee belongs to one order, but its service applies to the
+        # whole split. The save path derives this flag from the fee otherwise.
+        payload["white_glove"] = int(is_white_glove)
         _ensure_unique_customer_order_ref(payload)
         so_doc = _save_sales_order_doc_from_payload(payload)
         so_doc.must_be_fully_allocated = 1

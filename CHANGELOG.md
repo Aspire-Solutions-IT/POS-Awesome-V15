@@ -2,6 +2,11 @@
 
 All notable changes.
 
+Release 15.29.2 — November 6, 2026
+### 🐞 Bug Fixes
+- Split Sales Orders: White Glove service now appears on every order in the split when the selected delivery service includes it, while the delivery charge remains on only one order (EB-11)
+_Total: 1 change_
+
 Release 15.29.1 — October 28, 2026
 ### ✨ Features
 - Sales Orders: when a POS Profile has Enable Stainguard ticked, an "Add stainguard" tick box, shown with the Stainguard logo, sits above the discount fields in the Active sale card. Ticking it adds the Stainguard item that covers the order value (total without the delivery charge) to the cart, priced like any other POS item, and keeps it on the right item as items are added, removed or repriced. It is removed when unticked, and the box starts unticked for each new sale. The Stainguard items must be sellable on the POS Profile (in one of its item groups and not excluded from the POS), otherwise no cover is offered

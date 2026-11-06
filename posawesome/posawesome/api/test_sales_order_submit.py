@@ -1847,7 +1847,7 @@ class TestSalesOrderSubmit(TestCase):
             1093.72,
         )
 
-    def _build_store_pickup_split_groups(self, collect_from_store_flag):
+    def _build_store_pickup_split_groups(self, collect_from_store_flag, white_glove_flag=0):
         order = {
             "doctype": "Sales Order",
             "customer_order_ref": "ORBASE1234",
@@ -1870,11 +1870,15 @@ class TestSalesOrderSubmit(TestCase):
             doc.update(payload)
             return doc
 
+        def charge_lookup(doctype, name, fieldname):
+            self.assertEqual((doctype, name), ("Delivery Charges", "Store Pickup"))
+            return {"collect_from_store": collect_from_store_flag, "white_glove": white_glove_flag}[fieldname]
+
         with patch.object(
             sales_orders, "_save_sales_order_doc_from_payload", side_effect=fake_save_sales_order_doc
         ), patch.object(sales_orders.frappe, "get_all", return_value=[]), patch.object(
             sales_orders, "_add_tag_ignore_permissions"
-        ) as add_tag, self._collect_from_store_lookup(collect_from_store_flag):
+        ) as add_tag, patch.object(sales_orders.frappe, "get_cached_value", side_effect=charge_lookup, create=True):
             built = sales_orders._build_split_group_documents(order)
 
         return built, add_tag
@@ -1893,6 +1897,33 @@ class TestSalesOrderSubmit(TestCase):
         _built, add_tag = self._build_store_pickup_split_groups(0)
 
         add_tag.assert_not_called()
+
+    def test_white_glove_service_applies_to_every_split_group(self):
+        built, _ = self._build_store_pickup_split_groups(0, white_glove_flag=1)
+
+        self.assertEqual([entry["payload"]["white_glove"] for entry in built], [1, 1])
+        self.assertEqual([entry["payload"]["posa_delivery_charges"] for entry in built], ["Store Pickup", ""])
+
+    def test_non_white_glove_service_does_not_mark_split_groups(self):
+        built, _ = self._build_store_pickup_split_groups(0)
+
+        self.assertEqual([entry["payload"]["white_glove"] for entry in built], [0, 0])
+
+    def test_delivery_charge_sync_keeps_white_glove_on_uncharged_split_sibling(self):
+        def make_doc(batch):
+            doc = SimpleNamespace(white_glove=1, taxes=[], posa_delivery_charges="")
+            doc.get = lambda field: getattr(doc, field, None)
+            doc.is_new = lambda: True
+            return doc
+
+        split_doc = make_doc("SPLIT-ABC123")
+        split_doc.split_order_batch = "SPLIT-ABC123"
+        sales_orders._apply_delivery_charges_tax_row(split_doc)
+        self.assertEqual(split_doc.white_glove, 1)
+
+        ordinary_doc = make_doc(None)
+        sales_orders._apply_delivery_charges_tax_row(ordinary_doc)
+        self.assertEqual(ordinary_doc.white_glove, 0)
 
     def test_submit_sales_order_forces_full_allocation_for_pos_split_delivery(self):
         order = {
