@@ -2793,3 +2793,150 @@ class TestManagedSalesOrderPermlevelReset(TestCase):
         after = self._document("Sales Order", "SO-1")
         after.validate_higher_perm_levels()
         self.assertTrue(after.permlevel_reset_ran)
+
+
+class TestItemChangePaymentLink(TestCase):
+    """EB-12: an item increase can be settled by sending a Revolut link instead of
+    taking the money at the till."""
+
+    def _order(self):
+        doc = FakeSalesOrder(grand_total=300)
+        doc.docstatus = 1
+        doc.advance_paid = 300
+        doc.status = self.initial_status
+        doc.hold_log = []
+        doc.reload = lambda: None
+        doc.update_status = lambda status: (doc.hold_log.append(("status", status)), setattr(doc, "status", status))
+        doc.db_set = lambda field, value: doc.hold_log.append(("db_set", field, value))
+        doc.add_comment = lambda *args: doc.hold_log.append(("comment",) + args)
+        return doc
+
+    initial_status = "To Deliver and Bill"
+
+    def _run(self, payment, revolut_enabled=1, active_link=None, applied=None, order_email="order@example.com"):
+        doc = self._order()
+        calls = {"applied": applied if applied is not None else [], "created": [], "deleted": [], "pe": []}
+
+        link_module = types.ModuleType("customer_due_dates.revolut.payment_link")
+
+        def fake_create(**kwargs):
+            calls["created"].append(kwargs)
+            return {
+                "payment_request": "PR-1",
+                "checkout_url": "https://checkout.example/abc",
+                "amount": kwargs["amount"],
+            }
+
+        link_module.create_payment_link = fake_create
+        link_module.delete_payment_link = lambda **kwargs: calls["deleted"].append(kwargs)
+        link_module.get_active_payment_link = lambda *args: active_link
+
+        def fake_single_value(doctype, field):
+            return revolut_enabled if (doctype, field) == ("Revolut Settings", "enabled") else None
+
+        data = {"name": doc.name, "items": [], "payment": payment}
+        with patch.dict(
+            sys.modules,
+            {
+                "customer_due_dates.revolut": types.ModuleType("customer_due_dates.revolut"),
+                "customer_due_dates.revolut.payment_link": link_module,
+            },
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_validate_managed_sales_order_doc"
+        ), patch.object(
+            sales_orders, "_prepare_managed_sales_order_item_rows", return_value=[]
+        ), patch.object(
+            sales_orders, "_validate_managed_sales_order_item_mutations"
+        ), patch.object(
+            sales_orders, "_managed_sales_order_projected_grand_total", return_value=350.0
+        ), patch.object(
+            sales_orders, "_apply_managed_sales_order_items", side_effect=lambda *a: calls["applied"].append(a)
+        ), patch.object(
+            sales_orders, "_resolve_customer_email", return_value=order_email
+        ), patch.object(
+            sales_orders, "_serialize_managed_sales_order", side_effect=lambda d: {"name": d.name}
+        ), patch.object(
+            sales_orders, "create_payment_entry", side_effect=lambda **k: calls["pe"].append(k) or _RecordingPaymentEntry()
+        ), patch.object(
+            sales_orders, "_queue_receipt_email"
+        ), patch.object(
+            sales_orders.frappe.db, "get_single_value", side_effect=fake_single_value
+        ):
+            result = sales_orders.update_managed_sales_order_items_with_payment(data)
+        calls["doc"] = doc
+        return result, calls
+
+    def test_link_saves_items_and_sends_link_for_the_increase(self):
+        result, calls = self._run(
+            {"method": "payment_link", "email": "cust@example.com", "send_email": 1, "expected_amount": 50}
+        )
+
+        self.assertEqual(len(calls["applied"]), 1)
+        self.assertEqual(calls["pe"], [])
+        created = calls["created"][0]
+        self.assertEqual(created["amount"], 50.0)
+        self.assertEqual(created["email_to"], "cust@example.com")
+        self.assertEqual(created["send_email"], 1)
+        self.assertFalse(created["check_permission"])
+        self.assertEqual(result["payment_link"]["checkout_url"], "https://checkout.example/abc")
+        self.assertTrue(result["payment_link"]["emailed"])
+        self.assertIsNone(result["payment_entry"])
+
+    def test_link_defaults_recipient_to_the_order_email(self):
+        _result, calls = self._run({"method": "payment_link", "send_email": 1})
+
+        self.assertEqual(calls["created"][0]["email_to"], "order@example.com")
+
+    def test_existing_link_is_replaced_not_reused(self):
+        _result, calls = self._run(
+            {"method": "payment_link", "send_email": 0}, active_link={"payment_request": "PR-OLD"}
+        )
+
+        self.assertEqual(len(calls["deleted"]), 1)
+        self.assertEqual(calls["deleted"][0]["reference_name"], "SO-TEST-0001")
+        self.assertEqual(calls["created"][0]["amount"], 50.0)
+
+    def test_link_refused_before_any_write_when_revolut_disabled(self):
+        applied = []
+        with self.assertRaises(RuntimeError):
+            self._run({"method": "payment_link", "send_email": 0}, revolut_enabled=0, applied=applied)
+        self.assertEqual(applied, [])
+
+    def test_link_refused_before_any_write_without_a_recipient(self):
+        applied = []
+        with self.assertRaises(RuntimeError):
+            self._run({"method": "payment_link", "send_email": 1}, applied=applied, order_email="")
+        self.assertEqual(applied, [])
+
+    def test_unknown_method_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            self._run({"method": "cheque"})
+
+    def test_till_path_still_takes_payment_by_default(self):
+        _result, calls = self._run({"mode_of_payment": "Cash", "expected_amount": 50})
+
+        self.assertEqual(calls["created"], [])
+        self.assertEqual(calls["pe"][0]["amount"], 50.0)
+
+    def test_link_puts_the_order_on_a_payment_hold_the_release_clears(self):
+        _result, calls = self._run({"method": "payment_link", "send_email": 0})
+
+        doc = calls["doc"]
+        self.assertEqual(doc.status, "On Hold")
+        # Must be one of release_sales_order_from_hold_if_paid's PAYMENT_RELATED_HOLD_REASONS.
+        self.assertIn(("db_set", "posa_pending_auto_hold_reason", "Partial Payment"), doc.hold_log)
+        self.assertTrue(doc.flags.ignore_permissions)
+
+    def test_order_already_on_hold_keeps_its_existing_hold(self):
+        self.initial_status = "On Hold"
+        _result, calls = self._run({"method": "payment_link", "send_email": 0})
+
+        self.assertEqual(calls["doc"].hold_log, [])
+        self.assertEqual(len(calls["created"]), 1)
+
+    def test_till_payment_does_not_hold_the_order_and_releases_a_payment_hold(self):
+        with patch.object(sales_orders, "_release_managed_sales_order_from_hold") as release:
+            _result, calls = self._run({"mode_of_payment": "Cash", "expected_amount": 50})
+
+        self.assertEqual(calls["doc"].hold_log, [])
+        release.assert_called_once_with("SO-TEST-0001", source="POS item change payment")

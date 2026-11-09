@@ -2058,12 +2058,26 @@ def update_managed_sales_order_items_with_payment(data):
 
     mode_of_payment = cstr(payment.get("mode_of_payment") or "").strip()
     use_credit = cint(payment.get("use_credit") or 0)
+    # "till" takes the money now; "payment_link" saves the items and sends the
+    # customer a Revolut link for the balance, which the webhook records once paid.
+    method = cstr(payment.get("method") or "till").strip()
+    if method not in ("till", "payment_link"):
+        frappe.throw(_("Unknown payment method {0}.").format(method))
     sales_order_name = cstr(payload.get("name") or "").strip()
     if not sales_order_name:
         frappe.throw(_("Sales Order name is required."))
 
     doc = frappe.get_doc("Sales Order", sales_order_name)
     _validate_managed_sales_order_doc(doc)
+
+    link_recipient = None
+    if method == "payment_link":
+        # Checked before anything is written, so a refusal leaves the order alone.
+        if cint(frappe.db.get_single_value("Revolut Settings", "enabled")) != 1:
+            frappe.throw(_("Payment links are unavailable because the Revolut integration is disabled."))
+        link_recipient = validate_optional_email(payment.get("email")) or _resolve_customer_email(doc)
+        if cint(payment.get("send_email", 1)) and not link_recipient:
+            frappe.throw(_("Enter an email address to send the payment link to."))
 
     # Re-derive the amount owed server side from the rows about to be written. A
     # client supplied figure must never decide what the customer is charged.
@@ -2106,6 +2120,9 @@ def update_managed_sales_order_items_with_payment(data):
             "credit_applied": credit_applied,
         }
 
+    if method == "payment_link":
+        return _send_item_change_payment_link(doc, amount_due, link_recipient, payment, credit_applied)
+
     if not mode_of_payment:
         frappe.throw(_("Mode of Payment is required."))
     _validate_managed_payment_reference(mode_of_payment, payment.get("reference_no"))
@@ -2134,6 +2151,9 @@ def update_managed_sales_order_items_with_payment(data):
     payment_entry.save()
     payment_entry.submit()
 
+    # Clears a payment hold (e.g. one placed when a link was sent) now that the
+    # balance is paid at the till instead, as Pay Remaining Balance does.
+    _release_managed_sales_order_from_hold(doc.name, source="POS item change payment")
     doc.reload()
 
     # Queued after commit, so the customer is only sent a revised receipt if the
@@ -2145,6 +2165,76 @@ def update_managed_sales_order_items_with_payment(data):
         "payment_entry": payment_entry.name,
         "amount_paid": amount_due,
         "credit_applied": credit_applied,
+    }
+
+
+def _hold_managed_sales_order_for_payment_link(doc):
+    """Keep the order On Hold until the customer pays the link for the new balance.
+
+    Uses the same payment hold reasons the POS submit flow sets, because those are the
+    only ones release_sales_order_from_hold_if_paid clears -- the Revolut webhook
+    calls it once the link is paid, as does Pay Remaining Balance at the till. An
+    order already On Hold is left as it is: a payment hold will clear on payment
+    anyway, and a deliberate hold (Other, a release date) must outlive the payment.
+    """
+    if doc.status == "On Hold":
+        return
+
+    reason = "Partial Payment" if flt(getattr(doc, "advance_paid", 0)) > 0.001 else "No Payment"
+    doc.flags.ignore_permissions = True
+    doc.update_status("On Hold")
+    doc.db_set("posa_pending_auto_hold_reason", reason)
+    doc.add_comment(
+        "Comment",
+        _("Reason for hold: awaiting payment link for updated items. Released automatically once paid."),
+    )
+
+
+def _send_item_change_payment_link(doc, amount_due, recipient, payment, credit_applied):
+    """Payment-link branch of update_managed_sales_order_items_with_payment.
+
+    The items are already on the order, so its outstanding balance is the new
+    amount_due. Any link still pending is for the old balance and would be handed
+    back unchanged by create_payment_link's reuse, so it is cancelled first and a
+    fresh one raised for the full balance. A failure here rolls the item changes
+    back with it; if the old link was already cancelled on Revolut's side, the next
+    send mints a new order under the restored Payment Request.
+    """
+    from customer_due_dates.revolut.payment_link import (
+        create_payment_link,
+        delete_payment_link,
+        get_active_payment_link,
+    )
+
+    # Before anything leaves for Revolut, so a failed hold rolls back with nothing sent.
+    _hold_managed_sales_order_for_payment_link(doc)
+
+    if get_active_payment_link("Sales Order", doc.name):
+        delete_payment_link(reference_doctype="Sales Order", reference_name=doc.name, check_permission=False)
+
+    send_email = cint(payment.get("send_email", 1))
+    result = create_payment_link(
+        reference_doctype="Sales Order",
+        reference_name=doc.name,
+        amount=amount_due,
+        email_to=recipient or None,
+        send_email=send_email,
+        # Authorised by this whitelisted layer, as in create_managed_sales_order_payment_link.
+        check_permission=False,
+    )
+
+    doc.reload()
+    return {
+        "sales_order": _serialize_managed_sales_order(doc),
+        "payment_entry": None,
+        "amount_paid": 0.0,
+        "credit_applied": credit_applied,
+        "payment_link": {
+            "payment_request": result.get("payment_request"),
+            "checkout_url": result.get("checkout_url"),
+            "amount": result.get("amount"),
+            "emailed": bool(send_email),
+        },
     }
 
 

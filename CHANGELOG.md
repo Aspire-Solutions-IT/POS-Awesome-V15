@@ -2,6 +2,11 @@
 
 All notable changes.
 
+Release 15.30.0 — November 9, 2026
+### ✨ Features
+- Sales Order Management: when edited items take an order above what the customer has already paid, the Payment Required dialog now offers "Send Payment Link" alongside taking payment at the till. The changes are saved and the customer is emailed a Revolut payment link for the balance, which is recorded automatically once they pay. The checkout link is shown afterwards so it can be copied, and any payment link already pending on the order is replaced by the new one. The order is put on hold until the link is paid and comes off hold automatically once the payment completes (an order already on hold keeps its existing hold). Available when the Revolut integration is enabled (EB-12)
+_Total: 1 change_
+
 Release 15.29.2 — November 6, 2026
 ### 🐞 Bug Fixes
 - Split Sales Orders: White Glove service now appears on every order in the split when the selected delivery service includes it, while the delivery charge remains on only one order (EB-11)

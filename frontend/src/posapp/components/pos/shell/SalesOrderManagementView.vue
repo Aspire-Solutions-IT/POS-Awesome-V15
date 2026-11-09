@@ -1160,8 +1160,57 @@
 								"
 							/>
 						</v-alert>
+					<v-btn-toggle
+						v-if="itemPaymentTillAmount > 0.001 && canSendItemPaymentLink"
+						v-model="itemPaymentMethod"
+						mandatory
+						divided
+						density="compact"
+						color="primary"
+						variant="outlined"
+						class="mb-4 w-100"
+					>
+						<v-btn value="till" class="flex-grow-1" prepend-icon="mdi-cash-register" :disabled="itemPaymentLoading">
+							{{ __("Take Payment Now") }}
+						</v-btn>
+						<v-btn
+							value="payment_link"
+							class="flex-grow-1"
+							prepend-icon="mdi-credit-card-outline"
+							:disabled="itemPaymentLoading"
+						>
+							{{ __("Send Payment Link") }}
+						</v-btn>
+					</v-btn-toggle>
+					<template v-if="isItemPaymentLink">
+						<p class="mb-4">
+							{{
+								__(
+									"The changes are saved now and the customer is sent a link for the balance. The order is put on hold until they pay, then released automatically.",
+								)
+							}}
+						</p>
+						<p v-if="selectedOrder?.revolut_payment_link" class="mb-4">
+							{{ __("The order's existing payment link will be cancelled and replaced by this one.") }}
+						</p>
+						<v-text-field
+							v-model="itemPaymentLinkForm.email"
+							:label="__('Send To')"
+							density="compact"
+							hide-details="auto"
+							type="email"
+							:rules="[emailRule]"
+							class="pos-themed-input mb-2"
+						/>
+						<v-checkbox
+							v-model="itemPaymentLinkForm.sendEmail"
+							:label="__('Email the link to the customer')"
+							density="compact"
+							hide-details
+						/>
+					</template>
 					<v-select
-						v-if="itemPaymentTillAmount > 0.001"
+						v-if="itemPaymentTillAmount > 0.001 && !isItemPaymentLink"
 						v-model="itemPaymentMode"
 						:items="paymentModeOptions"
 						item-title="label"
@@ -1172,7 +1221,7 @@
 						class="pos-themed-input mb-4"
 					/>
 					<v-text-field
-						v-if="itemPaymentTillAmount > 0.001"
+						v-if="itemPaymentTillAmount > 0.001 && !isItemPaymentLink"
 						v-model="itemPaymentReference"
 						:label="isCardMode(itemPaymentMode) ? __('Revolut Reference') : __('Reference No')"
 						:hint="
@@ -1195,14 +1244,10 @@
 						color="success"
 						variant="flat"
 						:loading="itemPaymentLoading"
-						:disabled="
-							(itemPaymentTillAmount > 0 &&
-								(!itemPaymentMode || !!paymentReferenceError(itemPaymentMode, itemPaymentReference))) ||
-							itemPaymentLoading
-						"
+						:disabled="itemPaymentConfirmDisabled"
 						@click="confirmItemPayment"
 					>
-						{{ itemPaymentTillAmount > 0.001 ? __("Take Payment and Save") : __("Apply Credit and Save") }}
+						{{ itemPaymentConfirmLabel }}
 					</v-btn>
 				</v-card-actions>
 			</v-card>
@@ -1529,6 +1574,13 @@ const itemPaymentMode = ref("");
 const itemPaymentReference = ref("");
 const itemPaymentError = ref("");
 const itemPaymentLoading = ref(false);
+// "till" takes the money now; "payment_link" saves the items and sends a Revolut
+// link for the balance, which is recorded when the customer pays.
+const itemPaymentMethod = ref<"till" | "payment_link">("till");
+const itemPaymentLinkForm = reactive({
+	email: "",
+	sendEmail: true,
+});
 // Opt-in: spending a customer's credit is their decision, not a silent netting off.
 const useCustomerCredit = ref(false);
 const creditNotice = ref("");
@@ -2526,6 +2578,33 @@ const itemPaymentTillAmount = computed(() => {
 	return useCustomerCredit.value ? Math.max(due - creditApplicable.value, 0) : due;
 });
 
+/** Same gate as the Take Payment menu's Send Payment Link option. */
+const canSendItemPaymentLink = computed(() => Boolean(frappe.boot?.revolut_enabled));
+
+/** Only meaningful while there is something left to take after any credit. */
+const isItemPaymentLink = computed(
+	() => itemPaymentMethod.value === "payment_link" && itemPaymentTillAmount.value > 0.001,
+);
+
+const itemPaymentLinkEmailValid = computed(() => isValidOptionalEmail(itemPaymentLinkForm.email));
+
+const itemPaymentConfirmDisabled = computed(() => {
+	if (itemPaymentLoading.value) return true;
+	if (itemPaymentTillAmount.value <= 0.001) return false;
+	if (isItemPaymentLink.value) {
+		return (
+			itemPaymentLinkForm.sendEmail &&
+			(!itemPaymentLinkForm.email.trim() || !itemPaymentLinkEmailValid.value)
+		);
+	}
+	return !itemPaymentMode.value || !!paymentReferenceError(itemPaymentMode.value, itemPaymentReference.value);
+});
+
+const itemPaymentConfirmLabel = computed(() => {
+	if (itemPaymentTillAmount.value <= 0.001) return __("Apply Credit and Save");
+	return isItemPaymentLink.value ? __("Save and Send Link") : __("Take Payment and Save");
+});
+
 const closeItemPaymentDialog = () => {
 	// Cancelled: nothing was sent, so the edits stay staged and unsaved.
 	itemPaymentDialogOpen.value = false;
@@ -2534,13 +2613,8 @@ const closeItemPaymentDialog = () => {
 };
 
 const confirmItemPayment = async () => {
-	if (!selectedOrder.value || !itemPaymentMode.value || itemPaymentLoading.value) return;
-	if (
-		itemPaymentTillAmount.value > 0.001 &&
-		paymentReferenceError(itemPaymentMode.value, itemPaymentReference.value)
-	) {
-		return;
-	}
+	if (!selectedOrder.value || itemPaymentConfirmDisabled.value) return;
+	const sendingLink = isItemPaymentLink.value;
 	itemPaymentLoading.value = true;
 	itemPaymentError.value = "";
 	try {
@@ -2552,20 +2626,53 @@ const confirmItemPayment = async () => {
 					items: buildItemPayload(),
 					payment: {
 						use_credit: useCustomerCredit.value ? 1 : 0,
-						mode_of_payment: itemPaymentMode.value,
-						reference_no: itemPaymentReference.value.trim() || null,
 						// Guards against the total moving while the dialog was open.
 						expected_amount: Number(itemPaymentPreview.value?.amount_due || 0),
+						...(sendingLink
+							? {
+									method: "payment_link",
+									email: itemPaymentLinkForm.sendEmail ? itemPaymentLinkForm.email.trim() : null,
+									send_email: itemPaymentLinkForm.sendEmail ? 1 : 0,
+								}
+							: {
+									method: "till",
+									mode_of_payment: itemPaymentMode.value,
+									reference_no: itemPaymentReference.value.trim() || null,
+								}),
 					},
 				},
 			},
-			{ freeze: true, freeze_message: __("Taking payment and updating the order...") },
+			{
+				freeze: true,
+				freeze_message: sendingLink
+					? __("Updating the order and creating the payment link...")
+					: __("Taking payment and updating the order..."),
+			},
 		);
 		const creditApplied = Number(message?.credit_applied || 0);
 		selectedOrder.value = message?.sales_order || selectedOrder.value;
 		resetForm(selectedOrder.value);
 		itemPaymentDialogOpen.value = false;
 		itemPaymentPreview.value = null;
+		if (message?.payment_link) {
+			// Hand over to the existing link dialog's result step so the cashier can
+			// copy the checkout URL, exactly as after Take Payment > Send Payment Link.
+			revolutError.value = "";
+			revolutForm.sendEmail = Boolean(message.payment_link.emailed);
+			revolutResult.value = {
+				payment_request: message.payment_link.payment_request,
+				checkout_url: message.payment_link.checkout_url,
+			};
+			revolutDialogOpen.value = true;
+			toastStore.show({
+				title: message.payment_link.emailed
+					? __("Sales Order updated. Payment link emailed to the customer.")
+					: __("Sales Order updated. Payment link created."),
+				color: "success",
+			});
+			await loadOrders();
+			return;
+		}
 		toastStore.show({
 			title: creditApplied
 				? __("{0} of credit applied. Sales Order updated.", [
@@ -2578,7 +2685,10 @@ const confirmItemPayment = async () => {
 	} catch (error: any) {
 		console.error("Failed to take payment for Sales Order changes", error);
 		// Server rolls back on failure, so the items are not saved either.
-		itemPaymentError.value = getErrorMessage(error, __("Unable to take payment"));
+		itemPaymentError.value = getErrorMessage(
+			error,
+			sendingLink ? __("Unable to create the payment link") : __("Unable to take payment"),
+		);
 	} finally {
 		itemPaymentLoading.value = false;
 	}
@@ -2627,6 +2737,9 @@ const saveOrder = async () => {
 			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
 			itemPaymentReference.value = referenceForMode(itemPaymentMode.value, "");
 			itemPaymentError.value = "";
+			itemPaymentMethod.value = "till";
+			itemPaymentLinkForm.email = String(selectedOrder.value?.receipt_email?.recipient || "");
+			itemPaymentLinkForm.sendEmail = true;
 			useCustomerCredit.value = false;
 			itemPaymentDialogOpen.value = true;
 			return;
