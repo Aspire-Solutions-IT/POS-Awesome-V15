@@ -1,5 +1,6 @@
 import api from "../../../services/api";
 import { parseBooleanSetting } from "../../../utils/stock";
+import { isStainguardItem, stainguardSyncMutation } from "../../../utils/stainguard";
 
 declare const __: (_text: string, _args?: any[]) => string;
 
@@ -86,9 +87,6 @@ export function syncStainguard(context: any): Promise<void> {
 	return context._stainguardSync;
 }
 
-const cartLine = (context: any, itemCode: string) =>
-	(context.items || []).filter((item: any) => item?.item_code === itemCode);
-
 async function runSync(context: any) {
 	const wanted = Boolean(
 		stainguardAvailable(context) &&
@@ -99,10 +97,10 @@ async function runSync(context: any) {
 
 	if (!wanted) {
 		// Ticked off, or the cart can no longer carry cover: take our line out.
-		if (context.stainguard_item_code) {
-			cartLine(context, context.stainguard_item_code).forEach((line: any) => context.remove_item(line));
-			context.stainguard_item_code = null;
-		}
+		(context.items || [])
+			.filter((line: any) => isStainguardItem(line, context.stainguard_item_code))
+			.forEach((line: any) => context.remove_item(line, stainguardSyncMutation));
+		context.stainguard_item_code = null;
 		context.stainguard_status = emptyStainguardStatus();
 		return;
 	}
@@ -134,6 +132,7 @@ async function runSync(context: any) {
 		);
 
 		if (inCart.length === 1 && offer && inCart[0].item_code === offer.item_code) {
+			inCart[0].is_staingard_item = 1;
 			context.stainguard_item_code = offer.item_code;
 			context.stainguard_status = {
 				loading: false,
@@ -145,7 +144,7 @@ async function runSync(context: any) {
 		}
 
 		// Wrong band, a duplicate, or no cover wanted: clear ours out first.
-		inCart.forEach((line) => context.remove_item(line));
+		inCart.forEach((line) => context.remove_item(line, stainguardSyncMutation));
 		context.stainguard_item_code = null;
 
 		if (!offer) {
@@ -167,6 +166,10 @@ async function runSync(context: any) {
 				exact: 1,
 				limit: 1,
 			})) || [];
+		if (signature !== context.stainguard_signature) {
+			context._stainguardDirty = true;
+			return;
+		}
 		if (!item) {
 			context.stainguard_status = {
 				...emptyStainguardStatus(),
@@ -179,7 +182,10 @@ async function runSync(context: any) {
 		context.stainguard_item_code = offer.item_code;
 		// NS items open their row for editing when added; the cover goes
 		// straight into the cart instead.
-		await context.add_item({ ...item, qty: 1, _skip_row_expansion: true });
+		await context.add_item(
+			{ ...item, is_staingard_item: 1, qty: 1, _skip_row_expansion: true },
+			{ stainguardMutation: stainguardSyncMutation },
+		);
 		context.stainguard_status = {
 			loading: false,
 			item_name: item.item_name || offer.item_name,

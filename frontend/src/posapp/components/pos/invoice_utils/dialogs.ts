@@ -1,5 +1,6 @@
 import { isOffline } from "../../../../offline/index";
 import { fetchDraftInvoices } from "../../../utils/draftInvoices";
+import { flushStainguardSync } from "./stainguard";
 
 declare const __: (_text: string, _args?: any[]) => string;
 declare const frappe: any;
@@ -40,6 +41,8 @@ const hasOnlyNsItemsForCollection = (context: any): boolean => {
 };
 
 export async function show_payment(context: any) {
+	await flushStainguardSync(context);
+	if (context._openingPayment) return;
 	if (context._suppressClosePaymentsTimer) {
 		clearTimeout(context._suppressClosePaymentsTimer);
 		context._suppressClosePaymentsTimer = null;
@@ -59,6 +62,7 @@ export async function show_payment(context: any) {
 			: context.invoiceStore.postingDate;
 	}
 
+	context._openingPayment = true;
 	try {
 		if (!context.customer) {
 			context.toastStore.show({
@@ -122,6 +126,7 @@ export async function show_payment(context: any) {
 			}
 		}
 
+		invoice_doc.posa_stainguard_enabled = Boolean(context.stainguard_enabled);
 		invoice_doc.currency = context.selected_currency || context.pos_profile.currency;
 		invoice_doc.conversion_rate = context.conversion_rate || 1;
 		invoice_doc.plc_conversion_rate = context._getPlcConversionRate ? context._getPlcConversionRate() : 1;
@@ -172,6 +177,19 @@ export async function show_payment(context: any) {
 			});
 		}
 
+		let yellowTicketPhotos;
+		try {
+			yellowTicketPhotos = await context.yellowTicketPhotoGate.ensureYellowTicketPhotos(
+				context.pos_profile,
+				invoice_doc,
+				context.invoiceType,
+				context.currentCashier?.user,
+			);
+		} catch (error) {
+			console.error("Yellow Ticket photo check failed", error);
+		}
+		if (yellowTicketPhotos === false) return;
+
 		await context.$nextTick();
 
 		const useDesktopPaymentDialog =
@@ -200,6 +218,7 @@ export async function show_payment(context: any) {
 			message: error.message,
 		});
 	} finally {
+		context._openingPayment = false;
 		context._suppressClosePaymentsTimer = setTimeout(() => {
 			context._suppressClosePayments = false;
 			context._suppressClosePaymentsTimer = null;

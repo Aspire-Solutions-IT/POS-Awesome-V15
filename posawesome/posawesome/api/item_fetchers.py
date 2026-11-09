@@ -276,6 +276,8 @@ def _fetch_item_meta(item_codes: Tuple[str, ...]):
     ]
     if _item_has_custom_tfw_price():
         fields.append("custom_tfw_price")
+    if frappe.db.has_column("Item", "is_staingard_item"):
+        fields.append("is_staingard_item")
     if _item_has_pos_on_sale_price():
         fields.append("pos_on_sale_price")
     if frappe.db.has_column("Item", "default_bom"):
@@ -661,6 +663,7 @@ def merge_item_row(
             "has_batch_no": meta.get("has_batch_no"),
             "has_serial_no": meta.get("has_serial_no"),
             "allow_negative_stock": meta.get("allow_negative_stock"),
+            "is_staingard_item": cint(meta.get("is_staingard_item")),
             "purchase_uom": meta.get("purchase_uom"),
             "standard_rate": meta.get("standard_rate"),
             "valuation_rate": meta.get("valuation_rate"),

@@ -327,6 +327,7 @@ fixtures = [
                     "POS Profile-column_break_uolvm",
                     "POS Profile-posa_allow_mpesa_reconcile_payments",
                     "POS Profile-posa_enable_camera_scanning",
+                    "POS Profile-posa_require_yellow_ticket_photos",
                     "POS Profile-posa_camera_scan_type",
                     "POS Profile-posa_language",
                     "POS Profile-posa_enable_return_validity",

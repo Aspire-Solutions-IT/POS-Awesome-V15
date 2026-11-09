@@ -62,6 +62,8 @@ export interface SubmissionCallbacks {
 
 export interface SubmissionControlOptions {
 	allowNoPaymentOrderSubmit?: boolean;
+	/** Photos for Yellow Ticket lines; linked to the sale on the server after submit. */
+	yellowTicketPhotos?: Record<string, any>;
 }
 
 export function usePaymentSubmission(options: PaymentSubmissionOptions) {
@@ -717,6 +719,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			allow_no_payment_order_submit: Boolean(
 				salesOrderCheckout && controlOptions.allowNoPaymentOrderSubmit,
 			),
+			yellow_ticket_photos: controlOptions.yellowTicketPhotos || undefined,
 			sales_order_settlement_state: salesOrderCheckout
 				? (
 					controlOptions.allowNoPaymentOrderSubmit &&

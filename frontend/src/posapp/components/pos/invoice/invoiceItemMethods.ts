@@ -204,8 +204,8 @@ const invoiceItemMethods: Record<string, unknown> &
 	},
 
 	// Actions
-	remove_item(item) {
-		return Actions.remove_item(this, item);
+	remove_item(item, mutation) {
+		return Actions.remove_item(this, item, mutation);
 	},
 	add_item(item, options) {
 		return Actions.add_item(this, item, options);

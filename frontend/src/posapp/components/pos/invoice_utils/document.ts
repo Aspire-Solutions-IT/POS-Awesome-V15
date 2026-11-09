@@ -4,6 +4,7 @@ import {
 	isOffline,
 } from "../../../../offline/index";
 import { _getPlcConversionRate } from "./currency";
+import { isStainguardItem } from "../../../utils/stainguard";
 
 declare const flt: (_value: unknown, _precision?: number) => number;
 declare const frappe: any;
@@ -179,6 +180,7 @@ export function get_invoice_doc(context: any) {
 	doc.ignore_pricing_rule = 0;
 	doc.company = doc.company || context.pos_profile?.company || null;
 	doc.pos_profile = doc.pos_profile || context.pos_profile?.name || null;
+	doc.posa_stainguard_enabled = Boolean(context.stainguard_enabled);
 	if (doc.doctype === "Sales Order") {
 		doc.pos_sales_person =
 			doc.pos_sales_person ||
@@ -588,6 +590,7 @@ export function get_invoice_items(context: any) {
 		);
 		const new_item = {
 			item_code: item.item_code,
+			is_staingard_item: isStainguardItem(item, context.stainguard_item_code) ? 1 : 0,
 			// Retain the item name for offline invoices
 			// Fallback to item_code if item_name is not available
 			item_name: item.item_name || item.item_code,

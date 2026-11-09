@@ -10,7 +10,7 @@ vi.mock("../src/posapp/components/pos/invoice_utils/currency", () => ({
 	_getPlcConversionRate: vi.fn(() => 1),
 }));
 
-import { get_invoice_doc } from "../src/posapp/components/pos/invoice_utils/document";
+import { get_invoice_doc, get_invoice_items } from "../src/posapp/components/pos/invoice_utils/document";
 
 describe("get_invoice_doc", () => {
 	beforeEach(() => {
@@ -18,6 +18,14 @@ describe("get_invoice_doc", () => {
 			const number = Number(value || 0);
 			return Number(number.toFixed(precision));
 		};
+	});
+
+	it("preserves the Stainguard marker in serialized basket lines", () => {
+		const lines = get_invoice_items({
+			invoiceType: "Order", pos_profile: { currency: "GBP" }, selected_currency: "GBP",
+			items: [{ item_code: "SG-1", is_staingard_item: 1, qty: 1, rate: 40 }],
+		});
+		expect(lines[0]).toMatchObject({ item_code: "SG-1", is_staingard_item: 1 });
 	});
 
 	it("updates customer title when draft customer changes", () => {

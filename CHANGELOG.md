@@ -2,6 +2,14 @@
 
 All notable changes.
 
+Release 15.31.0 — November 9, 2026
+### ✨ Features
+- Yellow Ticket photos: when a POS Profile has "Require Yellow Ticket Photos" ticked and photos are switched on in Yellow Ticket Photo Settings, pressing pay with a Yellow Ticket or NS item in the basket asks for photos of each qualifying line. NS-ACCESSORY items (including suffixes such as -AA, -AB and -AD) need only 1 photo per line; other items use the normal minimum, which defaults to 3 in the settings. Counts and completion checks use each line's minimum both online and offline. The photo prompt appears after the delivery date confirmations and before the payment screen opens; cancelling keeps the cashier on the sale. Photos are taken with the till's camera and are saved on the till first, so a slow or failed upload never stops the sale; they upload in the background and appear as attachments on the Sales Order or Sales Invoice. If the till camera isn't working, "Use a phone" shows a QR code: scan it with any phone to take or choose photos there, and the till's counts update as they arrive. If the till is offline and its camera isn't working, the sale can still be completed with its photos recorded as owed (GI-7)
+### 🐞 Bug Fixes
+- Yellow Ticket photo checks exclude Stainguard cover items, including when working offline, even if the cover has an NS item code or belongs to the Yellow Ticket group (GI-7)
+- Stainguard cover is now controlled only by the "Add stainguard" checkbox. Cashiers cannot manually add, delete, rename, reprice, discount, change the quantity or unit, or open the cover's item editor. Automatic cover selection and band changes continue to work, and reopening a draft restores its cover checkbox. Sales Order checkout also rejects altered cover lines.
+_Total: 3 changes_
+
 Release 15.30.0 — November 9, 2026
 ### ✨ Features
 - Sales Order Management: when edited items take an order above what the customer has already paid, the Payment Required dialog now offers "Send Payment Link" alongside taking payment at the till. The changes are saved and the customer is emailed a Revolut payment link for the balance, which is recorded automatically once they pay. The checkout link is shown afterwards so it can be copied, and any payment link already pending on the order is replaced by the new one. The order is put on hold until the link is paid and comes off hold automatically once the payment completes (an order already on hold keeps its existing hold). Available when the Revolut integration is enabled (EB-12)

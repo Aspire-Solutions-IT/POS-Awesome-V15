@@ -12,6 +12,7 @@ import {
 	stainguardAvailable,
 	syncStainguard,
 } from "../src/posapp/components/pos/invoice_utils/stainguard";
+import { stainguardSyncMutation } from "../src/posapp/utils/stainguard";
 
 const OFFER = "customer_due_dates.staingard.pos.get_stainguard_offer";
 const SEARCH = "posawesome.posawesome.api.items.search_items_by_code";
@@ -92,6 +93,7 @@ describe("Stainguard cover sync", () => {
 		});
 		expect(ctx.add_item).toHaveBeenCalledWith(
 			expect.objectContaining({ item_code: "SG-1", qty: 1, _skip_row_expansion: true }),
+			{ stainguardMutation: stainguardSyncMutation },
 		);
 		expect(ctx.stainguard_item_code).toBe("SG-1");
 		expect(ctx.stainguard_status).toMatchObject({ loading: false, item_name: "Stainguard 1", rate: 40 });
@@ -121,7 +123,7 @@ describe("Stainguard cover sync", () => {
 
 		await syncStainguard(ctx);
 
-		expect(ctx.remove_item).toHaveBeenCalledWith(oldCover);
+		expect(ctx.remove_item).toHaveBeenCalledWith(oldCover, stainguardSyncMutation);
 		expect(ctx.items.map((item: any) => item.item_code)).toEqual(["SOFA", "SG-1"]);
 		expect(ctx.stainguard_item_code).toBe("SG-1");
 	});
@@ -133,7 +135,7 @@ describe("Stainguard cover sync", () => {
 
 		await syncStainguard(ctx);
 
-		expect(ctx.remove_item).toHaveBeenCalledWith(cover);
+		expect(ctx.remove_item).toHaveBeenCalledWith(cover, stainguardSyncMutation);
 		expect(ctx.stainguard_item_code).toBeNull();
 		expect(ctx.stainguard_status.message).toBe("No Stainguard cover for this order value");
 	});
@@ -161,6 +163,14 @@ describe("Stainguard cover sync", () => {
 
 		expect(apiCall).not.toHaveBeenCalled();
 		expect(ctx.remove_item).not.toHaveBeenCalled();
+	});
+
+	it("removes restored cover rows even before a code has been tracked", async () => {
+		const cover = { ...coverRow(), is_staingard_item: 1 };
+		const ctx = context({ stainguard_enabled: false, items: [cover] });
+		await syncStainguard(ctx);
+		expect(ctx.items).toEqual([]);
+		expect(ctx.remove_item).toHaveBeenCalledWith(cover, stainguardSyncMutation);
 	});
 
 	it("takes the cover out when the cart stops being an order", async () => {
@@ -207,6 +217,19 @@ describe("Stainguard cover sync", () => {
 
 		expect(ctx.add_item).not.toHaveBeenCalled();
 		expect(ctx.stainguard_status.loading).toBe(false);
+	});
+
+	it("does not add a stale cover if unticked during the item lookup", async () => {
+		const ctx = context();
+		apiCall.mockResolvedValueOnce({ offer: { item_code: "SG-1" }, cart_item_codes: [] });
+		apiCall.mockImplementationOnce(async () => {
+			ctx.stainguard_enabled = false;
+			ctx.stainguard_signature = "unticked";
+			return [{ item_code: "SG-1", rate: 40 }];
+		});
+		await syncStainguard(ctx);
+		expect(ctx.add_item).not.toHaveBeenCalled();
+		expect(ctx.stainguard_item_code).toBeNull();
 	});
 
 	it("says so when the cover is not sellable in the POS", async () => {

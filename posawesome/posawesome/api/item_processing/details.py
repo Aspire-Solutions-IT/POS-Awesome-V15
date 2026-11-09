@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import nowdate
+from frappe.utils import cint, nowdate
 from posawesome.posawesome.api.item_fetchers import ItemDetailAggregator, get_batches
 from posawesome.posawesome.api.item_processing.stock import get_stock_availability
 from posawesome.posawesome.api.utils import _ensure_pos_profile, log_perf_event
@@ -178,6 +178,8 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
     res["batch_no_data"] = batch_no_data
     res["serial_no_data"] = serial_no_data
     res["allow_negative_stock"] = item_meta.get("allow_negative_stock")
+    if frappe.db.has_column("Item", "is_staingard_item"):
+        res["is_staingard_item"] = cint(frappe.get_cached_value("Item", item_code, "is_staingard_item"))
 
     # Add UOMs data directly from item document
     uoms = frappe.get_all(

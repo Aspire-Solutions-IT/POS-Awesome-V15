@@ -8,6 +8,7 @@ vi.mock("../src/posapp/stores/toastStore", () => ({
 
 import { useItemAddition } from "../src/posapp/composables/pos/items/useItemAddition";
 import { useBatchSerial } from "../src/posapp/composables/pos/shared/useBatchSerial";
+import { stainguardSyncMutation } from "../src/posapp/utils/stainguard";
 
 const createItem = () => ({
 	item_code: "ITEM-001",
@@ -69,6 +70,35 @@ describe("useItemAddition new line behavior", () => {
 
 		expect(context.items).toHaveLength(1);
 		expect(context.items[0].qty).toBe(2);
+	});
+
+	it.each([1, "1", true])("blocks manual Stainguard additions (%s)", async (flag) => {
+		const api = useItemAddition();
+		const context = createContext();
+		await api.addItem({ ...createItem(), is_staingard_item: flag }, context);
+		expect(context.items).toHaveLength(0);
+	});
+
+	it("allows only the checkbox sync to add and remove cover", async () => {
+		const api = useItemAddition();
+		const context = createContext();
+		await api.addItem({ ...createItem(), is_staingard_item: 1 }, context, stainguardSyncMutation);
+		expect(context.items).toHaveLength(1);
+		const cover = context.items[0];
+		api.removeItem(cover, context);
+		expect(context.items).toHaveLength(1);
+		api.removeItem(cover, context, stainguardSyncMutation);
+		expect(context.items).toHaveLength(0);
+	});
+
+	it("blocks a scan from incrementing the tracked cover without metadata", async () => {
+		const api = useItemAddition();
+		const context = { ...createContext(), stainguard_item_code: "ITEM-001" };
+		context.items.push({ ...createItem(), posa_row_id: "cover" });
+		await api.addItem(createItem(), context);
+		api.removeItem(context.items[0], context);
+		expect(context.items).toHaveLength(1);
+		expect(context.items[0].qty).toBe(1);
 	});
 
 	it("adds matching items as separate rows when new_line is on", async () => {
