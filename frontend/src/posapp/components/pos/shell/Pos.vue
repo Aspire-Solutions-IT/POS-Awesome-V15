@@ -11,6 +11,7 @@
 		<NewAddress></NewAddress>
 		<MpesaPayments></MpesaPayments>
 		<Variants></Variants>
+		<PartnerStartDialog v-if="isPartner" :active="!dialog && !!uiStore.posProfile?.name" />
 		<OpeningDialog
 			v-if="dialog"
 			:dialog="dialog"
@@ -203,6 +204,7 @@
 import ItemsSelector from "../items/ItemsSelector.vue";
 import Invoice from "../Invoice.vue";
 import OpeningDialog from "../shift/OpeningDialog.vue";
+import PartnerStartDialog from "../customer/PartnerStartDialog.vue";
 import { isPartnerMode } from "../../../utils/partnerMode";
 import Payments from "../Payments.vue";
 import YellowTicketPhotoDialog from "../payments/YellowTicketPhotoDialog.vue";
@@ -610,6 +612,8 @@ export default {
 			invoicePanel,
 			eventBus,
 			dialog,
+			uiStore,
+			isPartner: isPartnerMode(),
 		};
 	},
 	data: function () {
@@ -620,6 +624,7 @@ export default {
 		ItemsSelector,
 		Invoice,
 		OpeningDialog,
+		PartnerStartDialog,
 		Payments,
 		YellowTicketPhotoDialog,
 		OrderSuccessDialog,

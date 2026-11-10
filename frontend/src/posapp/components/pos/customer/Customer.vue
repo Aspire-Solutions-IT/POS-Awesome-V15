@@ -6,7 +6,6 @@
 				ref="customerDropdown"
 				class="customer-autocomplete sleek-field pos-themed-input"
 				density="compact"
-				clearable
 				variant="solo"
 				color="primary"
 				:label="customerFieldLabel"
@@ -20,6 +19,9 @@
 				hide-details
 				:customFilter="() => true"
 				:disabled="effectiveReadonly || isCustomerSearchLocked"
+				:readonly="isPartner"
+				:clearable="!isPartner"
+				@click="isPartner && requestPartnerStart()"
 				:menu-props="{ closeOnContentClick: false }"
 				@update:menu="onCustomerMenuToggle"
 				@update:modelValue="onCustomerChange"
@@ -228,6 +230,7 @@ import { storeToRefs } from "pinia";
 import _ from "lodash";
 import UpdateCustomer from "../dialogs/customer/UpdateCustomer.vue";
 import { isPartnerMode } from "../../../utils/partnerMode";
+import { requestPartnerStart } from "../../../utils/partnerStartRequest";
 import { useCustomersStore } from "../../../stores/customersStore.js";
 import { useOnlineStatus } from "../../../composables/core/useOnlineStatus";
 import { useToastStore } from "../../../stores/toastStore.js";
@@ -603,6 +606,7 @@ export default {
 			customerNoDataText,
 			showCreateCustomerAction,
 			isPartner,
+			requestPartnerStart,
 			createCustomerHint,
 			internalCustomer,
 			effectiveReadonly,

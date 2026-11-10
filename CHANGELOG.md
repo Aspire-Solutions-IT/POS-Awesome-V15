@@ -2,6 +2,11 @@
 
 All notable changes.
 
+Release 15.33.0 — November 10, 2026
+### ✨ Features
+- Sales Partners now see a "Who is this order for?" window when the POS opens. They must choose one of their customers and a delivery address before they can start; the choice fills the normal Customer box and the order's delivery address. The chosen address carries through to the Shipping Address on the payment screen, and stays selected if the order code clears it. Clicking the Customer box reopens the window to change customer or address (AP-1).
+_Total: 1 change_
+
 Release 15.32.0 — November 10, 2026
 ### ✨ Features
 - Sales Partners can sign in to a restricted POS to work with their assigned customers and Sales Orders. Each customer uses their own default price list; partners cannot change prices, take payments, create invoices or customers, or access cashier functions. Partner access is checked on the server as well as in the POS (AP-1).
