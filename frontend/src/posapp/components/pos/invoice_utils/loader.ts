@@ -4,6 +4,9 @@ import {
 	getCachedCustomerBalance,
 } from "../../../../offline/index";
 import { useDiscounts } from "../../../composables/pos/shared/useDiscounts";
+import api from "../../../services/api";
+import { isStainguardItem } from "../../../utils/stainguard";
+import { stainguardAvailable } from "./stainguard";
 
 declare const __: (_text: string, _args?: any[]) => string;
 declare const flt: (_value: unknown, _precision?: number) => number;
@@ -189,6 +192,20 @@ export async function load_invoice(
 	}
 
 	context.invoice_doc = data;
+	if (stainguardAvailable(context)) {
+		if (!isOffline() && data.items?.length) {
+			const result = await api.call("customer_due_dates.staingard.pos.get_stainguard_offer", {
+				total: 0,
+				lines: JSON.stringify(data.items.map((item: any) => ({ item_code: item.item_code }))),
+			});
+			data.items.forEach((item: any) => {
+				item.is_staingard_item = (result?.cart_item_codes || []).includes(item.item_code) ? 1 : 0;
+			});
+		}
+		const cover = (data.items || []).find((item: any) => isStainguardItem(item));
+		context.stainguard_enabled = Boolean(cover);
+		context.stainguard_item_code = cover?.item_code || null;
+	}
 	context.posa_offers = data.posa_offers || [];
 	context.items = data.items || [];
 	context.packed_items = data.packed_items || [];

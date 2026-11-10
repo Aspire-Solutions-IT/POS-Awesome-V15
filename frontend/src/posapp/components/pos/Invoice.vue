@@ -288,6 +288,7 @@ import ItemsTable from "./invoice/ItemsTable.vue";
 import InvoiceItemsActionToolbar from "./invoice/InvoiceItemsActionToolbar.vue";
 import PackedItemsDialog from "./invoice/PackedItemsDialog.vue";
 import PaymentConfirmationDialog from "./payments/PaymentConfirmationDialog.vue";
+import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYellowTicketPhotoGate";
 import PriceListRateDialog from "./invoice/PriceListRateDialog.vue";
 import DeliveryEstimateDialog from "./invoice/DeliveryEstimateDialog.vue";
 import api from "../../services/api";
@@ -343,6 +344,7 @@ export default {
 		const invoiceStore = useInvoiceStore();
 		const customersStore = useCustomersStore();
 		const employeeStore = useEmployeeStore();
+		const yellowTicketPhotoGate = useYellowTicketPhotoGate();
 		const toastStore = useToastStore();
 		const { isOnline } = useOnlineStatus();
 
@@ -389,6 +391,7 @@ export default {
 			invoiceStore,
 			customersStore,
 			employeeStore,
+			yellowTicketPhotoGate,
 			currentCashier,
 			selectedCustomer,
 			customerRefreshToken,

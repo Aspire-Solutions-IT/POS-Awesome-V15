@@ -34,6 +34,7 @@
 		     (finishSubmissionNavigation runs before onSuccess), so the screen that
 		     follows a successful payment has to outlive it. -->
 		<OrderSuccessDialog />
+		<YellowTicketPhotoDialog />
 		<v-row
 			v-show="!dialog"
 			dense
@@ -203,6 +204,7 @@ import ItemsSelector from "../items/ItemsSelector.vue";
 import Invoice from "../Invoice.vue";
 import OpeningDialog from "../shift/OpeningDialog.vue";
 import Payments from "../Payments.vue";
+import YellowTicketPhotoDialog from "../payments/YellowTicketPhotoDialog.vue";
 import OrderSuccessDialog from "../payments/OrderSuccessDialog.vue";
 import PosOffers from "../offers/PosOffers.vue";
 import PosCoupons from "../offers/PosCoupons.vue";
@@ -612,6 +614,7 @@ export default {
 		Invoice,
 		OpeningDialog,
 		Payments,
+		YellowTicketPhotoDialog,
 		OrderSuccessDialog,
 		Drafts,
 		InvoiceManagement,

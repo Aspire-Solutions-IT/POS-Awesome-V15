@@ -51,7 +51,7 @@
 						<span>{{ item.pricing_rule_badge.tooltip }}</span>
 					</v-tooltip>
 					<v-btn
-						v-if="posProfile.posa_allow_line_item_name_override && !item.posa_is_replace"
+						v-if="posProfile.posa_allow_line_item_name_override && !item.posa_is_replace && !isStainguard"
 						icon
 						size="x-small"
 						variant="text"
@@ -62,7 +62,7 @@
 						<v-icon size="small">mdi-pencil</v-icon>
 					</v-btn>
 					<v-btn
-						v-if="item.name_overridden"
+						v-if="item.name_overridden && !isStainguard"
 						icon
 						size="x-small"
 						variant="text"
@@ -207,6 +207,7 @@
 					class="posa-cart-table__editor-input"
 					hide-details
 					:loading="warehouseLoading"
+					:disabled="isStainguard"
 					menu-icon="mdi-chevron-down"
 				></v-select>
 				<div
@@ -380,6 +381,7 @@
 					color="primary"
 					variant="tonal"
 					class="ma-0 pa-0"
+					:disabled="isStainguard"
 					@click.stop="$emit('toggle-offer', item)"
 				>
 					{{ item.posa_offer_applied ? __("Remove Offer") : __("Apply Offer") }}
@@ -389,7 +391,7 @@
 			<!-- Actions -->
 			<td v-else-if="column.key === 'actions'" class="text-center" :data-column-key="'actions'">
 				<v-btn
-					:disabled="!!item.posa_is_replace"
+					:disabled="!!item.posa_is_replace || isStainguard"
 					size="small"
 					variant="flat"
 					class="posa-cart-table__delete-btn delete-action-btn"
@@ -410,6 +412,7 @@
 					size="small"
 					variant="text"
 					class="posa-cart-table__expand-btn"
+					:disabled="isStainguard"
 					@click.stop="$emit('toggle-expand')"
 					:aria-label="isExpanded ? __('Close item details') : __('Open item details')"
 				>
@@ -424,6 +427,7 @@
 
 <script setup>
 import { computed, nextTick, ref } from "vue";
+import { isStainguardItem } from "../../../utils/stainguard";
 
 defineOptions({
 	name: "CartItemRow",
@@ -498,6 +502,7 @@ const uomSelect = ref(null);
 const memoDeps = computed(() => {
 	const deps = [
 		props.item.qty,
+		props.item.is_staingard_item,
 		props.item.rate,
 		props.item.amount,
 		props.item.discount_amount,
@@ -534,6 +539,7 @@ const memoDeps = computed(() => {
 });
 
 const qtyLength = computed(() => String(Math.abs(props.item.qty || 0)).replace(".", "").length);
+const isStainguard = computed(() => isStainguardItem(props.item));
 const isNsItem = computed(() =>
 	String(props.item?.item_code || "")
 		.trim()
@@ -543,6 +549,7 @@ const isNsItem = computed(() =>
 
 const disableDecrement = computed(
 	() =>
+		isStainguard.value ||
 		!!props.item.posa_is_replace ||
 		(props.isReturnInvoice &&
 			(props.item.is_free_item || props.item.posa_is_offer || props.item.posa_is_replace)),
@@ -550,6 +557,7 @@ const disableDecrement = computed(
 
 const disableIncrement = computed(
 	() =>
+		isStainguard.value ||
 		!!props.item.posa_is_replace ||
 		props.item.disable_increment ||
 		(props.isReturnInvoice &&
@@ -558,18 +566,20 @@ const disableIncrement = computed(
 
 const disableInput = computed(
 	() =>
-		props.isReturnInvoice &&
-		(props.item.is_free_item || props.item.posa_is_offer || props.item.posa_is_replace),
+		isStainguard.value ||
+		(props.isReturnInvoice &&
+			(props.item.is_free_item || props.item.posa_is_offer || props.item.posa_is_replace)),
 );
 
-const disableUomEdit = computed(() => !!props.item.posa_is_replace);
+const disableUomEdit = computed(() => isStainguard.value || !!props.item.posa_is_replace);
 
 const disableRateEdit = computed(
-	() => !props.posProfile.posa_allow_user_to_edit_rate || !!props.item.posa_is_replace,
+	() => isStainguard.value || !props.posProfile.posa_allow_user_to_edit_rate || !!props.item.posa_is_replace,
 );
 
 const disableDiscountEdit = computed(
 	() =>
+		isStainguard.value ||
 		!props.posProfile.posa_allow_user_to_edit_item_discount ||
 		!!props.item.posa_is_replace ||
 		!!props.item.posa_offer_applied,

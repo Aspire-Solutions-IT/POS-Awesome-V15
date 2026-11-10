@@ -11,6 +11,7 @@ import { useItemCreation } from "./addition/useItemCreation";
 import { useItemBatchSerial } from "./addition/useItemBatchSerial";
 import { useItemBundles } from "./addition/useItemBundles";
 import { useBatchSerial } from "../shared/useBatchSerial";
+import { isStainguardItem, stainguardSyncMutation } from "../../../utils/stainguard";
 
 declare const __: (_text: string, _args?: any[]) => string;
 declare const frappe: any;
@@ -171,7 +172,11 @@ export function useItemAddition() {
 	};
 
 	// Remove item from invoice
-	const removeItem = (item, context) => {
+	const removeItem = (item, context, mutation?: symbol) => {
+		if (isStainguardItem(item, context.stainguard_item_code) && mutation !== stainguardSyncMutation) {
+			toastStore.show({ text: __("Use the Add stainguard checkbox to change cover."), color: "warning" });
+			return false;
+		}
 		if (context.invoiceStore) {
 			context.invoiceStore.removeItemByRowId(item.posa_row_id);
 		} else {
@@ -333,7 +338,11 @@ export function useItemAddition() {
 	// Add item to invoice
 	const addItem = withPerf(
 		"pos:add-item",
-		async function addItemMeasured(item, context) {
+		async function addItemMeasured(item, context, mutation?: symbol) {
+			if (isStainguardItem(item, context.stainguard_item_code) && mutation !== stainguardSyncMutation) {
+				toastStore.show({ text: __("Use the Add stainguard checkbox to change cover."), color: "warning" });
+				return false;
+			}
 			const currentInvoiceType =
 				typeof context?.invoiceType === "string"
 					? context.invoiceType
@@ -910,6 +919,8 @@ export function useItemAddition() {
 		options: { preserveStickies?: boolean } = {},
 	) => {
 		const { preserveStickies = false } = options;
+		context.stainguard_enabled = false;
+		context.stainguard_item_code = null;
 
 		if (context.invoiceStore) {
 			context.invoiceStore.clear({ preserveStickies });

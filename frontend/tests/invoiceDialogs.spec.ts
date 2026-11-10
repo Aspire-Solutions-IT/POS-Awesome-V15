@@ -14,6 +14,10 @@ const createPaymentContext = () => ({
 	invoiceType: "Invoice",
 	pos_profile: { currency: "USD" },
 	invoice_doc: {},
+	currentCashier: { user: "cashier@example.com" },
+	yellowTicketPhotoGate: {
+		ensureYellowTicketPhotos: vi.fn(async (..._args: unknown[]) => undefined as unknown),
+	},
 	process_invoice: vi.fn(async () => ({
 		doctype: "Sales Invoice",
 		grand_total: 10,
@@ -60,6 +64,88 @@ describe("invoice payment dialogs", () => {
 		expect(context.uiStore.setActiveView).toHaveBeenCalledWith("payment");
 		expect(context.eventBus.emit).toHaveBeenCalledWith("set_compact_panel", "selector");
 		expect(context.eventBus.emit).toHaveBeenCalledWith("show_payment", "true");
+	});
+
+	it("keeps the Stainguard checkbox state after refreshing the payment document", async () => {
+		const context = { ...createPaymentContext(), stainguard_enabled: true };
+		context.process_invoice.mockResolvedValueOnce({ name: "ORDER-1" } as any);
+		context.reload_current_invoice_from_backend.mockResolvedValueOnce({ name: "ORDER-1", items: [] } as any);
+		await show_payment(context);
+		expect(context.eventBus.emit).toHaveBeenCalledWith(
+			"send_invoice_doc_payment",
+			expect.objectContaining({ posa_stainguard_enabled: true }),
+		);
+	});
+
+	it.each([500, 1200])("waits for photos before opening payment at width %s", async (width) => {
+		window.innerWidth = width;
+		const context = createPaymentContext();
+		let finishPhotos!: (result: unknown) => void;
+		context.yellowTicketPhotoGate.ensureYellowTicketPhotos.mockImplementationOnce(
+			() => new Promise((resolve) => { finishPhotos = resolve; }),
+		);
+		const checkout = show_payment(context);
+		await vi.waitFor(() => expect(finishPhotos).toBeTypeOf("function"));
+		expect(context.process_invoice).toHaveBeenCalledOnce();
+		expect(context.yellowTicketPhotoGate.ensureYellowTicketPhotos).toHaveBeenCalledWith(
+			context.pos_profile,
+			expect.objectContaining({ doctype: "Sales Invoice" }),
+			"Invoice",
+			"cashier@example.com",
+		);
+		expect(context.uiStore.openPaymentDialog).not.toHaveBeenCalled();
+		expect(context.uiStore.setActiveView).not.toHaveBeenCalled();
+		expect(context.eventBus.emit).not.toHaveBeenCalled();
+		await show_payment(context);
+		expect(context.yellowTicketPhotoGate.ensureYellowTicketPhotos).toHaveBeenCalledOnce();
+		finishPhotos({ photos_owed: 0 });
+		await checkout;
+		if (width >= 992) {
+			expect(context.uiStore.openPaymentDialog).toHaveBeenCalledOnce();
+		} else {
+			expect(context.uiStore.setActiveView).toHaveBeenCalledWith("payment");
+		}
+		expect(context.eventBus.emit).toHaveBeenCalledWith("show_payment", "true");
+	});
+
+	it("stays on the sale when photos are cancelled and allows retrying", async () => {
+		const context = createPaymentContext();
+		context.yellowTicketPhotoGate.ensureYellowTicketPhotos.mockResolvedValueOnce(false);
+		await show_payment(context);
+		expect(context.uiStore.openPaymentDialog).not.toHaveBeenCalled();
+		expect(context.uiStore.setActiveView).not.toHaveBeenCalled();
+		expect(context.eventBus.emit).not.toHaveBeenCalled();
+		await show_payment(context);
+		expect(context.uiStore.setActiveView).toHaveBeenCalledWith("payment");
+	});
+
+	it("checks photos against the refreshed document before payment", async () => {
+		const context = createPaymentContext();
+		context.process_invoice.mockResolvedValueOnce({ name: "ORDER-1" } as any);
+		const refreshed = { name: "ORDER-1", items: [{ item_code: "NS-SOFA", posa_row_id: "row-1" }] };
+		context.reload_current_invoice_from_backend.mockResolvedValueOnce(refreshed);
+		await show_payment(context);
+		expect(context.yellowTicketPhotoGate.ensureYellowTicketPhotos.mock.calls[0][1]).toBe(refreshed);
+	});
+
+	it("does not prompt for photos when sale validation fails", async () => {
+		const context = createPaymentContext();
+		context.validate.mockResolvedValueOnce(false);
+		await show_payment(context);
+		expect(context.yellowTicketPhotoGate.ensureYellowTicketPhotos).not.toHaveBeenCalled();
+		expect(context.uiStore.setActiveView).not.toHaveBeenCalled();
+	});
+
+	it("does not block payment if the photo check itself fails", async () => {
+		const context = createPaymentContext();
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+		context.yellowTicketPhotoGate.ensureYellowTicketPhotos.mockRejectedValueOnce(new Error("Unavailable"));
+		try {
+			await show_payment(context);
+			expect(context.uiStore.setActiveView).toHaveBeenCalledWith("payment");
+		} finally {
+			errorLog.mockRestore();
+		}
 	});
 
 	it("switches compact layout back to the invoice when closing payments", () => {

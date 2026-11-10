@@ -717,6 +717,24 @@ def update_invoice(data):
 
 @frappe.whitelist()
 def submit_invoice(invoice, data, submit_in_background=False):
+    result = _submit_invoice(invoice, data, submit_in_background)
+    if data and "yellow_ticket_photos" in data:
+        from posawesome.posawesome.api.yellow_ticket_photos import link_from_submission
+
+        invoice_payload = json.loads(invoice) if isinstance(invoice, str) else (invoice or {})
+        pos_profile = invoice_payload.get("pos_profile")
+        # Same choice _submit_invoice makes; its result doesn't always say which it used.
+        default_doctype = (
+            "POS Invoice"
+            if pos_profile
+            and frappe.db.get_value("POS Profile", pos_profile, "create_pos_invoice_instead_of_sales_invoice")
+            else "Sales Invoice"
+        )
+        link_from_submission(data, result, default_doctype, pos_profile=pos_profile)
+    return result
+
+
+def _submit_invoice(invoice, data, submit_in_background=False):
     data = json.loads(data)
     invoice = json.loads(invoice)
     client_request_id = extract_invoice_client_request_id(invoice, data)

@@ -3120,6 +3120,9 @@ def _apply_kit_meta_fields(so_doc):
 def update_sales_order(data):
     """Create or update a Sales Order document."""
     data = json.loads(data)
+    from posawesome.posawesome.api.stainguard import validate_pos_stainguard
+
+    validate_pos_stainguard(data)
     _map_delivery_dates(data)
     _apply_ns_default_warehouse(data)
     _force_peterborough_store_collection(data)
@@ -3626,7 +3629,19 @@ def _should_force_full_allocation_for_pos_order(order):
 @frappe.whitelist()
 def submit_sales_order(order, data=None):
     """Submit sales order and create payment entries."""
+    result = _submit_sales_order(order, data)
+    if data and "yellow_ticket_photos" in data:
+        from posawesome.posawesome.api.yellow_ticket_photos import link_from_submission
+
+        link_from_submission(data, result, "Sales Order", pos_profile=json.loads(order).get("pos_profile"))
+    return result
+
+
+def _submit_sales_order(order, data=None):
     order = json.loads(order)
+    from posawesome.posawesome.api.stainguard import validate_pos_stainguard
+
+    validate_pos_stainguard(order)
     data = json.loads(data) if data else {}
     if data.get("sales_order_settlement_state") and not order.get("sales_order_settlement_state"):
         order["sales_order_settlement_state"] = data.get("sales_order_settlement_state")

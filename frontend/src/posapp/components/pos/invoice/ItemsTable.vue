@@ -155,6 +155,7 @@ import { useInvoiceStore } from "../../../stores/invoiceStore";
 import { loadItemSelectorSettings } from "../../../utils/itemSelectorSettings";
 import { logComponentRender } from "../../../utils/perf";
 import CartItemRow from "./CartItemRow.vue";
+import { isStainguardItem } from "../../../utils/stainguard";
 import ItemsTableExpandedRow from "./ItemsTableExpandedRow.vue";
 
 import { useItemsTableSearch } from "../../../composables/pos/items/useItemsTableSearch";
@@ -372,7 +373,7 @@ const activeExpandedItem = computed(() => {
 	if (!expandedId) {
 		return null;
 	}
-	return items.value.find((item: any) => item?.posa_row_id === expandedId) || null;
+	return items.value.find((item: any) => item?.posa_row_id === expandedId && !isStainguardItem(item)) || null;
 });
 
 const handleQtyChange = (item: any, event: any) => {
@@ -456,6 +457,7 @@ const handleRowClick = (event: any, item: any) => {
 };
 
 const handleToggleExpand = (item: any) => {
+	if (isStainguardItem(item)) return;
 	const itemId = item?.posa_row_id;
 	if (!itemId) {
 		return;

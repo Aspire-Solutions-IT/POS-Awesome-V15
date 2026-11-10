@@ -464,6 +464,7 @@ import PaymentOptions from "./payments/PaymentOptions.vue";
 import PaymentSelectionFields from "./payments/PaymentSelectionFields.vue";
 import PaymentDialogs from "./payments/PaymentDialogs.vue";
 import MissingOrderAddressDialog from "./payments/MissingOrderAddressDialog.vue";
+import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYellowTicketPhotoGate";
 
 const props = defineProps({
 	dialogMode: {
@@ -499,6 +500,7 @@ const { selectedCustomer, customerInfo } = storeToRefs(customersStore);
 const { activeView, paymentDialogOpen } = storeToRefs(uiStore);
 const { invoiceType, deliveryCharges, selectedDeliveryCharge } = storeToRefs(invoiceStore);
 const employeeStore = useEmployeeStore();
+const yellowTicketPhotoGate = useYellowTicketPhotoGate();
 const { currentCashier } = storeToRefs(employeeStore);
 
 // State
@@ -2650,6 +2652,28 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 		return;
 	}
 
+	let yellowTicketPhotos;
+	try {
+		yellowTicketPhotos = await yellowTicketPhotoGate.ensureYellowTicketPhotos(
+			pos_profile.value,
+			invoice_doc.value,
+			invoiceType.value,
+			employeeStore.currentCashier?.user,
+		);
+	} catch (error) {
+		// The photo check itself must never stop a sale.
+		console.error("Yellow Ticket photo check failed", error);
+		yellowTicketPhotos = undefined;
+	}
+	if (yellowTicketPhotos === false) {
+		toastStore.show({
+			title: __("Submission cancelled"),
+			detail: __("Yellow Ticket items need photos before payment."),
+			color: "warning",
+		});
+		return;
+	}
+
 	submissionInFlight.value = true;
 	loading.value = true;
 	if (options.allowNoPaymentOrderSubmit) {
@@ -2768,7 +2792,11 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 			...callbackOverrides,
 		}, {
 			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),
+			yellowTicketPhotos,
 		});
+		if (yellowTicketPhotos) {
+			yellowTicketPhotoGate.completeSale();
+		}
 	} catch (error) {
 		console.error("Submission failed propagate:", error);
 		restorePaymentLinesAfterFailedSubmit();

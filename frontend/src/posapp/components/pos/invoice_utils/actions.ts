@@ -2,6 +2,7 @@ import { useItemAddition } from "../../../composables/pos/items/useItemAddition"
 import { get_invoice_doc, get_invoice_items, get_payments } from "./document";
 import { _logPriceListDebug, _buildPriceListSnapshot } from "./currency";
 import { applyReturnDiscountProration } from "./item_updates";
+import { flushStainguardSync } from "./stainguard";
 
 declare const __: (_text: string, _args?: any[]) => string;
 declare const frappe: any;
@@ -51,9 +52,10 @@ function getItemAdditionApi() {
 	return itemAdditionApi;
 }
 
-export function remove_item(context: any, item: any) {
+export function remove_item(context: any, item: any, mutation?: symbol) {
 	const { removeItem } = getItemAdditionApi();
-	const result = removeItem(item, context);
+	const result = removeItem(item, context, mutation);
+	if (result === false) return false;
 	if (context.schedulePricingRuleApplication) {
 		context.schedulePricingRuleApplication();
 	}
@@ -77,7 +79,8 @@ export async function add_item(context: any, item: any, options: any = {}) {
 		item_before: _buildPriceListSnapshot(context, [item]),
 	};
 
-	const res = await addItem(item, context);
+	const res = await addItem(item, context, options?.stainguardMutation);
+	if (res === false) return false;
 
 	if (context.schedulePricingRuleApplication) {
 		context.schedulePricingRuleApplication();
@@ -174,6 +177,7 @@ export async function cancel_invoice(context: any) {
 }
 
 export async function save_and_clear_invoice(context: any) {
+	await flushStainguardSync(context);
 	const { clearInvoice } = getItemAdditionApi();
 	let old_invoice = null;
 	const doc = get_invoice_doc(context);

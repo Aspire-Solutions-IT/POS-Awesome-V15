@@ -47,6 +47,7 @@ export async function update_items_details(context: any, items: any[]) {
 				item.has_batch_no = updated_item.has_batch_no;
 				item.has_serial_no = updated_item.has_serial_no;
 				item.allow_negative_stock = updated_item.allow_negative_stock;
+				if (updated_item.is_staingard_item !== undefined) item.is_staingard_item = updated_item.is_staingard_item;
 				item.batch_no_data = updated_item.batch_no_data;
 				item.serial_no_data = updated_item.serial_no_data;
 
@@ -329,6 +330,7 @@ export function _applyItemDetailPayload(
 	item.has_batch_no = data.has_batch_no;
 	item.has_serial_no = data.has_serial_no;
 	item.allow_negative_stock = data.allow_negative_stock;
+	if (data.is_staingard_item !== undefined) item.is_staingard_item = data.is_staingard_item;
 	if (data.serial_no !== undefined && data.serial_no !== null) {
 		item.serial_no = data.serial_no;
 	}

@@ -233,6 +233,8 @@ def _build_search_plan(
     if has_custom_tfw_name:
         fields.append("custom_tfw_name")
     fields.extend(_item_kit_flag_fields())
+    if frappe.db.has_column("Item", "is_staingard_item"):
+        fields.append("is_staingard_item")
     if include_description:
         fields.append("description")
     if include_image:

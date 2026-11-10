@@ -13,6 +13,9 @@ vi.mock("../src/posapp/composables/pos/shared/useDiscounts", () => ({
 }));
 
 import { load_invoice } from "../src/posapp/components/pos/invoice_utils/loader";
+import api from "../src/posapp/services/api";
+
+vi.mock("../src/posapp/services/api", () => ({ default: { call: vi.fn() } }));
 
 describe("load_invoice draft batch preservation", () => {
 	beforeEach(() => {
@@ -81,5 +84,24 @@ describe("load_invoice draft batch preservation", () => {
 
 		expect(setBatchQty).not.toHaveBeenCalled();
 		expect(context.items[0].batch_no).toBe("BATCH-001");
+	});
+
+	it("restores the checkbox and locks the cover when reopening an order", async () => {
+		vi.mocked(api.call).mockResolvedValueOnce({ cart_item_codes: ["SG-1"] });
+		const context: any = {
+			pos_profile: { posa_create_only_sales_order: 1, posa_enable_stainguard: 1 },
+			clear_invoice: vi.fn(), eventBus: { emit: vi.fn() },
+			invoiceType: "Order", invoiceTypes: ["Order"], items: [], packed_items: [],
+			set_delivery_charges: vi.fn(), formatDateForBackend: (value: string) => value,
+			delivery_charges: [], toastStore: { show: vi.fn() },
+		};
+		await load_invoice(context, {
+			doctype: "Sales Order", customer: "CUST-1",
+			items: [{ item_code: "SOFA", qty: 1 }, { item_code: "SG-1", qty: 1 }],
+		});
+		expect(context.stainguard_enabled).toBe(true);
+		expect(context.stainguard_item_code).toBe("SG-1");
+		expect(context.items[1].is_staingard_item).toBe(1);
+		expect(context.items[0].is_staingard_item).toBe(0);
 	});
 });
