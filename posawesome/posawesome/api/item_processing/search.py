@@ -8,6 +8,8 @@ import frappe
 from frappe import _, as_json
 from frappe.utils import cint, cstr, get_datetime
 from frappe.utils.caching import redis_cache
+from posawesome.posawesome.api import partner_pricing
+from posawesome.posawesome.api.partner_gate import is_partner_user
 
 from posawesome.posawesome.api.item_fetchers import ItemDetailAggregator
 from posawesome.posawesome.api.utils import (
@@ -489,6 +491,8 @@ def _run_item_query(
 
         for item in items_data:
             detail = detail_map.get(item.get("item_code"), {})
+            if partner_pricing.is_unpriced(item, detail):
+                continue
             row = _shape_item_row(
                 dict(item),
                 detail,
@@ -644,7 +648,9 @@ def get_items(
             list(item_groups_tuple),
         )
 
-    if profile_ctx.use_price_list_cache:
+    # The cache key has no user or mode in it, so partner rows (price list only, no cost
+    # fields) must never be written to it, and a partner must never be served from it.
+    if profile_ctx.use_price_list_cache and not is_partner_user():
         result = __get_items(
             profile_ctx.profile_name,
             profile_ctx.warehouse,

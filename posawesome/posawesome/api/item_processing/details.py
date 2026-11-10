@@ -1,5 +1,6 @@
 import frappe
 from frappe.utils import cint, nowdate
+from posawesome.posawesome.api import partner_pricing
 from posawesome.posawesome.api.item_fetchers import ItemDetailAggregator, get_batches
 from posawesome.posawesome.api.item_processing.stock import get_stock_availability
 from posawesome.posawesome.api.utils import _ensure_pos_profile, log_perf_event
@@ -101,6 +102,12 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
             fields=["name as serial_no", "batch_no"],
         )
 
+    partner_customer = None
+    if partner_pricing.is_partner_user():
+        partner_customer = (doc.get("customer") if doc else None) or item.get("customer")
+        partner_pricing.require_scoped_customer(partner_customer)
+        price_list = partner_pricing.get_customer_price_list(partner_customer)
+
     item["selling_price_list"] = price_list
 
     # Determine if multi-currency is enabled on the POS Profile
@@ -164,16 +171,25 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
     )
 
     max_discount = item_meta.get("max_discount")
-    res = get_item_details(
-        item,
-        doc,
-        overwrite_warehouse=False,
-    )
+    if partner_customer:
+        with partner_pricing.as_system_user():
+            res = get_item_details(item, doc, overwrite_warehouse=False)
+    else:
+        res = get_item_details(
+            item,
+            doc,
+            overwrite_warehouse=False,
+        )
     if item.get("is_stock_item") and warehouse:
         if item.get("has_batch_no"):
             res["actual_qty"] = non_expired_batch_qty
         else:
             res["actual_qty"] = get_stock_availability(item_code, warehouse)
+    if partner_customer:
+        partner_pricing.apply_item_detail(
+            res, partner_customer, item.get("uom"), item.get("conversion_factor")
+        )
+        max_discount = partner_pricing.PARTNER_MAX_DISCOUNT
     res["max_discount"] = max_discount
     res["batch_no_data"] = batch_no_data
     res["serial_no_data"] = serial_no_data
@@ -256,6 +272,9 @@ def get_item_variants(pos_profile, parent_item_code, price_list=None, customer=N
     result = []
     for item in items_data:
         detail = detail_map.get(item["item_code"], {})
+        # A partner is only offered variants that are priced on their customer's list.
+        if partner_pricing.is_unpriced(item, detail):
+            continue
         if detail:
             item.update(detail)
         else:

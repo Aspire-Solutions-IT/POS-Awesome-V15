@@ -15,6 +15,7 @@ import { useItemsSearch } from "../composables/pos/items/store/useItemsSearch";
 import { useItemsSync } from "../composables/pos/items/store/useItemsSync";
 import { useItemsPagination } from "../composables/pos/items/store/useItemsPagination";
 import { useItemsMetrics } from "../composables/pos/items/store/useItemsMetrics";
+import { isPartnerMode } from "../utils/partnerMode";
 
 export const useItemsStore = defineStore("items", () => {
 	type OfflineModule = Record<string, any>;
@@ -346,6 +347,8 @@ export const useItemsStore = defineStore("items", () => {
 		};
 	});
 
+	const awaitingPartnerCustomer = () => isPartnerMode() && !customer.value;
+
 	// Actions
 	const initialize = async (
 		profile: POSProfile,
@@ -485,6 +488,15 @@ export const useItemsStore = defineStore("items", () => {
 		const startTime = performance.now();
 		const currentRequestToken = ++requestToken.value;
 		let cacheKey: string | null = null;
+
+		// A Sales Partner is priced from their customer's own price list, so there is
+		// nothing to show until a customer is chosen. The server refuses the call anyway.
+		if (awaitingPartnerCustomer()) {
+			items.value = [];
+			filteredItems.value = [];
+			itemsLoaded.value = true;
+			return [];
+		}
 
 		try {
 			isLoading.value = true;
@@ -734,7 +746,7 @@ export const useItemsStore = defineStore("items", () => {
 	};
 
 	const searchServerItems = async (term: string, group: string) => {
-		if (!posProfile.value) {
+		if (!posProfile.value || awaitingPartnerCustomer()) {
 			return [];
 		}
 
@@ -952,7 +964,7 @@ export const useItemsStore = defineStore("items", () => {
 			return filteredItems.value;
 		}
 
-		if (!posProfile.value) {
+		if (!posProfile.value || awaitingPartnerCustomer()) {
 			return [];
 		}
 
@@ -1348,6 +1360,19 @@ export const useItemsStore = defineStore("items", () => {
 	};
 
 	// Watchers
+	// A partner's prices belong to the selected customer, so a different customer means
+	// a different set of items and prices: drop them and reload for the new one.
+	watch(customer, (newCustomer, oldCustomer) => {
+		if (!isPartnerMode() || newCustomer === oldCustomer) {
+			return;
+		}
+		items.value = [];
+		filteredItems.value = [];
+		if (newCustomer) {
+			void loadItems({ forceServer: true });
+		}
+	});
+
 	watch(customerPriceList, (newPriceList) => {
 		if (newPriceList && itemsLoaded.value) {
 			updatePriceList(newPriceList);

@@ -1,4 +1,5 @@
 import { ref, onUnmounted } from "vue";
+import { isPartnerMode } from "../../utils/partnerMode";
 
 const API_URL =
 	"/api/method/posawesome.posawesome.api.utilities.get_server_usage";
@@ -24,6 +25,11 @@ export function useServerCpu(pollInterval = 10000, windowSize = 60) {
 	let timer: number | null = null;
 
 	async function fetchServerCpu() {
+		// Server load figures are not for partners, and the server refuses the call.
+		if (isPartnerMode()) {
+			loading.value = false;
+			return;
+		}
 		loading.value = true;
 		error.value = null;
 		try {

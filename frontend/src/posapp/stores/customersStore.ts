@@ -4,6 +4,7 @@ import { ref, computed } from "vue";
 declare const frappe: any;
 declare const __: any;
 import type { Customer, POSProfile } from "../types/models";
+import { isPartnerMode } from "../utils/partnerMode";
 // @ts-ignore
 import {
 	db,
@@ -765,6 +766,11 @@ export const useCustomersStore = defineStore("customers", () => {
 	}
 
 	function openUpdateCustomerDialog(customer: Customer | null = null) {
+		// Sales Partners order for existing customers only: no creating or editing, from
+		// the buttons, the search box or the keyboard shortcut.
+		if (isPartnerMode()) {
+			return;
+		}
 		customerToUpdate.value = customer;
 		isUpdateCustomerDialogOpen.value = true;
 	}

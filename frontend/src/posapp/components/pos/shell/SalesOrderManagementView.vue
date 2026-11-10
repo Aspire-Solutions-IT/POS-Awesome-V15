@@ -11,7 +11,11 @@
 					<div>
 						<h1 class="page-title">{{ __("Sales Order Management") }}</h1>
 						<p class="page-subtitle">
-							{{ __("Browse RFS Sales Orders, review due dates, and update key order details.") }}
+							{{
+								isPartner
+									? __("Browse your Sales Orders, review due dates, and update key order details.")
+									: __("Browse RFS Sales Orders, review due dates, and update key order details.")
+							}}
 						</p>
 					</div>
 				</div>
@@ -42,7 +46,7 @@
 			<v-col v-show="isSplitLayout || mobilePane === 'list'" cols="12" lg="4" class="left-panel-col">
 				<v-card class="pos-themed-card left-panel">
 					<v-card-title class="panel-title">
-						<span>{{ __("RFS Sales Orders") }}</span>
+						<span>{{ isPartner ? __("Sales Orders") : __("RFS Sales Orders") }}</span>
 						<v-btn
 							icon="mdi-refresh"
 							variant="text"
@@ -233,7 +237,7 @@
 							</v-menu>
 							<template v-if="isSplitLayout">
 								<v-btn
-									v-if="selectedOrder"
+									v-if="selectedOrder && !isPartner"
 									color="primary"
 									variant="tonal"
 									prepend-icon="mdi-email-outline"
@@ -272,6 +276,7 @@
 								</template>
 								<v-list density="compact">
 									<v-list-item
+										v-if="!isPartner"
 										prepend-icon="mdi-email-outline"
 										:title="__('Email Receipt')"
 										:disabled="receiptLoading"
@@ -1262,6 +1267,7 @@ import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
 import RaiseClaimDialog from "../claims/RaiseClaimDialog.vue";
+import { isPartnerMode } from "../../../utils/partnerMode";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { isValidOptionalEmail } from "../../../utils/emailValidation";
@@ -1865,8 +1871,13 @@ const openStreamLink = (name = selectedStreamPickList.value) => {
 
 // Header actions split across two menus: "Take Payment" (collect money) and
 // "Other Options" (everything else). "Save" stays a standalone button.
+// A Sales Partner places and edits orders but never takes payment or emails receipts:
+// Agile invoices the order.
+const isPartner = isPartnerMode();
 const hasTakePaymentOptions = computed(
-	() => canPayRemainingBalance.value || canSendRevolutLink.value || canResendRevolutLink.value,
+	() =>
+		!isPartner &&
+		(canPayRemainingBalance.value || canSendRevolutLink.value || canResendRevolutLink.value),
 );
 const hasOtherOptions = computed(
 	() => Boolean(selectedOrder.value) || streamPickLists.value.length > 0,
@@ -1982,7 +1993,7 @@ const canPickWarehouse = (item: EditableSalesOrderItem) =>
 
 const loadWarehouseOptions = async (company?: string | null) => {
 	const target = String(company || "").trim();
-	if (!target || warehouseLoading.value || loadedWarehouseCompany === target) return;
+	if (!target || warehouseLoading.value || loadedWarehouseCompany === target || isPartner) return;
 	warehouseLoading.value = true;
 	try {
 		const rows = await api.call<any[]>("frappe.client.get_list", {
@@ -2732,7 +2743,7 @@ const saveOrder = async () => {
 	if (isItemDirty.value) {
 		const preview = await previewItemChanges();
 		if (!preview) return;
-		if (Number(preview.amount_due || 0) > 0.001) {
+		if (!isPartner && Number(preview.amount_due || 0) > 0.001) {
 			itemPaymentPreview.value = preview;
 			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
 			itemPaymentReference.value = referenceForMode(itemPaymentMode.value, "");

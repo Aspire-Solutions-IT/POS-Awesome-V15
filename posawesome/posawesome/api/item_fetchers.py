@@ -623,8 +623,13 @@ def merge_item_row(
     price_list_currency: Optional[str],
     exchange_rate: float,
     company_currency: Optional[str] = None,
+    partner_mode: bool = False,
 ) -> Dict[str, Any]:
-    """Merge lookup data into a POS item row for downstream consumption."""
+    """Merge lookup data into a POS item row for downstream consumption.
+
+    ``partner_mode`` prices from the price list alone (no TFW or on-sale override) and
+    removes cost fields, for the locked-down Sales Partner POS.
+    """
 
     item_code = item.get("item_code")
     if not item_code:
@@ -636,8 +641,8 @@ def merge_item_row(
         lookup_data.price_map.get(item_code, {}), item.get("uom"), meta.get("stock_uom")
     )
     price_currency = price_row.get("currency") if price_row else None
-    custom_tfw_price = _resolve_custom_tfw_price(meta)
-    pos_on_sale_price = _resolve_pos_on_sale_price(meta)
+    custom_tfw_price = 0 if partner_mode else _resolve_custom_tfw_price(meta)
+    pos_on_sale_price = 0 if partner_mode else _resolve_pos_on_sale_price(meta)
     effective_company_currency = company_currency or price_list_currency
 
     base_rate = custom_tfw_price if custom_tfw_price else (price_row.get("price_list_rate") if price_row else 0)
@@ -689,6 +694,10 @@ def merge_item_row(
         row["manufacturing_bom"] = bom_cost.get("bom")
     if not row.get("item_name") and meta.get("item_name"):
         row["item_name"] = meta.get("item_name")
+    if partner_mode:
+        from posawesome.posawesome.api import partner_pricing
+
+        partner_pricing.scrub_item_row(row)
     return row
 
 
@@ -701,8 +710,16 @@ class ItemDetailAggregator:
         price_list: Optional[str] = None,
         customer: Optional[str] = None,
     ) -> None:
+        from posawesome.posawesome.api import partner_pricing
+
         self.pos_profile = pos_profile
         self.customer = customer
+        # Partners are priced from their customer's own price list only, never a
+        # price list or customer the client asks for.
+        self.partner_mode = partner_pricing.is_partner_user()
+        if self.partner_mode:
+            partner_pricing.require_scoped_customer(customer)
+            price_list = partner_pricing.get_customer_price_list(customer)
         self.price_list = price_list or pos_profile.get("selling_price_list")
         self.cache_ttl = self._resolve_ttl()
         self.today = nowdate()
@@ -884,15 +901,18 @@ class ItemDetailAggregator:
         for item in items_data:
             if not item.get("item_code") or item.get("has_variants"):
                 continue
-            result.append(
-                merge_item_row(
-                    item,
-                    lookup_data,
-                    self.price_list_currency or self.pos_profile.get("currency"),
-                    self.exchange_rate,
-                    self.company_currency,
-                )
+            row = merge_item_row(
+                item,
+                lookup_data,
+                self.price_list_currency or self.pos_profile.get("currency"),
+                self.exchange_rate,
+                self.company_currency,
+                partner_mode=self.partner_mode,
             )
+            # A partner can only order what is priced on their customer's list.
+            if self.partner_mode and flt(row.get("price_list_rate")) <= 0:
+                continue
+            result.append(row)
         return result
 
 

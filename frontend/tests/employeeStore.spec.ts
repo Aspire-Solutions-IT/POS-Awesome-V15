@@ -87,3 +87,60 @@ describe("employeeStore", () => {
 		expect(store.currentCashier?.is_supervisor).toBe(true);
 	});
 });
+
+describe("employeeStore for a Sales Partner", () => {
+	const asPartner = () => {
+		(globalThis as any).frappe = {
+			session: { user: "partner@example.com", user_fullname: "Partner" },
+			boot: { posa_partner_mode: { partners: ["SP-A"], allowed_methods: [] } },
+		};
+	};
+
+	beforeEach(() => {
+		localStorage.clear();
+		setActivePinia(createPinia());
+		asPartner();
+	});
+
+	it("cannot lock the terminal until they have a PIN to unlock with", () => {
+		const store = useEmployeeStore();
+
+		expect(store.partnerHasPin).toBeNull();
+		expect(store.canLockTerminal).toBe(false);
+		store.lockTerminal();
+		expect(store.isLocked).toBe(false);
+
+		store.setPartnerHasPin(false);
+		store.lockTerminal();
+		expect(store.isLocked).toBe(false);
+	});
+
+	it("can lock once a PIN exists, and unlock again", () => {
+		const store = useEmployeeStore();
+		store.setPartnerHasPin(true);
+
+		expect(store.canLockTerminal).toBe(true);
+		store.lockTerminal();
+		expect(store.isLocked).toBe(true);
+
+		store.unlockTerminal();
+		expect(store.isLocked).toBe(false);
+	});
+
+	it("is offered only themselves", () => {
+		const store = useEmployeeStore();
+		store.setTerminalEmployees([{ user: "partner@example.com", full_name: "Partner", is_current: true }]);
+
+		expect(store.terminalEmployees.map((employee) => employee.user)).toEqual(["partner@example.com"]);
+		expect(store.currentCashier?.user).toBe("partner@example.com");
+	});
+
+	it("leaves staff terminals exactly as they were", () => {
+		(globalThis as any).frappe = { session: { user: "cashier@example.com" }, boot: {} };
+		const store = useEmployeeStore();
+
+		expect(store.canLockTerminal).toBe(true);
+		store.lockTerminal();
+		expect(store.isLocked).toBe(true);
+	});
+});

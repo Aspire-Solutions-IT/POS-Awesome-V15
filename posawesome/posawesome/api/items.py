@@ -41,6 +41,7 @@ from posawesome.posawesome.api.item_processing.price import (
     update_price_list_rate,
     get_price_for_uom
 )
+from posawesome.posawesome.api import partner_pricing
 from posawesome.posawesome.api.item_processing.search import (
     get_items,
     search_items,
@@ -217,6 +218,8 @@ def get_delta_items(
     for item in item_rows:
         item_code = item.get("item_code")
         detail = detail_map.get(item_code, {})
+        if partner_pricing.is_unpriced(item, detail):
+            continue
         merged = {}
         merged.update(item)
         merged.update(detail)

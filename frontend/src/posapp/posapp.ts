@@ -20,6 +20,14 @@ import themePlugin from "./plugins/theme";
 import { pinia } from "./stores";
 import { useToastStore } from "./stores/toastStore";
 import { useSocketStore } from "./stores/socketStore";
+import { useEmployeeStore } from "./stores/employeeStore";
+import {
+	installPartnerCallGuard,
+	isPartnerMode,
+	setPartnerCustomerProvider,
+} from "./utils/partnerMode";
+import { useCustomersStore } from "./stores/customersStore";
+import { purgeBrowserCachesForPartner } from "./utils/partnerCaches";
 import { createPosAppRouter } from "./router";
 import {
 	installGlobalErrorHandlers,
@@ -83,8 +91,18 @@ frappe.PosApp.posapp = class {
 		const buildVersion =
 			typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : null;
 
+		// A Sales Partner is confined to the POS: silence every call the server would
+		// refuse, and start from empty read caches (a previous staff session may have
+		// left prices and cost data behind).
+		if (isPartnerMode()) {
+			installPartnerCallGuard();
+		}
+
 		try {
 			await initPromise;
+			if (isPartnerMode()) {
+				await purgeBrowserCachesForPartner();
+			}
 			await reconcileBuildChangeOnStartup({
 				runtimeBuildVersion: buildVersion,
 				isOnline: !isOffline(),
@@ -100,6 +118,12 @@ frappe.PosApp.posapp = class {
 		this.routerHistory = history;
 		this.app.component("VueDatePicker", VueDatePicker);
 		this.app.use(pinia);
+		if (isPartnerMode()) {
+			// Partners have no cashier PIN; clear any lock a shared browser left behind.
+			useEmployeeStore().unlockTerminal();
+			// Calls that need a customer get the one the partner has selected.
+			setPartnerCustomerProvider(() => useCustomersStore().selectedCustomer || null);
+		}
 		this.app.use(this.router);
 		this.app.use(eventBus);
 		this.app.use(vuetify);

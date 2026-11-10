@@ -31,6 +31,7 @@
  * so a refresh keeps a locked terminal locked (and an unlocked one unlocked).
  */
 import { computed, ref } from "vue";
+import { isPartnerMode } from "../utils/partnerMode";
 import { defineStore } from "pinia";
 
 export interface TerminalEmployee {
@@ -107,6 +108,10 @@ export const useEmployeeStore = defineStore("employee", () => {
 	const currentCashier = ref<TerminalEmployee | null>(getSessionCashier());
 	const switchDialogOpen = ref(false);
 	const lockDialogOpen = ref(readStoredLocked());
+	// Sales Partners only: whether they have set a PIN (null until loaded). Without one they
+	// could lock themselves out, so the terminal lock stays off until they create it.
+	const partnerHasPin = ref<boolean | null>(null);
+	const canLockTerminal = computed(() => !isPartnerMode() || partnerHasPin.value === true);
 
 	const currentCashierDisplay = computed(
 		() => currentCashier.value?.full_name || currentCashier.value?.user || "",
@@ -189,7 +194,14 @@ export const useEmployeeStore = defineStore("employee", () => {
 		switchDialogOpen.value = false;
 	};
 
+	const setPartnerHasPin = (value: boolean | null) => {
+		partnerHasPin.value = value;
+	};
+
 	const lockTerminal = () => {
+		if (!canLockTerminal.value) {
+			return;
+		}
 		switchDialogOpen.value = false;
 		lockDialogOpen.value = true;
 		persistLocked(true);
@@ -215,6 +227,9 @@ export const useEmployeeStore = defineStore("employee", () => {
 		ensureCurrentCashier,
 		openEmployeeSwitch,
 		closeEmployeeSwitch,
+		partnerHasPin,
+		canLockTerminal,
+		setPartnerHasPin,
 		lockTerminal,
 		unlockTerminal,
 	};

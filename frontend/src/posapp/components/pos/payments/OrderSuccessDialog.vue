@@ -84,7 +84,7 @@
 					{{ __("Print Receipt") }}
 				</v-btn>
 				<v-btn
-					v-if="noPayment && orders.length === 1"
+					v-if="noPayment && orders.length === 1 && !isPartner"
 					color="primary"
 					variant="flat"
 					prepend-icon="mdi-credit-card-outline"
@@ -103,6 +103,7 @@ import { useRouter } from "vue-router";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { useFormat } from "../../../format";
 import { openReceiptPdf } from "../../../utils/receiptPdfUrl";
+import { isPartnerMode } from "../../../utils/partnerMode";
 
 defineOptions({
 	name: "OrderSuccessDialog",
@@ -117,6 +118,8 @@ const { formatCurrency, currencySymbol } = useFormat();
 // "Submit without payment": reframe the dialog as "Order Placed" and offer a
 // shortcut into Sales Order Management with the payment-link button flashing.
 const noPayment = computed(() => Boolean(uiStore.orderSuccess?.noPayment));
+// A Sales Partner can't send payment links: Agile invoices the order.
+const isPartner = isPartnerMode();
 
 // The window is written by an after_commit hook and can be revised again by the
 // background work that follows submit, so it is polled rather than read from the

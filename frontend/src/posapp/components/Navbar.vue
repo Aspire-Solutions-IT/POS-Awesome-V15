@@ -175,6 +175,7 @@ import { useToastStore } from "../stores/toastStore";
 import { useUIStore } from "../stores/uiStore";
 import { useEmployeeStore } from "../stores/employeeStore";
 import { useOfflineSyncStore } from "../stores/offlineSyncStore";
+import { isPartnerMode } from "../utils/partnerMode";
 import { storeToRefs } from "pinia";
 
 export default {
@@ -449,7 +450,7 @@ export default {
 				},
 			];
 
-			return [
+			const sections = [
 				{
 					id: "offline-sync",
 					title: this.__("Offline & Sync"),
@@ -475,6 +476,19 @@ export default {
 					actions: systemActions,
 				},
 			].filter((section) => section.actions.length);
+
+			if (!isPartnerMode()) {
+				return sections;
+			}
+			// A Sales Partner keeps their PIN, theme, about and logout: no offline, sync,
+			// printer or diagnostics tools.
+			const kept = new Set(["manage-cashier-pin", "toggle-theme", "show-about", "logout"]);
+			return sections
+				.map((section) => ({
+					...section,
+					actions: section.actions.filter((action) => kept.has(action.id)),
+				}))
+				.filter((section) => section.actions.length);
 		},
 	},
 	mounted() {
@@ -532,6 +546,18 @@ export default {
 			}
 		},
 		updateNavigationItems() {
+			if (isPartnerMode()) {
+				// Sales Partners get the POS and their own order list, nothing else.
+				this.items = [
+					...this.baseItems,
+					{
+						text: "Sales Orders",
+						icon: "mdi-clipboard-text-search-outline",
+						to: "/sales-orders",
+					},
+				];
+				return;
+			}
 			const items = [...this.baseItems];
 			if (this.currentCashier?.is_supervisor) {
 				items.push({
@@ -570,9 +596,26 @@ export default {
 					},
 				});
 				this.employeeStore.setTerminalEmployees(response?.message || []);
+				await this.loadPartnerPinStatus();
 			} catch (error) {
 				console.error("Failed to load terminal employees", error);
 				this.employeeStore.setTerminalEmployees([]);
+			}
+		},
+		// A Sales Partner is only auto-locked once they have a PIN to unlock with.
+		async loadPartnerPinStatus() {
+			if (!isPartnerMode()) {
+				return;
+			}
+			try {
+				const response = await frappe.call({
+					method: "posawesome.posawesome.api.employees.get_cashier_pin_status",
+					args: { pos_profile: this.posProfile.name, user: frappe.session.user },
+				});
+				this.employeeStore.setPartnerHasPin(Boolean(response?.message?.has_pin));
+			} catch (error) {
+				console.error("Failed to load PIN status", error);
+				this.employeeStore.setPartnerHasPin(false);
 			}
 		},
 		openEmployeeSwitch() {

@@ -3,6 +3,8 @@ from __future__ import annotations
 import frappe
 from frappe import _
 
+from .partner_gate import is_partner_user
+
 
 def _resolve_profile_name(pos_profile=None) -> str:
 	if isinstance(pos_profile, dict):
@@ -41,7 +43,9 @@ def _get_user_doc(user: str):
 
 def _get_user_pin(user_doc) -> str:
 	try:
-		return str(user_doc.get_password("posa_pos_pin") or "").strip()
+		# raise_exception=False: a missing PIN is normal, and raising would queue a
+		# "Password not found" message that Frappe shows the user even though we catch it.
+		return str(user_doc.get_password("posa_pos_pin", raise_exception=False) or "").strip()
 	except Exception:
 		return ""
 
@@ -68,6 +72,10 @@ def get_terminal_employees(pos_profile=None):
 		frappe.throw(_("POS profile is required to load terminal employees."))
 
 	users = _get_terminal_users(profile_name)
+	if is_partner_user():
+		# A Sales Partner is never offered the other people on the profile: the terminal
+		# lock asks for their own PIN only.
+		users = [user for user in users if user == frappe.session.user]
 	if not users:
 		return []
 

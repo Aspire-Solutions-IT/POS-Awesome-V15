@@ -44,6 +44,9 @@ def _install_stub_modules():
     )
     frappe_module.conf = {}
     frappe_module.local = SimpleNamespace(conf={}, site="")
+    # The partner gate asks who the user is and whether any app scopes them.
+    frappe_module.session = SimpleNamespace(user="cashier@example.com")
+    frappe_module.get_hooks = lambda *args, **kwargs: []
 
     frappe_utils = types.ModuleType("frappe.utils")
     frappe_utils.cint = lambda value=0: int(value or 0)

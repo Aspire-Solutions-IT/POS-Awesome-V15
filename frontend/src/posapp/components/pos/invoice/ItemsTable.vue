@@ -156,6 +156,7 @@ import { loadItemSelectorSettings } from "../../../utils/itemSelectorSettings";
 import { logComponentRender } from "../../../utils/perf";
 import CartItemRow from "./CartItemRow.vue";
 import { isStainguardItem } from "../../../utils/stainguard";
+import { isPartnerMode } from "../../../utils/partnerMode";
 import ItemsTableExpandedRow from "./ItemsTableExpandedRow.vue";
 
 import { useItemsTableSearch } from "../../../composables/pos/items/useItemsTableSearch";
@@ -497,7 +498,8 @@ const onDropFromSelector = (event: DragEvent) => dragDropHandlers.onDropFromSele
 const { editNameDialog, editedName, editNameTarget, openNameDialog, saveItemName, resetItemName } = nameEdit;
 
 const loadWarehouseOptions = async () => {
-	if (warehouseLoading.value) return;
+	// Partners don't choose warehouses (the server resolves them) and can't list them.
+	if (warehouseLoading.value || isPartnerMode()) return;
 	warehouseLoading.value = true;
 	try {
 		const filters: Record<string, any> = { is_group: 0, is_ns_location: 1 };

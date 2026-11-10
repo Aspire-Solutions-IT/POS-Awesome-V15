@@ -12,6 +12,11 @@ import {
 	resolvePosAppRouteFullPath,
 } from "../../loader-utils";
 import OfflineRouteUnavailable from "../components/system/OfflineRouteUnavailable.vue";
+import {
+	PARTNER_HOME_ROUTE,
+	isPartnerMode,
+	isRouteAllowedForPartner,
+} from "../utils/partnerMode";
 
 const OFFLINE_ROUTE_UNAVAILABLE_NAME = "offline-route-unavailable";
 
@@ -182,6 +187,11 @@ const createPosAppRouter = () => {
 	let pendingRouteFullPath: string | null = null;
 
 	router.beforeEach((to, _from, next) => {
+		// Sales Partners only get the POS and their order list.
+		if (isPartnerMode() && !isRouteAllowedForPartner(to.path)) {
+			next({ path: PARTNER_HOME_ROUTE, replace: true });
+			return;
+		}
 		pendingRouteFullPath = to.fullPath || "/";
 		startRouteLoading({
 			message: resolveRouteLoadingMessage(to),

@@ -7,6 +7,8 @@ from functools import cache
 
 import frappe
 
+from posawesome.posawesome.api.partner_gate import is_partner_user, lock_pos_profile
+
 # Reusable ORM filter to exclude template items
 HAS_VARIANTS_EXCLUSION = {"has_variants": 0}
 
@@ -117,7 +119,10 @@ def get_active_pos_profile(user=None):
         profile = frappe.db.get_single_value("POS Settings", "pos_profile")
     if not profile:
         return None
-    return frappe.get_doc("POS Profile", profile).as_dict()
+    doc = frappe.get_doc("POS Profile", profile)
+    if is_partner_user(user):
+        lock_pos_profile(doc)
+    return doc.as_dict()
 
 
 @frappe.whitelist()

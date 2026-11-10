@@ -15,6 +15,8 @@ from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, 
 from frappe.utils import cint, cstr, flt, getdate, nowdate, split_emails, validate_email_address
 
 from posawesome.posawesome.api.email_validation import validate_optional_email
+from posawesome.posawesome.api.partner_gate import is_partner_user
+from posawesome.posawesome.api.partner_pricing import neutralise_payment_fields
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
@@ -636,6 +638,8 @@ def _managed_sales_order_filters(company, currency, pos_profile=None, status=Non
         "is_pos": 1,
         "customer": ["not in", sorted(MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS)],
     }
+    if is_partner_user():
+        del filters["rfs_order"]
     if pos_profile:
         filters["pos_profile"] = pos_profile
     status = cstr(status or "").strip()
@@ -745,7 +749,9 @@ def _is_managed_sales_order_doc(doc):
         return False
     if cint(getattr(doc, "docstatus", 0)) != 1:
         return False
-    if cint(getattr(doc, "rfs_order", 0)) != 1:
+    # Partner orders are Agile-side, so never RFS; the request gate has already
+    # confined a partner to their own customers' orders.
+    if cint(getattr(doc, "rfs_order", 0)) != 1 and not is_partner_user():
         return False
     if cint(getattr(doc, "is_pos", 0)) != 1:
         return False
@@ -1511,7 +1517,8 @@ def _prepare_managed_sales_order_item_rows(doc, incoming_items):
             normalized["delivery_date"] = str(getdate(delivery_date)) if delivery_date else None
         else:
             requested_rate = normalized.get("rate")
-            if requested_rate is None or flt(requested_rate) < 0:
+            # A partner never sets a price: the rate always comes from their price list.
+            if is_partner_user() or requested_rate is None or flt(requested_rate) < 0:
                 pricing = _resolve_managed_sales_order_item_pricing(
                     doc, normalized["item_code"], normalized.get("uom")
                 )
@@ -3643,6 +3650,9 @@ def _submit_sales_order(order, data=None):
 
     validate_pos_stainguard(order)
     data = json.loads(data) if data else {}
+    if is_partner_user():
+        # Partners place orders; they never collect payment or spend customer credit.
+        neutralise_payment_fields(order, data)
     if data.get("sales_order_settlement_state") and not order.get("sales_order_settlement_state"):
         order["sales_order_settlement_state"] = data.get("sales_order_settlement_state")
     if data.get("allow_no_payment_order_submit") and not order.get("allow_no_payment_order_submit"):

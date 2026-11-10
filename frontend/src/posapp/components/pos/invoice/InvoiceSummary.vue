@@ -54,7 +54,7 @@
 								ref="additionalDiscountField"
 								v-model="additionalDiscountDisplay"
 								@update:model-value="handleAdditionalDiscountUpdate"
-								@change="$emit('commit_discount_amount')"
+								@change="commitAdditionalDiscount"
 								@focus="handleAdditionalDiscountFocus"
 								@blur="handleAdditionalDiscountBlur"
 								:rules="[isNumber]"
@@ -75,7 +75,7 @@
 								ref="additionalDiscountPercentageField"
 								v-model="additionalDiscountPercentageDisplay"
 								@update:model-value="handleAdditionalDiscountPercentageUpdate"
-								@change="$emit('update_discount_umount')"
+								@change="commitAdditionalDiscountPercentage"
 								@focus="handleAdditionalDiscountPercentageFocus"
 								@blur="handleAdditionalDiscountPercentageBlur"
 								:rules="[isNumber]"
@@ -182,7 +182,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { loadItemSelectorSettings } from "../../../utils/itemSelectorSettings";
 import { useResponsive } from "../../../composables/core/useResponsive";
@@ -322,7 +322,14 @@ function handleAdditionalDiscountFocus() {
 
 function handleAdditionalDiscountBlur() {
 	isEditingAdditionalDiscount.value = false;
+	commitAdditionalDiscount();
+}
+
+async function commitAdditionalDiscount() {
 	emit("commit_discount_amount");
+	await nextTick();
+	additionalDiscountDisplay.value = normalizeDiscountDisplay(props.additional_discount);
+	additionalDiscountPercentageDisplay.value = normalizeDiscountDisplay(props.additional_discount_percentage);
 }
 
 function handleAdditionalDiscountPercentageUpdate(value) {
@@ -335,7 +342,17 @@ function handleAdditionalDiscountPercentageFocus() {
 
 function handleAdditionalDiscountPercentageBlur() {
 	isEditingAdditionalDiscountPercentage.value = false;
+	commitAdditionalDiscountPercentage();
+}
+
+async function commitAdditionalDiscountPercentage() {
 	emit("update_discount_umount");
+	// A focused input skips the prop watcher when the parent applies the cap.
+	// The same value may be committed again on blur, so force both displays to
+	// the authoritative values even if the props did not change a second time.
+	await nextTick();
+	additionalDiscountDisplay.value = normalizeDiscountDisplay(props.additional_discount);
+	additionalDiscountPercentageDisplay.value = normalizeDiscountDisplay(props.additional_discount_percentage);
 }
 
 function focusAdditionalDiscountField() {

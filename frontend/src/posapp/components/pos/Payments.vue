@@ -47,7 +47,22 @@
 						},
 					]"
 				>
-					<section v-if="showPaymentStep" class="payment-section payment-section--summary">
+					<section v-if="showPaymentStep && isPartner" class="payment-section payment-section--partner-order">
+						<div class="payment-section__header">
+							<h3 class="payment-section__title">{{ __("Place Order") }}</h3>
+						</div>
+						<div class="partner-order-note">
+							<div class="partner-order-note__total">
+								{{ __("Order total") }}:
+								<strong>{{ formatCurrency(invoice_doc.rounded_total || invoice_doc.grand_total || 0, invoice_doc.currency) }}</strong>
+							</div>
+							<div class="partner-order-note__text">
+								{{ __("No payment is taken here. Agile will invoice this order.") }}
+							</div>
+						</div>
+					</section>
+
+					<section v-if="showPaymentStep && !isPartner" class="payment-section payment-section--summary">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Payment Summary") }}</h3>
 						</div>
@@ -74,7 +89,7 @@
 					</section>
 
 					<section
-						v-if="is_cashback && invoice_doc && showPaymentStep"
+						v-if="is_cashback && invoice_doc && showPaymentStep && !isPartner"
 						class="payment-section payment-section--methods"
 					>
 						<div class="payment-section__header">
@@ -237,7 +252,7 @@
 						</div>
 					</section>
 
-					<section v-if="showPaymentStep" class="payment-section payment-section--adjustments">
+					<section v-if="showPaymentStep && !isPartner" class="payment-section payment-section--adjustments">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Redemption and Totals") }}</h3>
 						</div>
@@ -276,7 +291,7 @@
 						/>
 					</section>
 
-					<section v-if="showPaymentStep" class="payment-section payment-section--settlement">
+					<section v-if="showPaymentStep && !isPartner" class="payment-section payment-section--settlement">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Credit and Output") }}</h3>
 						</div>
@@ -442,6 +457,7 @@ import {
 import { resolvePaymentPrintFormatDoctypes } from "../../utils/paymentPrintDoctype";
 import { resolvePaymentPrintFormat } from "../../utils/paymentPrintFormat";
 import { parseBooleanSetting } from "../../utils/stock";
+import { isPartnerMode } from "../../utils/partnerMode";
 import {
 	buildSuggestedSplitGroups,
 	hasCompleteSupplyTypes,
@@ -1098,8 +1114,13 @@ const validatePayment = computed(() => {
 	return false;
 });
 
+// A Sales Partner only places orders: no payment methods, credit or gift cards.
+const isPartner = isPartnerMode();
+
 const showSubmitWithoutPayment = computed(
-	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
+	() =>
+		isPartner ||
+		(invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order)),
 );
 
 const getWriteOffLimit = (profile) => {

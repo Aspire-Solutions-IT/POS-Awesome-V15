@@ -1,7 +1,7 @@
 <template>
 	<v-card flat :class="['cards mb-0 mt-3 pa-0', { compact }]">
 		<v-row align="start" no-gutters>
-			<v-col cols="12" sm="6">
+			<v-col v-if="!isPartner" cols="12" sm="6">
 				<v-btn
 					ref="submitButton"
 					block
@@ -31,7 +31,12 @@
 <!--					{{ __("Submit & Print") }}-->
 <!--				</v-btn>-->
 <!--			</v-col>-->
-			<v-col v-if="showSubmitWithoutPayment" cols="12" sm="6" class="payment-action-col payment-action-col--stacked">
+			<v-col
+				v-if="showSubmitWithoutPayment"
+				cols="12"
+				:sm="isPartner ? 12 : 6"
+				class="payment-action-col payment-action-col--stacked"
+			>
 				<v-btn
 					block
 					size="large"
@@ -42,7 +47,7 @@
 					:loading="loading"
 					:disabled="loading || validatePayment"
 				>
-					{{ __("Submit Without Payment") }}
+					{{ isPartner ? __("Place Order") : __("Submit Without Payment") }}
 				</v-btn>
 			</v-col>
 			<v-col
@@ -62,7 +67,7 @@
 					]"
 					@click="$emit('cancel')"
 				>
-					{{ __("Cancel Payment") }}
+					{{ isPartner ? __("Cancel") : __("Cancel Payment") }}
 				</v-btn>
 			</v-col>
 		</v-row>
@@ -70,6 +75,8 @@
 </template>
 
 <script setup>
+import { isPartnerMode } from "../../../utils/partnerMode";
+
 defineProps({
 	loading: Boolean,
 	validatePayment: Boolean,
@@ -81,6 +88,8 @@ defineProps({
 defineEmits(["submit", "submit-and-print", "submit-without-payment", "cancel"]);
 
 const __ = window.__;
+// A Sales Partner only places orders, so there is one button to place it.
+const isPartner = isPartnerMode();
 </script>
 
 <style scoped>

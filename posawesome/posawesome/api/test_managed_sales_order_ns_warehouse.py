@@ -128,3 +128,72 @@ class TestPreparedRowWarehouses(TestCase):
             {"docname": "SOI-1", "item_code": "NS-1001", "warehouse": "NS Annexe - TC"}
         )
         self.assertNotIn("warehouse", shape)
+
+
+class TestPartnerOrderRules(TestCase):
+    """Partner orders: server-set prices, and Agile-side (non-RFS) orders are manageable."""
+
+    def _prepare(self, incoming, partner):
+        with patch.object(sales_orders, "is_partner_user", return_value=partner), patch.object(
+            sales_orders, "_get_managed_sales_order_ns_default_warehouse", return_value="NS Main - TC"
+        ), patch.object(
+            sales_orders, "_resolve_managed_sales_order_item_pricing", return_value={"rate": 99.0}
+        ), patch.object(
+            sales_orders.frappe.db, "get_value", return_value="Test Company"
+        ):
+            return sales_orders._prepare_managed_sales_order_item_rows(_order(), incoming)
+
+    def test_partner_new_row_ignores_the_clients_rate(self):
+        for sent in (0, 1, 5000):
+            with self.subTest(sent=sent):
+                rows = self._prepare([{"item_code": "ITEM-1", "uom": "Nos", "qty": 1, "rate": sent}], True)
+                self.assertEqual(rows[0]["rate"], 99.0)
+
+    def test_staff_new_row_keeps_the_rate_they_sent(self):
+        rows = self._prepare([{"item_code": "ITEM-1", "uom": "Nos", "qty": 1, "rate": 5}], False)
+        self.assertEqual(rows[0]["rate"], 5.0)
+
+    def test_partner_existing_row_keeps_its_stored_rate(self):
+        existing = _existing_row()
+        with patch.object(sales_orders, "is_partner_user", return_value=True), patch.object(
+            sales_orders, "_get_managed_sales_order_ns_default_warehouse", return_value=""
+        ):
+            rows = sales_orders._prepare_managed_sales_order_item_rows(
+                _order(items=[existing]),
+                [{"docname": "SOI-1", "item_code": "NS-1001", "uom": "Nos", "qty": 2, "rate": 1}],
+            )
+        self.assertEqual(rows[0]["rate"], 25.0)
+
+    def _submitted(self, rfs_order):
+        return SimpleNamespace(
+            doctype="Sales Order", docstatus=1, rfs_order=rfs_order, is_pos=1, customer="CUST-A"
+        )
+
+    def test_non_rfs_order_is_only_manageable_by_a_partner(self):
+        doc = self._submitted(rfs_order=0)
+        with patch.object(sales_orders, "is_partner_user", return_value=False):
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(doc))
+        with patch.object(sales_orders, "is_partner_user", return_value=True):
+            self.assertTrue(sales_orders._is_managed_sales_order_doc(doc))
+
+    def test_rfs_order_stays_manageable_for_staff(self):
+        with patch.object(sales_orders, "is_partner_user", return_value=False):
+            self.assertTrue(sales_orders._is_managed_sales_order_doc(self._submitted(rfs_order=1)))
+
+    def test_partner_still_needs_a_submitted_pos_order(self):
+        with patch.object(sales_orders, "is_partner_user", return_value=True):
+            draft = self._submitted(rfs_order=0)
+            draft.docstatus = 0
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(draft))
+            not_pos = self._submitted(rfs_order=0)
+            not_pos.is_pos = 0
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(not_pos))
+
+    def test_order_list_filters_only_drop_the_rfs_flag_for_partners(self):
+        with patch.object(sales_orders, "is_partner_user", return_value=False):
+            staff = sales_orders._managed_sales_order_filters("Co", "GBP")
+        with patch.object(sales_orders, "is_partner_user", return_value=True):
+            partner = sales_orders._managed_sales_order_filters("Co", "GBP")
+        self.assertEqual(staff["rfs_order"], 1)
+        self.assertNotIn("rfs_order", partner)
+        self.assertEqual({k: v for k, v in staff.items() if k != "rfs_order"}, partner)

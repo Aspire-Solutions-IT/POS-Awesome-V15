@@ -98,8 +98,18 @@ after_migrate = [
 # ---------------
 # Hook on document methods and events
 
+# Locked-down Sales Partner POS: default-deny gate for partner users only (AP-1).
+# before_request covers cookie sessions; API key / OAuth requests only have a user once
+# Frappe has authenticated them, which happens after before_request, so auth_hooks
+# runs the same check for those.
+before_request = ["posawesome.posawesome.api.partner_gate.enforce"]
+extend_bootinfo = ["posawesome.posawesome.api.partner_gate.extend_boot"]
+auth_hooks = ["posawesome.posawesome.api.partner_gate.enforce"]
+
 doc_events = {
     "Sales Order": {
+        "before_validate": "posawesome.posawesome.api.partner_pricing.enforce_sales_order_pricing",
+        "validate": "posawesome.posawesome.api.partner_pricing.enforce_discount_cap",
         "on_submit": "posawesome.posawesome.api.sales_orders.on_submit",
         "on_cancel": "posawesome.posawesome.api.sales_orders.on_cancel",
     },

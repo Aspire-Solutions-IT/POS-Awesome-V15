@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 
 import NavbarCashierPinForm from "../src/posapp/components/navbar/NavbarCashierPinForm.vue";
@@ -14,6 +15,11 @@ const flushPromises = async () => {
 };
 
 describe("NavbarCashierPinForm", () => {
+	// The form reads the employee store (a Sales Partner's PIN state), so it needs Pinia.
+	beforeEach(() => {
+		setActivePinia(createPinia());
+	});
+
 	const frappeCall = vi.fn();
 
 	const mountForm = (props: Record<string, unknown> = {}) =>

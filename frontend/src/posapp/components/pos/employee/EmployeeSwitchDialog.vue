@@ -54,9 +54,11 @@
 					data-test="cashier-pin-help"
 				>
 					{{
-						__(
-							"Set each cashier PIN in the User form and keep terminal members assigned in POS Profile User.",
-						)
+						isPartner
+							? __("You can change your PIN under Menu > Settings > Manage Cashier PIN.")
+							: __(
+									"Set each cashier PIN in the User form and keep terminal members assigned in POS Profile User.",
+								)
 					}}
 				</v-alert>
 				<v-text-field
@@ -122,7 +124,11 @@
 			</v-card-title>
 			<v-card-text>
 				<div class="employee-switch-dialog__copy">
-					{{ __("Select the cashier who is taking over this terminal.") }}
+					{{
+						isPartner
+							? __("This terminal is locked. Choose your name and enter your PIN to carry on.")
+							: __("Select the cashier who is taking over this terminal.")
+					}}
 				</div>
 				<div class="employee-switch-dialog__list">
 					<button
@@ -142,6 +148,11 @@
 					</button>
 				</div>
 			</v-card-text>
+			<v-card-actions v-if="isPartner" class="employee-switch-dialog__actions">
+				<v-btn variant="text" data-test="partner-sign-out" @click="signOut">
+					{{ __("Sign out") }}
+				</v-btn>
+			</v-card-actions>
 		</v-card>
 	</v-dialog>
 
@@ -167,9 +178,11 @@
 					class="employee-switch-dialog__help"
 				>
 					{{
-						__(
-							"Set each cashier PIN in the User form and keep terminal members assigned in POS Profile User.",
-						)
+						isPartner
+							? __("You can change your PIN under Menu > Settings > Manage Cashier PIN.")
+							: __(
+									"Set each cashier PIN in the User form and keep terminal members assigned in POS Profile User.",
+								)
 					}}
 				</v-alert>
 				<v-text-field
@@ -226,9 +239,13 @@ import { storeToRefs } from "pinia";
 import { useEmployeeStore } from "../../../stores/employeeStore";
 import { useUIStore } from "../../../stores/uiStore";
 import { MAX_PIN_LENGTH, sanitizePinInput } from "../../../utils/cashierPin";
+import { isPartnerMode } from "../../../utils/partnerMode";
 
 const employeeStore = useEmployeeStore();
 const uiStore = useUIStore();
+// A Sales Partner is only ever offered themselves, and can always sign out of a locked terminal.
+const isPartner = isPartnerMode();
+const signOut = () => window.frappe?.app?.logout?.();
 const { terminalEmployees, currentCashier, switchDialogOpen, lockDialogOpen } = storeToRefs(employeeStore);
 const selectedUser = ref("");
 const cashierPin = ref("");
