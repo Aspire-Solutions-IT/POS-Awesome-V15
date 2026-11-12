@@ -709,18 +709,27 @@ class ItemDetailAggregator:
         pos_profile: Dict[str, Any],
         price_list: Optional[str] = None,
         customer: Optional[str] = None,
+        delivery_charge: Optional[str] = None,
     ) -> None:
-        from posawesome.posawesome.api import partner_pricing
+        from posawesome.posawesome.api import charge_pricing, partner_pricing
 
         self.pos_profile = pos_profile
         self.customer = customer
+        # Any items endpoint can be told which delivery charge the order has by adding
+        # ``delivery_charge`` to its arguments; the charge may fix the price list and gives
+        # the fallback for items the list does not price.
+        self.delivery_charge = delivery_charge or frappe.form_dict.get("delivery_charge") or None
+        charge = charge_pricing.get_charge(self.delivery_charge)
         # Partners are priced from their customer's own price list only, never a
         # price list or customer the client asks for.
         self.partner_mode = partner_pricing.is_partner_user()
         if self.partner_mode:
             partner_pricing.require_scoped_customer(customer)
-            price_list = partner_pricing.get_customer_price_list(customer)
+            price_list = partner_pricing.get_customer_price_list(customer, self.delivery_charge)
+        elif charge and charge.locked:
+            price_list = charge.price_list
         self.price_list = price_list or pos_profile.get("selling_price_list")
+        self.fallback_price_list = charge_pricing.fallback_for(self.price_list, self.delivery_charge)
         self.cache_ttl = self._resolve_ttl()
         self.today = nowdate()
         self.warehouse = STOCK_SOURCE_WAREHOUSE
@@ -731,6 +740,25 @@ class ItemDetailAggregator:
         )
         self.price_list_currency = self._determine_price_list_currency()
         self.exchange_rate = self._compute_exchange_rate()
+
+    def _with_fallback_prices(self, price_rows, item_codes, use_cache):
+        """Add prices from the fallback list for the items the main list does not price."""
+        if not self.fallback_price_list:
+            return price_rows
+
+        priced = {row.get("item_code") for row in price_rows}
+        missing = tuple(code for code in item_codes if code not in priced)
+        if not missing:
+            return price_rows
+
+        currency = frappe.db.get_value("Price List", self.fallback_price_list, "currency")
+        if use_cache:
+            extra = get_item_prices(
+                self.fallback_price_list, currency, missing, self.customer, today=self.today, ttl=self.cache_ttl
+            )
+        else:
+            extra = _fetch_item_prices(self.fallback_price_list, currency, missing, self.customer or "", self.today)
+        return list(price_rows) + list(extra)
 
     def _resolve_ttl(self) -> Optional[int]:
         """Convert the POS profile cache duration to seconds."""
@@ -803,6 +831,8 @@ class ItemDetailAggregator:
                     self.customer or "",
                     self.today,
                 )
+
+        price_rows = self._with_fallback_prices(price_rows, item_codes_tuple, use_cache)
 
         # Stock, metadata, UOM and barcode data are reused both for batches and the
         # final merged item rows, so collect them up front.

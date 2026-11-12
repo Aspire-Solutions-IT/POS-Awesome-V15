@@ -52,6 +52,9 @@ def _install():
         "erpnext",
         "erpnext.setup",
         "erpnext.setup.utils",
+        "customer_due_dates",
+        "customer_due_dates.selling",
+        "customer_due_dates.selling.pos_availability",
     ]
     saved = {name: sys.modules.get(name) for name in names}
 
@@ -67,16 +70,24 @@ def _install():
     def throw(msg, exc=Exception):
         raise exc(msg)
 
-    def get_value(doctype, name, fieldname):
+    def get_value(doctype, name, fieldname, as_dict=False):
         table = STATE["values"].get((doctype, name))
         if table is None:
             return None
         if isinstance(fieldname, (list, tuple)):
+            if as_dict:
+                return _dict({f: table.get(f) for f in fieldname})
             return tuple(table.get(f) for f in fieldname)
         return table.get(fieldname)
 
     frappe.throw = throw
-    frappe.db = types.SimpleNamespace(get_value=get_value, has_column=lambda *a: True)
+    frappe.db = types.SimpleNamespace(
+        get_value=get_value,
+        has_column=lambda *a: True,
+        exists=lambda doctype, name=None: (doctype, name) in STATE["values"],
+    )
+    frappe.bold = lambda text: text
+    frappe.form_dict = _dict()
 
     utils = types.ModuleType("frappe.utils")
     utils.cint = lambda v=0: int(v or 0)
@@ -93,7 +104,17 @@ def _install():
     erp_utils = types.ModuleType("erpnext.setup.utils")
     erp_utils.get_exchange_rate = lambda *a, **k: 1
 
+    cdd = types.ModuleType("customer_due_dates")
+    cdd_selling = types.ModuleType("customer_due_dates.selling")
+    availability = types.ModuleType("customer_due_dates.selling.pos_availability")
+    availability.is_available = lambda value, partner_mode: (value or "TFW only") in (
+        ["Agile only", "Both"] if partner_mode else ["TFW only", "Both"]
+    )
+
     for name, mod in {
+        "customer_due_dates": cdd,
+        "customer_due_dates.selling": cdd_selling,
+        "customer_due_dates.selling.pos_availability": availability,
         "frappe": frappe,
         "frappe.utils": utils,
         "frappe.utils.caching": caching,
@@ -131,6 +152,8 @@ def _install():
     api.partner_gate = gate
     fetchers = load("posawesome.posawesome.api.item_fetchers", "item_fetchers.py")
     api.item_fetchers = fetchers
+    charges = load("posawesome.posawesome.api.charge_pricing", "charge_pricing.py")
+    api.charge_pricing = charges
     pricing = load("posawesome.posawesome.api.partner_pricing", "partner_pricing.py")
     api.partner_pricing = pricing
 
@@ -140,10 +163,10 @@ def _install():
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = mod
-    return gate, fetchers, pricing, frappe
+    return gate, fetchers, pricing, frappe, charges
 
 
-GATE, FETCHERS, PRICING, FRAPPE = _install()
+GATE, FETCHERS, PRICING, FRAPPE, CHARGES = _install()
 
 
 def _values(**overrides):
@@ -569,6 +592,106 @@ class TestItemRows(Base):
     def test_item_detail_for_another_partners_customer_is_refused(self):
         with self.assertRaises(FakePermissionError):
             PRICING.apply_item_detail({"item_code": "WIDGET"}, "CUST-B")
+
+
+class TestChargePricing(Base):
+    """A delivery charge can fix the price list, give a fallback list and set availability."""
+
+    def setUp(self):
+        super().setUp()
+        STATE["values"].update(
+            {
+                ("Delivery Charges", "DDP 40ft"): {
+                    "order_type": "OT-DDP",
+                    "price_list": "DDP 40ft",
+                    "price_list_overrides_customer": 1,
+                    "available_to": "Agile only",
+                },
+                ("Delivery Charges", "Free delivery"): {
+                    "order_type": None,
+                    "price_list": "Stockist",
+                    "price_list_overrides_customer": 0,
+                    "available_to": "Agile only",
+                },
+                ("Delivery Charges", "Standard Delivery"): {
+                    "order_type": None,
+                    "price_list": "Stockist",
+                    "price_list_overrides_customer": 0,
+                    "available_to": "TFW only",
+                },
+                ("Price List", "DDP 40ft"): {"enabled": 1, "selling": 1, "currency": "GBP"},
+                ("Price List", "Stockist"): {"enabled": 1, "selling": 1, "currency": "GBP"},
+                ("Price List", "Trade USD"): {"enabled": 1, "selling": 1, "currency": "USD"},
+            }
+        )
+        STATE["values"][("Price List", "Trade GBP")]["fallback_price_list"] = "Stockist"
+
+    def test_container_charge_uses_only_its_own_list(self):
+        self.assertEqual(PRICING.get_customer_price_list("CUST-A", "DDP 40ft"), "DDP 40ft")
+        self.assertIsNone(CHARGES.fallback_for("DDP 40ft", "DDP 40ft"))
+
+    def test_standard_charge_keeps_the_customers_list_with_stockist_fallback(self):
+        self.assertEqual(PRICING.get_customer_price_list("CUST-A", "Free delivery"), "Trade GBP")
+        self.assertEqual(CHARGES.fallback_for("Trade GBP", "Free delivery"), "Stockist")
+
+    def test_customer_without_a_list_uses_the_charges_list(self):
+        self.assertEqual(PRICING.get_customer_price_list("CUST-NOLIST", "Free delivery"), "Stockist")
+
+    def test_customer_without_a_list_and_no_charge_still_needs_one_set(self):
+        with self.assertRaises(Exception):
+            PRICING.get_customer_price_list("CUST-NOLIST")
+
+    def test_fallback_never_crosses_currency(self):
+        STATE["values"][("Price List", "Trade USD")]["fallback_price_list"] = "Stockist"
+        self.assertIsNone(CHARGES.fallback_for("Trade USD"))
+
+    def test_item_missing_from_the_customers_list_is_priced_from_the_fallback(self):
+        calls = []
+
+        def fake_rate(item_code, price_list, *a, **k):
+            calls.append(price_list)
+            return 20 if price_list == "Stockist" else None
+
+        original = PRICING.get_price_list_rate
+        PRICING.get_price_list_rate = fake_rate
+        try:
+            rate = PRICING.get_rate_with_fallback("WIDGET", "Trade GBP", "Stockist")
+        finally:
+            PRICING.get_price_list_rate = original
+        self.assertEqual((rate, calls), (20, ["Trade GBP", "Stockist"]))
+
+    def test_a_partner_cannot_use_a_tfw_only_charge(self):
+        with self.assertRaises(FakePermissionError):
+            CHARGES.assert_available("Standard Delivery")
+        CHARGES.assert_available("Free delivery")
+
+    def test_staff_cannot_use_an_agile_only_charge(self):
+        STATE["partner"] = False
+        with self.assertRaises(FakePermissionError):
+            CHARGES.assert_available("DDP 40ft")
+        CHARGES.assert_available("Standard Delivery")
+
+    def test_charge_list_is_filtered_by_pos(self):
+        rows = [{"name": "a", "available_to": "Agile only"}, {"name": "b", "available_to": "TFW only"},
+                {"name": "c", "available_to": "Both"}, {"name": "d", "available_to": None}]
+        self.assertEqual([r["name"] for r in CHARGES.filter_available(rows)], ["a", "c"])
+        STATE["partner"] = False
+        self.assertEqual([r["name"] for r in CHARGES.filter_available(rows)], ["b", "c", "d"])
+
+    def test_charge_sets_the_order_type_on_the_order(self):
+        doc = Doc(posa_delivery_charges="DDP 40ft", agiletfw_order_type=None, meta=types.SimpleNamespace(has_field=lambda f: True))
+        CHARGES.apply_order_type(doc)
+        self.assertEqual(doc.agiletfw_order_type, "OT-DDP")
+
+    def test_charge_without_an_order_type_leaves_it_alone(self):
+        doc = Doc(posa_delivery_charges="Free delivery", agiletfw_order_type="OT-KEEP", meta=types.SimpleNamespace(has_field=lambda f: True))
+        CHARGES.apply_order_type(doc)
+        self.assertEqual(doc.agiletfw_order_type, "OT-KEEP")
+
+    def test_order_with_an_unavailable_charge_is_refused(self):
+        doc = Doc(posa_delivery_charges="Standard Delivery", meta=types.SimpleNamespace(has_field=lambda f: True))
+        with self.assertRaises(FakePermissionError):
+            CHARGES.apply_order_type(doc)
 
 
 class TestAggregator(Base):

@@ -97,4 +97,6 @@ def get_applicable_delivery_charges(
                     charge.rate = charge.default_rate
                     charges.append(charge)
 
-    return charges
+    from posawesome.posawesome.api.charge_pricing import filter_available
+
+    return filter_available(charges)

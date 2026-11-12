@@ -78,12 +78,30 @@ def require_scoped_customer(customer) -> str:
     return customer
 
 
-def get_customer_price_list(customer) -> str:
-    """The customer's default selling price list, or a clear error."""
+def get_customer_price_list(customer, delivery_charge=None) -> str:
+    """The selling price list for this customer and delivery charge, or a clear error.
+
+    A container charge (FOB, DDP) uses its own list only. Otherwise it is the customer's
+    default list, then their customer group's, then the charge's own list.
+    """
+    from . import charge_pricing
+
     if not customer:
         frappe.throw(_("Select a customer first."))
 
-    price_list = frappe.db.get_value("Customer", customer, "default_price_list")
+    charge = charge_pricing.get_charge(delivery_charge)
+    if charge and charge.locked:
+        price_list = charge.price_list
+    else:
+        price_list = (
+            frappe.db.get_value("Customer", customer, "default_price_list")
+            or frappe.db.get_value(
+                "Customer Group",
+                frappe.db.get_value("Customer", customer, "customer_group"),
+                "default_price_list",
+            )
+            or (charge.price_list if charge else None)
+        )
     if not price_list:
         frappe.throw(
             _("Customer {0} has no default price list. Ask Agile to set one before ordering.").format(
@@ -128,6 +146,14 @@ def get_price_list_rate(item_code, price_list, uom=None, conversion_factor=None,
     return flt(base.get("price_list_rate")) * (flt(conversion_factor) or 1.0)
 
 
+def get_rate_with_fallback(item_code, price_list, fallback, uom=None, conversion_factor=None, customer=None):
+    """Rate from ``price_list``, or from ``fallback`` when the item has no price on it."""
+    rate = get_price_list_rate(item_code, price_list, uom, conversion_factor, customer)
+    if (not rate or rate <= 0) and fallback:
+        rate = get_price_list_rate(item_code, fallback, uom, conversion_factor, customer)
+    return rate
+
+
 def is_unpriced(item, detail) -> bool:
     """True when a partner must not be offered ``item``: it has no price on their list.
 
@@ -149,12 +175,19 @@ def scrub_item_row(row: dict) -> dict:
     return row
 
 
-def apply_item_detail(detail: dict, customer, uom=None, conversion_factor=None) -> dict:
+def apply_item_detail(detail: dict, customer, uom=None, conversion_factor=None, delivery_charge=None) -> dict:
     """Price an ERPNext item-details result from the partner's price list (in place)."""
+    from . import charge_pricing
+
     require_scoped_customer(customer)
-    price_list = get_customer_price_list(customer)
-    rate = get_price_list_rate(
-        detail.get("item_code"), price_list, uom or detail.get("uom"), conversion_factor, customer
+    price_list = get_customer_price_list(customer, delivery_charge)
+    rate = get_rate_with_fallback(
+        detail.get("item_code"),
+        price_list,
+        charge_pricing.fallback_for(price_list, delivery_charge),
+        uom or detail.get("uom"),
+        conversion_factor,
+        customer,
     )
     if not rate or rate <= 0:
         frappe.throw(
@@ -192,8 +225,12 @@ def enforce_sales_order_pricing(doc, method=None) -> None:
     if not is_partner_user():
         return
 
+    from . import charge_pricing
+
     customer = require_scoped_customer(doc.get("customer"))
-    price_list = get_customer_price_list(customer)
+    charge_name = doc.get("posa_delivery_charges")
+    price_list = get_customer_price_list(customer, charge_name)
+    fallback = charge_pricing.fallback_for(price_list, charge_name)
 
     # Commission is the partner's pay, so the server decides it, never the browser: the
     # customer's own partner, and the customer's rate or else that partner's rate (the same
@@ -225,8 +262,8 @@ def enforce_sales_order_pricing(doc, method=None) -> None:
         doc.remove(row)
 
     for row in doc.get("items") or []:
-        rate = get_price_list_rate(
-            row.item_code, price_list, row.get("uom"), row.get("conversion_factor"), customer
+        rate = get_rate_with_fallback(
+            row.item_code, price_list, fallback, row.get("uom"), row.get("conversion_factor"), customer
         )
         if not rate or rate <= 0:
             frappe.throw(

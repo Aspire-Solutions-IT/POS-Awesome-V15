@@ -438,7 +438,7 @@ class TestHookRegistration(unittest.TestCase):
         match = re.search(r'"Sales Order":\s*\{(.*?)\}', source, re.S)
         self.assertIsNotNone(match)
         self.assertIn(
-            '"before_validate": "posawesome.posawesome.api.partner_pricing.enforce_sales_order_pricing"',
+            '"posawesome.posawesome.api.partner_pricing.enforce_sales_order_pricing"',
             match.group(1),
         )
 

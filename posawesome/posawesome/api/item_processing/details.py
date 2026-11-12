@@ -106,7 +106,9 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
     if partner_pricing.is_partner_user():
         partner_customer = (doc.get("customer") if doc else None) or item.get("customer")
         partner_pricing.require_scoped_customer(partner_customer)
-        price_list = partner_pricing.get_customer_price_list(partner_customer)
+        price_list = partner_pricing.get_customer_price_list(
+            partner_customer, (doc.get("posa_delivery_charges") if doc else None) or item.get("delivery_charge")
+        )
 
     item["selling_price_list"] = price_list
 
@@ -187,7 +189,11 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
             res["actual_qty"] = get_stock_availability(item_code, warehouse)
     if partner_customer:
         partner_pricing.apply_item_detail(
-            res, partner_customer, item.get("uom"), item.get("conversion_factor")
+            res,
+            partner_customer,
+            item.get("uom"),
+            item.get("conversion_factor"),
+            (doc.get("posa_delivery_charges") if doc else None) or item.get("delivery_charge"),
         )
         max_discount = partner_pricing.PARTNER_MAX_DISCOUNT
     res["max_discount"] = max_discount

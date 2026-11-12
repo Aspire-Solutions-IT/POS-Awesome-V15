@@ -30,6 +30,7 @@
  * Three watchers keep `invoiceStore` in sync with the local delivery charge refs
  * so the customer display panel always reflects the current selection.
  */
+import { setChargePricing } from "../../../utils/chargePricingContext";
 import { ref, computed, watch } from "vue";
 import type { Ref } from "vue";
 import { useInvoiceStore } from "../../../stores/invoiceStore";
@@ -471,6 +472,7 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 		selected_delivery_charge,
 		(next) => {
 			invoiceStore.setSelectedDeliveryCharge(next?.name || "");
+			setChargePricing(next);
 		},
 		{ immediate: true },
 	);

@@ -108,7 +108,10 @@ auth_hooks = ["posawesome.posawesome.api.partner_gate.enforce"]
 
 doc_events = {
     "Sales Order": {
-        "before_validate": "posawesome.posawesome.api.partner_pricing.enforce_sales_order_pricing",
+        "before_validate": [
+            "posawesome.posawesome.api.charge_pricing.apply_order_type",
+            "posawesome.posawesome.api.partner_pricing.enforce_sales_order_pricing",
+        ],
         "validate": "posawesome.posawesome.api.partner_pricing.enforce_discount_cap",
         "on_submit": "posawesome.posawesome.api.sales_orders.on_submit",
         "on_cancel": "posawesome.posawesome.api.sales_orders.on_cancel",
