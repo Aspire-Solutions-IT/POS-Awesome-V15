@@ -910,6 +910,32 @@ class TestSalesOrderSubmit(TestCase):
             returned_qty=returned, rate=10, bom_no=None, conversion_factor=1,
         )
 
+    def test_stainguard_order_is_locked_with_customer_services_reason(self):
+        doc = self._completion_order([self._row(qty=2)])
+        with patch.object(sales_orders, "_managed_sales_order_has_stainguard", return_value=True):
+            lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
+        self.assertTrue(lock["is_locked"])
+        self.assertIn("Stainguard", lock["reason"])
+        self.assertIn("Customer Services", lock["reason"])
+
+    def test_stainguard_order_rejects_item_changes(self):
+        doc = self._completion_order([self._row(qty=2)])
+        payload = {"name": "SO-DONE", "items": [
+            {"docname": "SOI-1", "item_code": "ITEM-1", "uom": "Nos", "description": "D",
+             "bom_no": None, "qty": 5, "conversion_factor": 1}
+        ]}
+        with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders, "_managed_sales_order_has_stainguard", return_value=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Customer Services"):
+                sales_orders.update_managed_sales_order_items(payload)
+
+    def test_order_without_stainguard_is_not_locked_by_it(self):
+        doc = self._completion_order([self._row(qty=2)])
+        with patch.object(sales_orders, "_managed_sales_order_has_stainguard", return_value=False):
+            lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
+        self.assertFalse(lock["is_locked"])
+
     def test_fully_picked_order_is_locked(self):
         doc = self._completion_order([self._row(qty=2, picked=2)])
         lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
