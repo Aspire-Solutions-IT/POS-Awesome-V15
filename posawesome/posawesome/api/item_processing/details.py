@@ -253,12 +253,15 @@ def get_item_variants(pos_profile, parent_item_code, price_list=None, customer=N
     if _item_has_custom_tfw_name():
         fields.append("custom_tfw_name")
 
+    from posawesome.posawesome.api.partner_pricing import exclusion_field
+
+    exclude_field = exclusion_field()
     items_data = frappe.get_all(
         "Item",
         filters={
             "variant_of": parent_item_code,
             "disabled": 0,
-            **({"custom_exclude_from_pos": ["!=", 1]} if _item_has_custom_exclude_from_pos() else {}),
+            **({exclude_field: ["!=", 1]} if exclude_field else {}),
         },
         fields=fields,
         order_by="custom_tfw_name asc, item_name asc" if _item_has_custom_tfw_name() else "item_name asc",

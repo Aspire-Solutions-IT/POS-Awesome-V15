@@ -154,8 +154,11 @@ def get_delta_items(
         "is_sales_item": 1,
         "is_fixed_asset": 0,
     }
-    if _item_has_custom_exclude_from_pos():
-        filters["custom_exclude_from_pos"] = ["!=", 1]
+    from posawesome.posawesome.api.partner_pricing import exclusion_field
+
+    exclude_field = exclusion_field()
+    if exclude_field:
+        filters[exclude_field] = ["!=", 1]
 
     if allowed_groups:
         filters["item_group"] = ["in", allowed_groups]

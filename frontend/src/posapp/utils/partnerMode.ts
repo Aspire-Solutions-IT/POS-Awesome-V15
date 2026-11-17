@@ -21,7 +21,7 @@ export type PartnerModeConfig = {
 
 /** Routes a partner may open; everything else bounces back to the POS. */
 export const PARTNER_HOME_ROUTE = "/pos";
-export const PARTNER_ALLOWED_ROUTES = ["/pos", "/sales-orders"];
+export const PARTNER_ALLOWED_ROUTES = ["/pos", "/sales-orders", "/commission"];
 
 const GUARD_MARKER = "__posaPartnerCallGuard";
 

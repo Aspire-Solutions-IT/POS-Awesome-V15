@@ -154,6 +154,25 @@ def get_rate_with_fallback(item_code, price_list, fallback, uom=None, conversion
     return rate
 
 
+POS_EXCLUDE_FIELD = "custom_exclude_from_pos"
+PARTNER_POS_EXCLUDE_FIELD = "agiletfw_exclude_from_partner_pos"
+
+
+def exclusion_field():
+    """The Item check field that hides an item from the POS in use, or None.
+
+    The standard POS keeps using "Exclude from POS". The partner POS has its own
+    "Exclude from Partner POS", so partner availability can differ from the standard POS
+    without either one changing the other. Until the partner field exists on a site the
+    partner POS falls back to the standard one.
+    """
+    if is_partner_user() and frappe.db.has_column("Item", PARTNER_POS_EXCLUDE_FIELD):
+        return PARTNER_POS_EXCLUDE_FIELD
+    if frappe.db.has_column("Item", POS_EXCLUDE_FIELD):
+        return POS_EXCLUDE_FIELD
+    return None
+
+
 def is_unpriced(item, detail) -> bool:
     """True when a partner must not be offered ``item``: it has no price on their list.
 

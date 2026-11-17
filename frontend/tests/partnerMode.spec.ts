@@ -105,6 +105,7 @@ describe("isRouteAllowedForPartner", () => {
 		expect(isRouteAllowedForPartner("/pos")).toBe(true);
 		expect(isRouteAllowedForPartner("/sales-orders")).toBe(true);
 		expect(isRouteAllowedForPartner("/sales-orders?name=SO-1")).toBe(true);
+		expect(isRouteAllowedForPartner("/commission")).toBe(true);
 		for (const path of ["/payments", "/claims", "/closing", "/cash-movement", "/dashboard", "/reports", "/orders", "/gift-cards", "/barcode", "/customer-display", "/posx"]) {
 			expect(isRouteAllowedForPartner(path), path).toBe(false);
 		}

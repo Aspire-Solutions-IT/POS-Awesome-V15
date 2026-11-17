@@ -547,13 +547,18 @@ export default {
 		},
 		updateNavigationItems() {
 			if (isPartnerMode()) {
-				// Sales Partners get the POS and their own order list, nothing else.
+				// Sales Partners get the POS, their own order list and their commission, nothing else.
 				this.items = [
 					...this.baseItems,
 					{
 						text: "Sales Orders",
 						icon: "mdi-clipboard-text-search-outline",
 						to: "/sales-orders",
+					},
+					{
+						text: "My Commission",
+						icon: "mdi-cash-multiple",
+						to: "/commission",
 					},
 				];
 				return;

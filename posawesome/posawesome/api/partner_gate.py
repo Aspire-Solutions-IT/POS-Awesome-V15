@@ -109,6 +109,8 @@ POS_METHODS: dict[str, dict] = {
     **_methods("print_formats.", {"get_print_formats": {}}),
     **_methods("bundles.", {"get_bundle_components": {}}),
     **_methods("kit_due_tree.", {"get_kit_due_tree": {}}),
+    **_methods("item_due_ins.", {"get_item_due_ins": {}}),
+    **_methods("partner_commission.", {"get_partner_commission": {}}),
     **_methods("yellow_ticket_photos.", {"get_requirements": {}}),
     **_methods("shifts.", {"check_opening_shift": SELF_USER}),
     # The terminal lock: a partner can set and use their own PIN, never anyone else's.

@@ -124,11 +124,11 @@ def _build_search_plan(
     offset = _to_positive_int(offset)
 
     has_custom_tfw_name = _item_has_custom_tfw_name()
-    has_custom_exclude_from_pos = _item_has_custom_exclude_from_pos()
+    exclude_field = partner_pricing.exclusion_field()
 
     filters: Dict[str, Any] = {"disabled": 0, "is_sales_item": 1, "is_fixed_asset": 0}
-    if has_custom_exclude_from_pos:
-        filters["custom_exclude_from_pos"] = ["!=", 1]
+    if exclude_field:
+        filters[exclude_field] = ["!=", 1]
     if start_after:
         filters["custom_tfw_name" if has_custom_tfw_name else "item_name"] = [">", start_after]
     if modified_after:
@@ -863,8 +863,9 @@ def item_advanced_search_query(doctype, txt, searchfield, start, page_len, filte
     if isinstance(filters, str):
         filters = json.loads(filters) if filters else {}
     filters = dict(filters or {})
-    if _item_has_custom_exclude_from_pos():
-        filters["custom_exclude_from_pos"] = ["!=", 1]
+    exclude_field = partner_pricing.exclusion_field()
+    if exclude_field:
+        filters[exclude_field] = ["!=", 1]
 
     return item_query(doctype, txt, searchfield, start, page_len, filters, as_dict=as_dict)
 

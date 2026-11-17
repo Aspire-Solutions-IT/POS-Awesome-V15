@@ -3,6 +3,7 @@
  * Optimized state management with multi-layer caching and performance improvements
  */
 
+import { chargeLockedPriceList, chargeRequestArgs, selectedChargeName } from "../utils/chargePricingContext";
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import type { Item, POSProfile } from "../types/models";
@@ -289,6 +290,7 @@ export const useItemsStore = defineStore("items", () => {
 	// Computed
 	const activePriceList = computed(() => {
 		return (
+			chargeLockedPriceList.value ||
 			customerPriceList.value ||
 			posProfile.value?.selling_price_list ||
 			""
@@ -594,6 +596,7 @@ export const useItemsStore = defineStore("items", () => {
 			const args: any = {
 				pos_profile: JSON.stringify(requestProfile),
 				price_list: effectivePriceList,
+				...chargeRequestArgs(),
 				item_group:
 					normalizedGroup !== "ALL"
 						? normalizedGroup.toLowerCase()
@@ -756,6 +759,7 @@ export const useItemsStore = defineStore("items", () => {
 		const serverResults = await itemService.searchItems({
 			pos_profile: JSON.stringify(requestProfile),
 			price_list: activePriceList.value,
+			...chargeRequestArgs(),
 			item_group:
 				normalizedGroup !== "ALL" ? normalizedGroup.toLowerCase() : "",
 			search_value: term,
@@ -847,7 +851,7 @@ export const useItemsStore = defineStore("items", () => {
 			}
 		}
 
-		const cacheKey = `search_${getCacheScope()}_${activePriceList.value || "default"}_${term}_${itemGroup.value}`;
+		const cacheKey = `search_${getCacheScope()}_${activePriceList.value || "default"}_${selectedChargeName.value || "nocharge"}_${term}_${itemGroup.value}`;
 		const cached = getCachedSearchResult(cacheKey);
 		if (cached) {
 			filteredItems.value = cached;
@@ -979,6 +983,7 @@ export const useItemsStore = defineStore("items", () => {
 			const serverResults = await itemService.searchItemsByCode({
 				pos_profile: JSON.stringify(posProfile.value),
 				price_list: activePriceList.value,
+				...chargeRequestArgs(),
 				item_group:
 					normalizedGroup !== "ALL" ? normalizedGroup.toLowerCase() : "",
 				search_value: normalized,
@@ -1370,6 +1375,24 @@ export const useItemsStore = defineStore("items", () => {
 		filteredItems.value = [];
 		if (newCustomer) {
 			void loadItems({ forceServer: true });
+		}
+	});
+
+	// The delivery charge can lock the price list and decides the per-item fallback,
+	// so a different charge means different prices: reload from the server.
+	watch(selectedChargeName, async (next, prev) => {
+		if (next === prev) return;
+		const activeSearch = searchTerm.value;
+		const activeCodeSearch = codeSearchTerm.value;
+		clearSearchCache();
+		if (itemsLoaded.value) {
+			await loadItems({ forceServer: true });
+		}
+		// An already-searched grid shows prices for the old charge: search again.
+		if (activeCodeSearch) {
+			await searchItemsByCode(activeCodeSearch);
+		} else if (activeSearch) {
+			await searchItems(activeSearch);
 		}
 	});
 

@@ -2,6 +2,16 @@
 
 All notable changes.
 
+Release 15.34.0 — November 16, 2026
+### ✨ Features
+- The delivery charge chosen in the POS now decides the order's Order Type and price list. Container charges (DDP, FOB) price every item from their own price list only; other charges use the customer's price list and fall back to Stockist (or DHD for DHD price lists) for any item the customer has no price for. Items reload, and lines already in the basket are repriced, when the charge changes (AP-1).
+- Delivery charges are filtered by their Available To setting, so sales partners only see Agile or Both charges and standard POS users only see TFW or Both (AP-1).
+- Hovering the Due date in the POS item list now shows the next three purchase-order due dates and the quantity due on each (AP-15).
+- Sales Partners have a new My Commission page in the POS showing the commission on their own submitted orders: date, order, customer, net value, rate, commission and status, with totals. Tick Delivered only to see commission on fully delivered orders. Only available to sales partners (AP-20).
+### 🐞 Bug Fixes
+- After a new POS build, some pages could misbehave until the browser cache was cleared: menu items did nothing or the screen showed "is not a function". The POS bundle's entry file is now a small loader, so every page imports its shared code from files that change on each build.
+_Total: 5 changes_
+
 Release 15.33.0 — November 10, 2026
 ### ✨ Features
 - Sales Partners now see a "Who is this order for?" window when the POS opens. They must choose one of their customers and a delivery address before they can start; the choice fills the normal Customer box and the order's delivery address. The chosen address carries through to the Shipping Address on the payment screen, and stays selected if the order code clears it. Clicking the Customer box reopens the window to change customer or address (AP-1).
