@@ -3,6 +3,7 @@
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 import json
 from frappe.model.document import Document
 
@@ -97,6 +98,15 @@ def get_applicable_delivery_charges(
                     charge.rate = charge.default_rate
                     charges.append(charge)
 
-    from posawesome.posawesome.api.charge_pricing import filter_available
+    from posawesome.posawesome.api.charge_pricing import _is_partner_mode, filter_available
 
-    return filter_available(charges)
+    available = filter_available(charges)
+    try:
+        from customer_due_dates.selling.pos_availability import mark_default
+    except ImportError:
+        # customer_due_dates is not updated yet: keep the old is_default checkbox as stored.
+        for charge in available:
+            charge["is_default"] = 1 if cint(charge.get("is_default")) else 0
+        return available
+
+    return mark_default(available, _is_partner_mode())

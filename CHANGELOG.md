@@ -2,6 +2,11 @@
 
 All notable changes.
 
+Release 15.35.0 — November 19, 2026
+### ✨ Features
+- The default shipping method in the POS is now picked per audience: partners and non-partners each get the delivery charge set in the Delivery Charges "Default For" dropdown. Only a charge that is enabled, available to that audience and offered for the customer and POS profile is preselected. This needs customer_due_dates 2.40.0; without it the POS keeps the old default checkbox behaviour (AP-1).
+_Total: 1 change_
+
 Release 15.34.0 — November 16, 2026
 ### ✨ Features
 - The delivery charge chosen in the POS now decides the order's Order Type and price list. Container charges (DDP, FOB) price every item from their own price list only; other charges use the customer's price list and fall back to Stockist (or DHD for DHD price lists) for any item the customer has no price for. Items reload, and lines already in the basket are repriced, when the charge changes (AP-1).
