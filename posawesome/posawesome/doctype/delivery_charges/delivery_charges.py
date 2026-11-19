@@ -98,15 +98,36 @@ def get_applicable_delivery_charges(
                     charge.rate = charge.default_rate
                     charges.append(charge)
 
-    from posawesome.posawesome.api.charge_pricing import _is_partner_mode, filter_available
-
-    available = filter_available(charges)
     try:
-        from customer_due_dates.selling.pos_availability import mark_default
+        from posawesome.posawesome.api.charge_pricing import _is_partner_mode, filter_available
     except ImportError:
-        # customer_due_dates is not updated yet: keep the old is_default checkbox as stored.
+        # charge_pricing imports customer_due_dates at module level; without it no
+        # availability rule can be applied, so offer every charge as before AP-1.
+        _is_partner_mode = None
+        available = charges
+    else:
+        available = filter_available(charges)
+
+    mark_default = None
+    if _is_partner_mode is not None and frappe.db.has_column("Delivery Charges", "default_for"):
+        try:
+            from customer_due_dates.selling.pos_availability import mark_default
+        except ImportError:
+            # customer_due_dates predates mark_default.
+            mark_default = None
+
+    if mark_default is None:
+        # Old customer_due_dates, customer_due_dates missing, or the default_for column not
+        # created yet: keep the legacy is_default checkbox as stored.
         for charge in available:
             charge["is_default"] = 1 if cint(charge.get("is_default")) else 0
-        return available
+        return _without_default_for(available)
 
-    return mark_default(available, _is_partner_mode())
+    return _without_default_for(mark_default(available, _is_partner_mode()))
+
+
+def _without_default_for(charges):
+    """The POS only needs the computed ``is_default``; ``default_for`` is not for partners."""
+    for charge in charges:
+        charge.pop("default_for", None)
+    return charges
