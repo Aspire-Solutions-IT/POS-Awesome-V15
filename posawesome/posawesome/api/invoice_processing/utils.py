@@ -139,6 +139,20 @@ def get_latest_rate(from_currency: str, to_currency: str, cache=None):
 
 @frappe.whitelist()
 def get_price_list_currency(price_list):
+    """Currency of a price list. A partner only learns it for lists they can price from.
+
+    For any other list (the profile's own list before a customer is chosen, say) the
+    answer is the POS profile's currency, or nothing, so POS load does not fail.
+    """
+    from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
+
+    scope = get_scope()
+    if scope["is_partner"] and price_list not in allowed_price_lists(scope["partners"]):
+        from posawesome.posawesome.api.charge_pricing import server_profile_context
+
+        profile, _company = server_profile_context()
+        return (frappe.db.get_value("POS Profile", profile, "currency") if profile else None) or None
+
     return frappe.db.get_value("Price List", price_list, "currency")
 
 @frappe.whitelist()

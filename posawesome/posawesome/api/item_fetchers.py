@@ -78,8 +78,14 @@ def _fetch_item_prices(
     item_codes: Tuple[str, ...],
     customer: str,
     today: str,
+    partner_rows: bool = False,
 ):
-    """Return raw Item Price rows honoring date, currency and customer filters."""
+    """Return raw Item Price rows honoring date, currency and customer filters.
+
+    ``partner_rows`` limits them to what a partner may be priced from: selling rows with
+    no supplier (see ``price_resolution.PARTNER_ROW_SQL``). It is an argument, not a user
+    check, because ``get_item_prices`` caches on its arguments.
+    """
 
     if not item_codes:
         return []
@@ -91,6 +97,8 @@ def _fetch_item_prices(
         "today": today,
         "customer": customer or "",
     }
+    from posawesome.posawesome.api.price_resolution import PARTNER_ROW_SQL
+
     query = """
         SELECT
             item_code,
@@ -115,9 +123,10 @@ def _fetch_item_prices(
                 AND (valid_from IS NULL OR valid_from <= %(today)s)
                 AND IFNULL(customer, '') IN ('', %(customer)s)
                 AND (valid_upto IS NULL OR valid_upto = '' OR valid_upto >= %(today)s)
+                {partner_filter}
         ) ip
         ORDER BY IFNULL(customer, '') ASC, valid_from ASC, valid_upto DESC
-    """
+    """.replace("{partner_filter}", f"AND {PARTNER_ROW_SQL}" if partner_rows else "")
 
     return frappe.db.sql(query, params, as_dict=True)
 
@@ -129,11 +138,14 @@ def get_item_prices(
     customer: Optional[str],
     today: Optional[str] = None,
     ttl: Optional[int] = None,
+    partner_rows: bool = False,
 ):
     """Fetch Item Price data with optional redis caching based on TTL."""
 
     cached = _cache_wrapper(_price_cache, ttl, _fetch_item_prices)
-    return cached(price_list, currency, tuple(item_codes), customer or "", today or nowdate())
+    return cached(
+        price_list, currency, tuple(item_codes), customer or "", today or nowdate(), bool(partner_rows)
+    )
 
 
 def _fetch_bin_qty(warehouse: str, item_codes: Tuple[str, ...]):
@@ -718,18 +730,26 @@ class ItemDetailAggregator:
         # Any items endpoint can be told which delivery charge the order has by adding
         # ``delivery_charge`` to its arguments; the charge may fix the price list and gives
         # the fallback for items the list does not price.
-        self.delivery_charge = delivery_charge or frappe.form_dict.get("delivery_charge") or None
+        # An explicit "" means "this order has no charge" (the managed-order path), so the
+        # request's own ``delivery_charge`` is only a default for callers that pass nothing.
+        if delivery_charge is None:
+            delivery_charge = frappe.form_dict.get("delivery_charge")
+        self.delivery_charge = delivery_charge or None
         charge = charge_pricing.get_charge(self.delivery_charge)
         # Partners are priced from their customer's own price list only, never a
         # price list or customer the client asks for.
         self.partner_mode = partner_pricing.is_partner_user()
         if self.partner_mode:
             partner_pricing.require_scoped_customer(customer)
-            price_list = partner_pricing.get_customer_price_list(customer, self.delivery_charge)
+            context = partner_pricing.resolve_pricing_context(customer, self.delivery_charge)
+            price_list = context.price_list
         elif charge and charge.locked:
             price_list = charge.price_list
         self.price_list = price_list or pos_profile.get("selling_price_list")
-        self.fallback_price_list = charge_pricing.fallback_for(self.price_list, self.delivery_charge)
+        if self.partner_mode:
+            self.fallback_price_list = context.fallback
+        else:
+            self.fallback_price_list = charge_pricing.fallback_for(self.price_list, self.delivery_charge)
         self.cache_ttl = self._resolve_ttl()
         self.today = nowdate()
         self.warehouse = STOCK_SOURCE_WAREHOUSE
@@ -754,10 +774,18 @@ class ItemDetailAggregator:
         currency = frappe.db.get_value("Price List", self.fallback_price_list, "currency")
         if use_cache:
             extra = get_item_prices(
-                self.fallback_price_list, currency, missing, self.customer, today=self.today, ttl=self.cache_ttl
+                self.fallback_price_list,
+                currency,
+                missing,
+                self.customer,
+                today=self.today,
+                ttl=self.cache_ttl,
+                partner_rows=self.partner_mode,
             )
         else:
-            extra = _fetch_item_prices(self.fallback_price_list, currency, missing, self.customer or "", self.today)
+            extra = _fetch_item_prices(
+                self.fallback_price_list, currency, missing, self.customer or "", self.today, self.partner_mode
+            )
         return list(price_rows) + list(extra)
 
     def _resolve_ttl(self) -> Optional[int]:
@@ -822,6 +850,7 @@ class ItemDetailAggregator:
                     self.customer,
                     today=self.today,
                     ttl=self.cache_ttl,
+                    partner_rows=self.partner_mode,
                 )
             else:
                 price_rows = _fetch_item_prices(
@@ -830,6 +859,7 @@ class ItemDetailAggregator:
                     item_codes_tuple,
                     self.customer or "",
                     self.today,
+                    self.partner_mode,
                 )
 
         price_rows = self._with_fallback_prices(price_rows, item_codes_tuple, use_cache)

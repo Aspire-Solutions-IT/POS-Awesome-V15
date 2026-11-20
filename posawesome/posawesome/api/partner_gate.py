@@ -13,8 +13,9 @@ For a partner user every request is checked in :func:`enforce` (``before_request
   narrow role and the row scoping in customer_due_dates, so they are allowed, apart
   from the write paths in ``FRAMEWORK_DENIED``. Partners write only through the POS
   Sales Order endpoints.
-* Endpoints that take a price list from the client (``PRICE_LIST`` rule) only get one the
-  partner can price from: ``allowed_price_lists``. Never a buying or other customer's list.
+* A ``price_list`` rule (none are in use now) only passes a list the partner can price from:
+  ``allowed_price_lists``, built from the same resolver as the pricing code. Single-price
+  lookups ignore the browser's list and resolve it from the customer and the order's charge.
 * Allowed endpoints that take a customer or Sales Order are checked here, so the
   endpoint code needs no per-function scope logic: a customer must belong to one of
   the partner's Sales Partners, and so must the customer of any order referenced.
@@ -46,9 +47,8 @@ SELF_USER = {"self_user": "user"}
 ORDER_PAYLOAD_DATA = {"payload": ("data",)}
 ORDER_PAYLOAD_ORDER = {"payload": ("order",)}
 # price_list: names of arguments holding a Price List the partner may price from (see
-# allowed_price_lists). A blank value passes: the endpoints return nothing for it.
-PRICE_LIST = {"price_list": ("price_list",)}
-BARCODE_PRICE_LIST = {"price_list": ("selling_price_list",)}
+# allowed_price_lists). None of the endpoints take one any more: single-price lookups
+# resolve the list from the customer and the order's charge and ignore the browser's.
 
 
 def _methods(prefix: str, names: dict[str, dict]) -> dict[str, dict]:
@@ -87,8 +87,8 @@ POS_METHODS: dict[str, dict] = {
             "get_item_detail": {},
             "get_items_count": {},
             "get_items_groups": {},
-            "get_items_from_barcode": BARCODE_PRICE_LIST,
-            "get_price_for_uom": PRICE_LIST,
+            "get_items_from_barcode": REQUIRED_CUSTOMER,
+            "get_price_for_uom": REQUIRED_CUSTOMER,
             "parse_scale_barcode": {},
             "search_serial_or_batch_or_barcode_number": {},
             "get_delta_items": OPTIONAL_CUSTOMER,
@@ -303,17 +303,21 @@ def is_customer_in_scope(customer, partners: list[str]) -> bool:
 def allowed_price_lists(partners: list[str]) -> set[str]:
     """Selling price lists a partner with these Sales Partners may price from.
 
-    The default list of each in-scope customer (or their customer group's, when the
-    customer has none), the lists of
-    delivery charges offered to partners, and the fallback list of each. Buying, disabled
-    and other customers' lists are never in the set.
+    Built from the same resolver the pricing code uses (``price_resolution.resolve_lists``):
+    for each in-scope customer's own list (their customer group's when they have none) and
+    for no charge or each enabled charge offered to partners, the primary list and its
+    fallback. A buying, disabled or other customer's list is never in the set, and a locked
+    (container) charge's list never brings a fallback. This is a superset of what one
+    request resolves (company, POS profile and address are checked per request by
+    ``charge_pricing.validated_partner_charge``).
     """
     if not partners:
         return set()
 
     from customer_due_dates.selling.pos_availability import is_available
 
-    lists: set[str] = set()
+    from posawesome.posawesome.api.price_resolution import resolve_lists
+
     customers = frappe.get_all(
         "Customer",
         filters={"default_sales_partner": ["in", partners]},
@@ -321,42 +325,36 @@ def allowed_price_lists(partners: list[str]) -> set[str]:
     )
     # The customer group's list only applies to a customer with no list of their own.
     groups = {c.customer_group for c in customers if c.customer_group and not c.default_price_list}
-    lists.update(c.default_price_list for c in customers if c.default_price_list)
+    group_lists: dict[str, str] = {}
     if groups:
-        lists.update(
-            frappe.get_all(
-                "Customer Group",
-                filters={"name": ["in", sorted(groups)], "default_price_list": ["is", "set"]},
-                pluck="default_price_list",
-            )
-        )
-
-    if frappe.db.has_column("Delivery Charges", "price_list"):
-        for charge in frappe.get_all(
-            "Delivery Charges",
-            filters={"price_list": ["is", "set"]},
-            fields=["price_list", "available_to"],
+        for row in frappe.get_all(
+            "Customer Group",
+            filters={"name": ["in", sorted(groups)], "default_price_list": ["is", "set"]},
+            fields=["name", "default_price_list"],
         ):
-            if is_available(charge.available_to, True):
-                lists.add(charge.price_list)
+            group_lists[row.name] = row.default_price_list
 
-    if lists and frappe.db.has_column("Price List", "fallback_price_list"):
-        lists.update(
-            frappe.get_all(
-                "Price List",
-                filters={"name": ["in", sorted(lists)], "fallback_price_list": ["is", "set"]},
-                pluck="fallback_price_list",
+    bases = {c.default_price_list or group_lists.get(c.customer_group) or None for c in customers}
+
+    charges: list = [None]
+    if frappe.db.has_column("Delivery Charges", "price_list"):
+        charges.extend(
+            charge
+            for charge in frappe.get_all(
+                "Delivery Charges",
+                filters={"price_list": ["is", "set"], "disabled": 0},
+                fields=["price_list", "price_list_overrides_customer", "available_to"],
             )
+            if is_available(charge.available_to, True)
         )
 
-    if not lists:
-        return set()
+    lists: set[str] = set()
+    for base in bases:
+        for charge in charges:
+            primary, fallback = resolve_lists(base, charge)
+            lists.update(name for name in (primary, fallback) if name)
 
-    return set(
-        frappe.get_all(
-            "Price List", filters={"name": ["in", sorted(lists)], "enabled": 1, "selling": 1}, pluck="name"
-        )
-    )
+    return lists
 
 
 def _requested_method(path: str, form) -> str | None:

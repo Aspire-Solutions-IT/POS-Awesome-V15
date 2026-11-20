@@ -2,6 +2,7 @@ import json
 
 import frappe
 
+from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
 from posawesome.posawesome.api.invoice_processing.utils import get_price_list_currency
 from posawesome.posawesome.api.utilities import (
 	get_pos_profile_tax_inclusive,
@@ -109,9 +110,17 @@ def sync_bootstrap_config(
 	profile_modified = _normalize_timestamp(profile.get("modified"))
 	selected_price_list = profile.get("selling_price_list")
 
+	price_list_filters = {"selling": 1}
+	partner_scope = get_scope()
+	if partner_scope["is_partner"]:
+		# A partner only learns about the lists they can price from.
+		price_list_filters["name"] = [
+			"in",
+			sorted(allowed_price_lists(partner_scope["partners"])) or ["__none__"],
+		]
 	price_list_rows = frappe.get_all(
 		"Price List",
-		filters={"selling": 1},
+		filters=price_list_filters,
 		fields=["name", "modified"],
 		order_by="name asc",
 	) or []
@@ -120,7 +129,11 @@ def sync_bootstrap_config(
 		price_lists = [row.get("name") for row in (get_selling_price_lists() or []) if row.get("name")]
 
 	if selected_price_list and selected_price_list not in price_lists:
-		price_lists.append(selected_price_list)
+		# The profile's own list: for a partner only when it is one of theirs.
+		if not partner_scope["is_partner"] or selected_price_list in allowed_price_lists(
+			partner_scope["partners"]
+		):
+			price_lists.append(selected_price_list)
 
 	price_list_modified = _max_timestamp(
 		[row.get("modified") for row in price_list_rows],

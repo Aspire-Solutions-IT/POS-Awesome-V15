@@ -123,32 +123,38 @@ class TestPartnerPriceVisibility(FrappeTestCase):
 	def test_partner_never_reads_another_customers_price_row(self):
 		self._price(10)  # list-wide
 		self._price(999, customer=self.foreign.name)
-		self.assertEqual(self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos"), 10)
+		self.assertEqual(self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos", self.mine.name), 10)
 
 		self._price(12, customer=self.mine.name)
-		self.assertEqual(self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos"), 12)
+		self.assertEqual(self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos", self.mine.name), 12)
 
 	def test_partner_sees_nothing_when_only_a_foreign_row_exists(self):
 		self._price(999, customer=self.foreign.name)
-		self.assertIsNone(self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos"))
+		self.assertIsNone(self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos", self.mine.name))
 
 	def test_staff_still_read_any_row(self):
 		self._price(999, customer=self.foreign.name)
 		self.assertEqual(get_price_for_uom(self.item.name, self.own_list, "Nos"), 999)
 
-	def test_partner_is_refused_a_buying_list(self):
+	def test_partner_is_priced_from_the_customer_never_a_buying_list_they_name(self):
 		self._price(5, price_list=self.buying_list)
+		self._price(10)
+		# The browser's list is ignored: the customer's own list answers.
+		self.assertEqual(
+			self.as_partner(get_price_for_uom, self.item.name, self.buying_list, "Nos", self.mine.name), 10
+		)
+		row = self.as_partner(get_items_from_barcode, self.buying_list, "GBP", f"WP4T{self.h}", self.mine.name)
+		self.assertEqual(row["price_list_rate"], 10)
+		# Another partner's customer is refused, and so is a call with no customer.
 		with self.assertRaises(frappe.PermissionError):
-			self.as_partner(get_price_for_uom, self.item.name, self.buying_list, "Nos")
-		with self.assertRaises(frappe.PermissionError):
-			self.as_partner(get_items_from_barcode, self.buying_list, "GBP", f"WP4T{self.h}")
+			self.as_partner(get_price_for_uom, self.item.name, self.own_list, "Nos", self.foreign.name)
 		# Staff are unchanged.
 		self.assertEqual(get_price_for_uom(self.item.name, self.buying_list, "Nos"), 5)
 
 	def test_barcode_prices_a_partner_from_the_list_only(self):
 		self._price(10)
 		self._price(999, customer=self.foreign.name)
-		row = self.as_partner(get_items_from_barcode, self.own_list, "GBP", f"WP4T{self.h}")
+		row = self.as_partner(get_items_from_barcode, self.own_list, "GBP", f"WP4T{self.h}", self.mine.name)
 		self.assertEqual(row["item_code"], self.item.name)
 		self.assertEqual(row["price_list_rate"], 10)
 		self.assertEqual((row["custom_tfw_price"], row["pos_on_sale_price"], row["is_on_sale"]), (0, 0, False))

@@ -1632,8 +1632,16 @@ def _resolve_managed_sales_order_item_pricing(doc, item_code, uom=None):
         or cstr(profile.get("selling_price_list") or "").strip()
         or None
     )
+    # For a partner, the order's own charge and never one from the request: it fixes the
+    # list (a container charge) and the fallback, exactly as when the order was saved.
+    # Staff keep following the request.
     aggregator = ItemDetailAggregator(
-        profile, price_list=price_list, customer=getattr(doc, "customer", None)
+        profile,
+        price_list=price_list,
+        customer=getattr(doc, "customer", None),
+        delivery_charge=(
+            cstr(getattr(doc, "posa_delivery_charges", "") or "").strip() if is_partner_user() else None
+        ),
     )
     rows = aggregator.build_details([{"item_code": item_code, "uom": uom}]) or []
     row = rows[0] if rows else {}

@@ -78,42 +78,48 @@ def require_scoped_customer(customer) -> str:
     return customer
 
 
-def get_customer_price_list(customer, delivery_charge=None) -> str:
-    """The selling price list for this customer and delivery charge, or a clear error.
+def customer_base_list(customer):
+    """The customer's own selling list, else their customer group's, else ``None``."""
+    return frappe.db.get_value("Customer", customer, "default_price_list") or frappe.db.get_value(
+        "Customer Group",
+        frappe.db.get_value("Customer", customer, "customer_group"),
+        "default_price_list",
+    )
 
-    A container charge (FOB, DDP) uses its own list only. Otherwise it is the customer's
-    default list, then their customer group's, then the charge's own list.
+
+def resolve_pricing_context(customer, delivery_charge=None):
+    """The one server-validated pricing context for a partner's customer and charge.
+
+    Returns ``{price_list, fallback, charge}``. Every partner price read goes through
+    this, so the item grid, item details, order saves, single-price lookups, offline
+    deltas and the request gate cannot disagree. The charge is checked first (enabled,
+    offered to partners here, same offer rules as the dropdown), then both lists must be
+    enabled selling lists; a locked (container) charge never falls back.
     """
-    from . import charge_pricing
+    from . import charge_pricing, price_resolution
 
     if not customer:
         frappe.throw(_("Select a customer first."))
 
-    charge = charge_pricing.get_charge(delivery_charge)
-    if charge and charge.locked:
-        price_list = charge.price_list
-    else:
-        price_list = (
-            frappe.db.get_value("Customer", customer, "default_price_list")
-            or frappe.db.get_value(
-                "Customer Group",
-                frappe.db.get_value("Customer", customer, "customer_group"),
-                "default_price_list",
-            )
-            or (charge.price_list if charge else None)
-        )
+    charge = charge_pricing.validated_partner_charge(delivery_charge, customer)
+    base = customer_base_list(customer)
+    price_list, fallback = price_resolution.resolve_lists(base, charge)
     if not price_list:
-        frappe.throw(
-            _("Customer {0} has no default price list. Ask Agile to set one before ordering.").format(
-                customer
+        bad = (charge.price_list if price_resolution.is_locked(charge) else base or (charge and charge.price_list))
+        if not bad:
+            frappe.throw(
+                _("Customer {0} has no default price list. Ask Agile to set one before ordering.").format(
+                    customer
+                )
             )
-        )
+        frappe.throw(_("Price list {0} is not an enabled selling price list.").format(bad))
 
-    enabled, selling = frappe.db.get_value("Price List", price_list, ["enabled", "selling"]) or (0, 0)
-    if not (cint(enabled) and cint(selling)):
-        frappe.throw(_("Price list {0} is not an enabled selling price list.").format(price_list))
+    return frappe._dict(price_list=price_list, fallback=fallback, charge=charge)
 
-    return price_list
+
+def get_customer_price_list(customer, delivery_charge=None) -> str:
+    """The selling price list for this customer and delivery charge, or a clear error."""
+    return resolve_pricing_context(customer, delivery_charge).price_list
 
 
 def get_price_list_rate(item_code, price_list, uom=None, conversion_factor=None, customer=None):
@@ -126,7 +132,7 @@ def get_price_list_rate(item_code, price_list, uom=None, conversion_factor=None,
     from .item_fetchers import _fetch_item_prices
 
     currency = frappe.db.get_value("Price List", price_list, "currency")
-    rows = _fetch_item_prices(price_list, currency, (item_code,), customer or "", nowdate())
+    rows = _fetch_item_prices(price_list, currency, (item_code,), customer or "", nowdate(), True)
 
     by_uom = {}
     for row in rows:
@@ -146,39 +152,21 @@ def get_price_list_rate(item_code, price_list, uom=None, conversion_factor=None,
     return flt(base.get("price_list_rate")) * (flt(conversion_factor) or 1.0)
 
 
-def get_visible_item_price(item_code, price_list, uom=None, currency=None):
-    """``price_list_rate`` of a selling Item Price a partner may see, or ``None``.
-
-    Used by the endpoints that look up one price from a client-supplied list. The list
-    itself is checked in the request gate (``allowed_price_lists``); this stops a
-    customer-specific row for someone else's customer on an allowed list from being read.
-    """
-    partners = get_scope()["partners"]
-    customers = (
-        frappe.get_all("Customer", filters={"default_sales_partner": ["in", partners]}, pluck="name")
-        if partners
-        else []
+def get_uom_rate(item_code, uom, customer, delivery_charge=None):
+    """What a partner's customer pays per ``uom`` of an item, or ``None`` when unpriced."""
+    require_scoped_customer(customer)
+    context = resolve_pricing_context(customer, delivery_charge)
+    conversion_factor = frappe.db.get_value(
+        "UOM Conversion Detail", {"parent": item_code, "uom": uom}, "conversion_factor"
     )
-    conditions = ["item_code = %(item_code)s", "price_list = %(price_list)s", "selling = 1"]
-    values = {"item_code": item_code, "price_list": price_list}
-    if customers:
-        conditions.append("(ifnull(customer, '') = '' or customer in %(customers)s)")
-        values["customers"] = tuple(customers)
-    else:
-        conditions.append("ifnull(customer, '') = ''")
-    if uom:
-        conditions.append("uom = %(uom)s")
-        values["uom"] = uom
-    if currency:
-        conditions.append("currency = %(currency)s")
-        values["currency"] = currency
+    stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+    if uom != stock_uom and not conversion_factor:
+        return None  # not a UOM this item is sold in
 
-    rows = frappe.db.sql(
-        f"select price_list_rate from `tabItem Price` where {' and '.join(conditions)} "
-        "order by ifnull(customer, '') desc, valid_from desc limit 1",
-        values,
+    rate = get_rate_with_fallback(
+        item_code, context.price_list, context.fallback, uom, conversion_factor, customer
     )
-    return rows[0][0] if rows else None
+    return rate if rate and rate > 0 else None
 
 
 def get_rate_with_fallback(item_code, price_list, fallback, uom=None, conversion_factor=None, customer=None):
@@ -231,14 +219,13 @@ def scrub_item_row(row: dict) -> dict:
 
 def apply_item_detail(detail: dict, customer, uom=None, conversion_factor=None, delivery_charge=None) -> dict:
     """Price an ERPNext item-details result from the partner's price list (in place)."""
-    from . import charge_pricing
-
     require_scoped_customer(customer)
-    price_list = get_customer_price_list(customer, delivery_charge)
+    context = resolve_pricing_context(customer, delivery_charge)
+    price_list = context.price_list
     rate = get_rate_with_fallback(
         detail.get("item_code"),
         price_list,
-        charge_pricing.fallback_for(price_list, delivery_charge),
+        context.fallback,
         uom or detail.get("uom"),
         conversion_factor,
         customer,
@@ -253,6 +240,59 @@ def apply_item_detail(detail: dict, customer, uom=None, conversion_factor=None, 
     detail["rate"] = rate
     detail.update(ROW_DISCOUNT_FIELDS)
     return scrub_item_row(detail)
+
+
+# What a partner's item-details request may pass to ERPNext's get_item_details. Anything
+# else the browser sent (rate, price_list, buying price list, supplier, conversion rates,
+# margins, pricing rules, ignore flags) is dropped, because the call runs as Administrator.
+PARTNER_ITEM_ARGS = (
+    "item_code",
+    "qty",
+    "uom",
+    "conversion_factor",
+    "warehouse",
+    "batch_no",
+    "serial_no",
+    "has_batch_no",
+    "has_serial_no",
+    "is_stock_item",
+    "pos_profile",
+    "tax_category",
+    "update_stock",
+)
+
+
+def sanitise_item_details_input(item, customer, delivery_charge, price_list, company):
+    """``(item, doc)`` for ERPNext's get_item_details, built only from validated inputs."""
+    clean = frappe._dict({key: item.get(key) for key in PARTNER_ITEM_ARGS if item.get(key) is not None})
+    currency = frappe.db.get_value("Price List", price_list, "currency")
+    clean.update(
+        {
+            "customer": customer,
+            "selling_price_list": price_list,
+            "currency": currency,
+            "transaction_type": "selling",
+            "doctype": "Sales Invoice",
+            "name": "New Sales Invoice 1",
+            "ignore_pricing_rule": 1,
+            "conversion_rate": 1,
+            "plc_conversion_rate": 1,
+        }
+    )
+    if company:
+        clean["company"] = company
+
+    doc = frappe._dict(
+        doctype="Sales Invoice",
+        company=company,
+        customer=customer,
+        posa_delivery_charges=delivery_charge,
+        selling_price_list=price_list,
+        currency=currency,
+        price_list_currency=currency,
+        transaction_date=nowdate(),
+    )
+    return clean, doc
 
 
 def neutralise_payment_fields(order: dict, data: dict | None = None) -> None:
@@ -279,12 +319,9 @@ def enforce_sales_order_pricing(doc, method=None) -> None:
     if not is_partner_user():
         return
 
-    from . import charge_pricing
-
     customer = require_scoped_customer(doc.get("customer"))
-    charge_name = doc.get("posa_delivery_charges")
-    price_list = get_customer_price_list(customer, charge_name)
-    fallback = charge_pricing.fallback_for(price_list, charge_name)
+    context = resolve_pricing_context(customer, doc.get("posa_delivery_charges"))
+    price_list, fallback = context.price_list, context.fallback
 
     # Commission is the partner's pay, so the server decides it, never the browser: the
     # customer's own partner, and the customer's rate or else that partner's rate (the same

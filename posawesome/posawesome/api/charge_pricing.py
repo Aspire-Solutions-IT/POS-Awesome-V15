@@ -61,6 +61,54 @@ def filter_available(charges: list) -> list:
     return [c for c in charges if is_available(c.get("available_to"), partner_mode)]
 
 
+def server_profile_context(user=None):
+    """``(pos_profile, company)`` of the signed-in user, read from the database.
+
+    Never from the request: a client-built profile JSON could name any company or profile
+    and so make a charge look available. Same lookup as ``get_active_pos_profile``.
+    """
+    user = user or frappe.session.user
+    profile = frappe.db.get_value("POS Profile User", {"user": user}, "parent")
+    if not profile and frappe.get_meta("POS Settings").has_field("pos_profile"):
+        profile = frappe.db.get_single_value("POS Settings", "pos_profile")
+    company = frappe.db.get_value("POS Profile", profile, "company") if profile else None
+    return profile or None, company or frappe.defaults.get_global_default("company")
+
+
+def validated_partner_charge(charge_name, customer):
+    """The charge a partner selected, once it is known to be offerable, else an error.
+
+    Uses the same offer rules the POS charge dropdown applies
+    (``get_applicable_delivery_charges``): enabled, this company, this POS profile, the
+    customer's address charges, and available to partners. Run before any price is read.
+    Returns ``None`` for no charge (or before the charge columns exist).
+    """
+    if not charge_name:
+        return None
+
+    charge = get_charge(charge_name)
+    if charge is None:
+        if frappe.db.exists("Delivery Charges", charge_name):
+            return None  # customer_due_dates has not been migrated yet
+        frappe.throw(
+            _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
+            frappe.PermissionError,
+        )
+
+    from posawesome.posawesome.doctype.delivery_charges.delivery_charges import (
+        get_applicable_delivery_charges,
+    )
+
+    profile, company = server_profile_context()
+    offered = get_applicable_delivery_charges(company, profile, customer) or []
+    if charge_name not in {c.get("name") for c in offered}:
+        frappe.throw(
+            _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
+            frappe.PermissionError,
+        )
+    return charge
+
+
 def fallback_for(price_list, charge_name=None) -> str | None:
     """The list to price items from when they have no price on ``price_list``.
 

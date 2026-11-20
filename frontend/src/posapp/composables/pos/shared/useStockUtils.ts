@@ -5,6 +5,7 @@ import {
 	toSelectedCurrency,
 } from "../../../utils/currencyConversion.js";
 import { useToastStore } from "../../../stores/toastStore.js";
+import { chargeRequestArgs } from "../../../utils/chargePricingContext";
 
 export function useStockUtils() {
 	const toastStore = useToastStore();
@@ -116,7 +117,11 @@ export function useStockUtils() {
 			context._uomPriceCache instanceof Map
 				? context._uomPriceCache
 				: (context._uomPriceCache = new Map());
-		const uomPriceCacheKey = `${hasPriceList ? String(priceList) : ""}::${String(item.item_code || "")}::${String(new_uom.uom || "")}`;
+		// A partner's price depends on the customer and the order's delivery charge as well as
+		// the list (the server resolves the list from them), so they are part of the cache key.
+		const uomCustomer = String(context.customer || "");
+		const uomCharge = String(chargeRequestArgs().delivery_charge || "");
+		const uomPriceCacheKey = `${hasPriceList ? String(priceList) : ""}::${uomCustomer}::${uomCharge}::${String(item.item_code || "")}::${String(new_uom.uom || "")}`;
 
 		if (uomPriceCache.has(uomPriceCacheKey)) {
 			uomRate = uomPriceCache.get(uomPriceCacheKey) ?? null;
@@ -144,6 +149,8 @@ export function useStockUtils() {
 						item_code: item.item_code,
 						price_list: priceList,
 						uom: new_uom.uom,
+						customer: context.customer || undefined,
+						...chargeRequestArgs(),
 					},
 				});
 				if (r.message) {

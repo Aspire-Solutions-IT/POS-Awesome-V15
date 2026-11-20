@@ -150,6 +150,22 @@ def _install():
 
     gate = load("posawesome.posawesome.api.partner_gate", "partner_gate.py")
     api.partner_gate = gate
+    resolution = load("posawesome.posawesome.api.price_resolution", "price_resolution.py")
+    api.price_resolution = resolution
+    # The offer rules (get_applicable_delivery_charges) live in a doctype module that needs
+    # a site; the fake offers whatever STATE["offered"] lists.
+    for name in (
+        "posawesome.posawesome.doctype",
+        "posawesome.posawesome.doctype.delivery_charges",
+    ):
+        shell = types.ModuleType(name)
+        shell.__path__ = []
+        sys.modules[name] = shell
+    dc_mod = types.ModuleType("posawesome.posawesome.doctype.delivery_charges.delivery_charges")
+    dc_mod.get_applicable_delivery_charges = lambda company, profile, customer, *a, **k: [
+        _dict(name=n) for n in STATE.get("offered", ())
+    ]
+    sys.modules["posawesome.posawesome.doctype.delivery_charges.delivery_charges"] = dc_mod
     fetchers = load("posawesome.posawesome.api.item_fetchers", "item_fetchers.py")
     api.item_fetchers = fetchers
     charges = load("posawesome.posawesome.api.charge_pricing", "charge_pricing.py")
@@ -163,10 +179,12 @@ def _install():
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = mod
+    charges.server_profile_context = lambda user=None: ("POS-A", "Co")
     return gate, fetchers, pricing, frappe, charges
 
 
 GATE, FETCHERS, PRICING, FRAPPE, CHARGES = _install()
+RESOLUTION = sys.modules.get('posawesome.posawesome.api.price_resolution') or PRICING.__dict__.get('price_resolution')
 
 
 def _values(**overrides):
@@ -197,16 +215,18 @@ class Base(unittest.TestCase):
         STATE.update(partner=True, values=_values(), prices=_price_rows({"price_list_rate": 50, "uom": "Nos"}))
         self._orig = PRICING.__dict__.get("_fetch")
         self.fetch_calls = []
+        self.partner_rows_flags = []
 
-        def fake_fetch(price_list, currency, item_codes, customer, today):
+        def fake_fetch(price_list, currency, item_codes, customer, today, partner_rows=False):
             self.fetch_calls.append((price_list, currency, item_codes, customer))
+            self.partner_rows_flags.append(partner_rows)
             return STATE["prices"]
 
         self._orig_fetch = FETCHERS._fetch_item_prices
         FETCHERS._fetch_item_prices = fake_fetch
         # Bind the module globals the code under test reads to this test's fakes.
         self._saved = {}
-        for module in (GATE, PRICING):
+        for module in (GATE, PRICING, CHARGES, RESOLUTION):
             self._saved[module] = module.frappe
             module.frappe = FRAPPE
 
@@ -625,14 +645,57 @@ class TestChargePricing(Base):
             }
         )
         STATE["values"][("Price List", "Trade GBP")]["fallback_price_list"] = "Stockist"
+        STATE["offered"] = ["DDP 40ft", "Free delivery"]
 
     def test_container_charge_uses_only_its_own_list(self):
         self.assertEqual(PRICING.get_customer_price_list("CUST-A", "DDP 40ft"), "DDP 40ft")
         self.assertIsNone(CHARGES.fallback_for("DDP 40ft", "DDP 40ft"))
+        self.assertIsNone(PRICING.resolve_pricing_context("CUST-A", "DDP 40ft").fallback)
 
     def test_standard_charge_keeps_the_customers_list_with_stockist_fallback(self):
         self.assertEqual(PRICING.get_customer_price_list("CUST-A", "Free delivery"), "Trade GBP")
         self.assertEqual(CHARGES.fallback_for("Trade GBP", "Free delivery"), "Stockist")
+        self.assertEqual(PRICING.resolve_pricing_context("CUST-A", "Free delivery").fallback, "Stockist")
+
+    def test_a_charge_that_is_not_offered_is_refused_before_any_price_is_read(self):
+        # Disabled, wrong company/POS profile or restricted by the customer's address: the
+        # offer rules (get_applicable_delivery_charges) leave it out.
+        STATE["offered"] = ["Free delivery"]
+        with self.assertRaises(FakePermissionError):
+            PRICING.resolve_pricing_context("CUST-A", "DDP 40ft")
+        with self.assertRaises(FakePermissionError):
+            PRICING.apply_item_detail({"item_code": "WIDGET"}, "CUST-A", delivery_charge="DDP 40ft")
+        self.assertEqual(self.fetch_calls, [])
+
+    def test_an_unknown_charge_is_refused(self):
+        with self.assertRaises(FakePermissionError):
+            PRICING.resolve_pricing_context("CUST-A", "No such charge")
+
+    def test_a_buying_only_or_disabled_fallback_is_never_used(self):
+        for override in ({"selling": 0}, {"enabled": 0}):
+            with self.subTest(override=override):
+                STATE["values"][("Price List", "Stockist")] = {"enabled": 1, "selling": 1, "currency": "GBP", **override}
+                self.assertIsNone(PRICING.resolve_pricing_context("CUST-A", "Free delivery").fallback)
+                self.assertIsNone(PRICING.resolve_pricing_context("CUST-A").fallback)
+
+    def test_a_locked_charge_whose_list_is_buying_only_is_an_error_not_a_fallback(self):
+        STATE["values"][("Price List", "DDP 40ft")]["selling"] = 0
+        with self.assertRaisesRegex(Exception, "not an enabled selling"):
+            PRICING.resolve_pricing_context("CUST-A", "DDP 40ft")
+
+    def test_rates_are_read_only_from_partner_visible_rows(self):
+        PRICING.get_price_list_rate("WIDGET", "Trade GBP", "Nos", 1, "CUST-A")
+        self.assertEqual(self.partner_rows_flags, [True])
+
+    def test_gate_and_pricing_agree_on_the_lists(self):
+        # The gate's list set is built from the same resolver: a locked charge adds only its
+        # own list; a standard charge adds the customer's list and its fallback.
+        self.assertEqual(RESOLUTION.resolve_lists("Trade GBP", None), ("Trade GBP", "Stockist"))
+        self.assertEqual(
+            RESOLUTION.resolve_lists("Trade GBP", {"price_list": "DDP 40ft", "price_list_overrides_customer": 1}),
+            ("DDP 40ft", None),
+        )
+        self.assertEqual(RESOLUTION.resolve_lists(None, None), (None, None))
 
     def test_customer_without_a_list_uses_the_charges_list(self):
         self.assertEqual(PRICING.get_customer_price_list("CUST-NOLIST", "Free delivery"), "Stockist")
@@ -715,3 +778,48 @@ class TestAggregator(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSanitisedItemDetailsInput(Base):
+    """get_item_details runs as Administrator, so only validated inputs may reach it."""
+
+    def test_client_rate_price_list_supplier_and_flags_are_dropped(self):
+        item = {
+            "item_code": "WIDGET", "qty": 2, "uom": "Nos", "warehouse": "WH",
+            "rate": 1, "price_list_rate": 1, "price_list": "Standard Buying",
+            "buying_price_list": "Standard Buying", "supplier": "SUP", "plc_conversion_rate": 9,
+            "conversion_rate": 9, "ignore_pricing_rule": 0, "discount_percentage": 100,
+            "customer": "CUST-B", "currency": "XXX",
+        }
+        clean, doc = PRICING.sanitise_item_details_input(item, "CUST-A", "Free delivery", "Trade GBP", "Co")
+        for key in ("rate", "price_list_rate", "price_list", "buying_price_list", "supplier", "discount_percentage"):
+            self.assertNotIn(key, clean)
+        self.assertEqual(
+            (clean["customer"], clean["selling_price_list"], clean["currency"], clean["conversion_rate"],
+             clean["plc_conversion_rate"], clean["ignore_pricing_rule"], clean["item_code"], clean["qty"]),
+            ("CUST-A", "Trade GBP", "GBP", 1, 1, 1, "WIDGET", 2),
+        )
+        self.assertEqual((doc["customer"], doc["selling_price_list"]), ("CUST-A", "Trade GBP"))
+        self.assertNotIn("rate", doc)
+
+
+class TestUomRate(Base):
+    def test_partner_uom_rate_uses_the_customers_resolved_list_and_scales_the_stock_price(self):
+        original = FRAPPE.db.get_value
+        STATE["prices"] = _price_rows({"price_list_rate": 50, "uom": "Nos"})
+        # conversion factor of Box = 6 via the fake UOM Conversion Detail lookup
+        def get_value(doctype, name, fieldname=None, as_dict=False):
+            if doctype == "UOM Conversion Detail":
+                return 6 if name.get("uom") == "Box" else None
+            return STATE["values"].get((doctype, name), {}).get(fieldname) if not isinstance(fieldname, (list, tuple)) else (
+                _dict({f: STATE["values"].get((doctype, name), {}).get(f) for f in fieldname}) if as_dict else None)
+        FRAPPE.db.get_value = get_value
+        try:
+            self.assertEqual(PRICING.get_uom_rate("WIDGET", "Box", "CUST-A"), 300)
+            self.assertEqual(PRICING.get_uom_rate("WIDGET", "Nos", "CUST-A"), 50)
+            self.assertIsNone(PRICING.get_uom_rate("WIDGET", "Pallet", "CUST-A"), "not a UOM of the item")
+            with self.assertRaises(FakePermissionError):
+                PRICING.get_uom_rate("WIDGET", "Nos", "CUST-B")
+        finally:
+            FRAPPE.db.get_value = original
+

@@ -1,5 +1,6 @@
-"""get_price_for_uom for partners and staff (AP-1 H2): a partner is refused any price list
-they cannot price from, and never reads another customer's Item Price row."""
+"""get_price_for_uom for partners and staff (AP-1): a partner is priced from the list the
+customer and the order's charge resolve to (never the browser's price_list), and staff are
+unchanged."""
 
 import importlib.util
 import pathlib
@@ -39,11 +40,11 @@ def _load(partner, allowed, visible_price="9.5", staff_price="1.25"):
     partner_pricing = types.ModuleType("posawesome.posawesome.api.partner_pricing")
     partner_pricing.is_partner_user = lambda: partner
 
-    def get_visible_item_price(item_code, price_list, uom=None, currency=None):
-        calls["visible"].append((item_code, price_list, uom))
+    def get_uom_rate(item_code, uom, customer, delivery_charge=None):
+        calls["visible"].append((item_code, uom, customer, delivery_charge))
         return visible_price
 
-    partner_pricing.get_visible_item_price = get_visible_item_price
+    partner_pricing.get_uom_rate = get_uom_rate
 
     gate = types.ModuleType("posawesome.posawesome.api.partner_gate")
     gate.get_scope = lambda user=None: {"is_partner": partner, "partners": ["SP-A"]}
@@ -89,32 +90,22 @@ def _load(partner, allowed, visible_price="9.5", staff_price="1.25"):
 
 
 class TestGetPriceForUom(unittest.TestCase):
-    def run_case(self, partner, allowed, price_list, **kw):
-        module, calls = _load(partner, allowed, **kw)
+    def run_case(self, partner, price_list, **kw):
+        module, calls = _load(partner, set(), **kw)
         try:
-            return module.get_price_for_uom("ITEM-1", price_list, "Nos"), calls
+            return module.get_price_for_uom("ITEM-1", price_list, "Nos", "CUST-A", "Free delivery"), calls
         finally:
             module._restore()
 
-    def test_partner_own_list_works_and_uses_the_visible_price_lookup(self):
-        price, calls = self.run_case(True, {"PL-OWN"}, "PL-OWN")
-        self.assertEqual(price, "9.5")
-        self.assertEqual(calls["visible"], [("ITEM-1", "PL-OWN", "Nos")])
-        self.assertEqual(calls["db"], [], "no raw Item Price read for a partner")
-
-    def test_partner_buying_or_foreign_list_is_refused_before_any_read(self):
-        for price_list in ("Standard Buying", "PL-OTHER-CUSTOMER"):
-            module, calls = _load(True, {"PL-OWN"})
-            try:
-                with self.assertRaises(FakePermissionError, msg=price_list):
-                    module.get_price_for_uom("ITEM-1", price_list, "Nos")
-            finally:
-                module._restore()
-            self.assertEqual(calls["db"], [])
-            self.assertEqual(calls["visible"], [])
+    def test_partner_is_priced_from_the_customer_and_charge_not_the_browsers_list(self):
+        for browser_list in ("PL-OWN", "Standard Buying", "PL-OTHER-CUSTOMER", ""):
+            price, calls = self.run_case(True, browser_list)
+            self.assertEqual(price, "9.5", browser_list)
+            self.assertEqual(calls["visible"], [("ITEM-1", "Nos", "CUST-A", "Free delivery")])
+            self.assertEqual(calls["db"], [], "no raw Item Price read for a partner")
 
     def test_staff_are_unchanged_and_may_use_any_list(self):
-        price, calls = self.run_case(False, set(), "Standard Buying")
+        price, calls = self.run_case(False, "Standard Buying")
         self.assertEqual(price, "1.25")
         self.assertEqual(
             calls["db"],
@@ -129,9 +120,10 @@ class TestGetPriceForUom(unittest.TestCase):
         self.assertEqual(calls["visible"], [])
 
     def test_missing_arguments_still_return_nothing(self):
-        module, _calls = _load(True, set())
+        module, _calls = _load(False, set())
         try:
             self.assertIsNone(module.get_price_for_uom("ITEM-1", "", "Nos"))
+            self.assertIsNone(module.get_price_for_uom("", "PL", "Nos"))
         finally:
             module._restore()
 

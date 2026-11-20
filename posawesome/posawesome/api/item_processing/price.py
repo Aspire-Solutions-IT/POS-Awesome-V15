@@ -39,21 +39,24 @@ def update_price_list_rate(item_code, price_list, rate, uom=None):
 
 
 @frappe.whitelist()
-def get_price_for_uom(item_code, price_list, uom):
-    """Return Item Price for the given item, price list and UOM if it exists."""
-    if not (item_code and price_list and uom):
+def get_price_for_uom(item_code, price_list, uom, customer=None, delivery_charge=None):
+    """Return Item Price for the given item, price list and UOM if it exists.
+
+    A partner is priced exactly as their order is: the list comes from the customer and
+    the order's delivery charge (never the ``price_list`` the browser sends), with the
+    same date, currency, customer-row and fallback rules, and a UOM with no row of its
+    own is the stock UOM price scaled by the conversion factor.
+    """
+    if not (item_code and uom):
         return None
 
     from posawesome.posawesome.api import partner_pricing
 
     if partner_pricing.is_partner_user():
-        # The gate has already limited price_list to lists the partner can price from.
-        # Defence in depth: refuse here too, and never return another customer's row.
-        from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
+        return partner_pricing.get_uom_rate(item_code, uom, customer, delivery_charge)
 
-        if price_list not in allowed_price_lists(get_scope()["partners"]):
-            frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
-        return partner_pricing.get_visible_item_price(item_code, price_list, uom=uom)
+    if not price_list:
+        return None
 
     price = frappe.db.get_value(
         "Item Price",
