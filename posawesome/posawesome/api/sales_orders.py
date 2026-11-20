@@ -899,6 +899,37 @@ def _managed_sales_order_completion(doc):
     }
 
 
+def _managed_sales_order_has_stainguard(doc):
+    """Whether the order, or any live order from the same POS split, carries Stainguard.
+
+    The warranty is registered with Staingard from the order's payload, so changing
+    the order afterwards would leave the two out of step.
+    """
+    names = [doc.name]
+    batch = (
+        getattr(doc, "split_order_batch", None)
+        if frappe.db.has_column("Sales Order", "split_order_batch")
+        else None
+    )
+    if batch:
+        names = frappe.get_all(
+            "Sales Order", filters={"split_order_batch": batch, "docstatus": ["<", 2]}, pluck="name"
+        ) or names
+
+    if frappe.db.has_column("Sales Order", "staingard_warranty_id") and frappe.db.get_value(
+        "Sales Order", {"name": ["in", names], "staingard_warranty_id": ["is", "set"]}, "name"
+    ):
+        return True
+
+    if not frappe.db.has_column("Item", "is_staingard_item"):
+        return False
+    item_codes = frappe.get_all("Sales Order Item", filters={"parent": ["in", names]}, pluck="item_code")
+    return bool(
+        item_codes
+        and frappe.db.exists("Item", {"name": ["in", list(set(item_codes))], "is_staingard_item": 1})
+    )
+
+
 def _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists):
     """Whole-order edit lock, from Pick Lists linked to the order rather than a row.
 
@@ -906,6 +937,14 @@ def _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists):
     the serialized order so POS can disable editing up front instead of only finding
     out when a save fails.
     """
+    if _managed_sales_order_has_stainguard(doc):
+        return {
+            "is_locked": True,
+            "reason": _(
+                "This order has Stainguard cover and cannot be edited in POS. Please contact Customer Services."
+            ),
+        }
+
     # A finished order is closed to edits outright: adding or changing a line after
     # everything has been picked or handed over would silently diverge from what the
     # warehouse and the customer already acted on.
