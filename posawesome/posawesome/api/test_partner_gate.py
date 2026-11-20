@@ -272,6 +272,9 @@ class TestSendProformaRule(unittest.TestCase):
         """Partners hold Sales Order email and Payment Request create only for send_proforma."""
         for method in (
             "frappe.core.doctype.communication.email.make",
+            # whitelisted proxies that call another whitelisted function by name
+            "frappe.model.mapper.make_mapped_doc",
+            "frappe.model.mapper.map_docs",
             "customer_due_dates.overrides.communication_email.make",
             "customer_due_dates.revolut.api.create_payment_link",
             "customer_due_dates.revolut.payment_link.create_payment_link",

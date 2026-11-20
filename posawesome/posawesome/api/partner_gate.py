@@ -215,6 +215,9 @@ FRAMEWORK_DENIED = (
     # A partner can email their own orders (the pro forma send needs it), but only through
     # send_proforma: the generic mailer takes any recipient and any text.
     "frappe.core.doctype.communication.",
+    # make_mapped_doc / map_docs call any whitelisted function that takes one argument, so
+    # they would run the gated POS endpoints (for example the payment link ones) as a proxy.
+    "frappe.model.mapper.",
     "frappe.core.doctype.data_import.",
     "frappe.core.doctype.data_export.",
     "frappe.core.doctype.user.user.",
