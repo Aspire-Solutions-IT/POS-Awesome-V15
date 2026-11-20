@@ -101,10 +101,11 @@ def get_applicable_delivery_charges(
     try:
         from posawesome.posawesome.api.charge_pricing import _is_partner_mode, filter_available
     except ImportError:
-        # charge_pricing imports customer_due_dates at module level; without it no
-        # availability rule can be applied, so offer every charge as before AP-1.
+        # charge_pricing imports customer_due_dates at module level, so the shared
+        # availability rule is unavailable. A standalone install offers every charge as
+        # before AP-1, but a partner must never be offered a staff-only charge.
         _is_partner_mode = None
-        available = charges
+        available = _partner_safe(charges)
     else:
         available = filter_available(charges)
 
@@ -124,6 +125,22 @@ def get_applicable_delivery_charges(
         return _without_default_for(available)
 
     return _without_default_for(mark_default(available, _is_partner_mode()))
+
+
+PARTNER_AVAILABLE_TO = ("Agile only", "Both")
+
+
+def _partner_safe(charges):
+    """Fallback when customer_due_dates is missing: keep audience filtering in partner mode."""
+    try:
+        from posawesome.posawesome.api.partner_gate import is_partner_user
+    except ImportError:
+        return charges
+    if not is_partner_user():
+        return charges
+    # Same rule as customer_due_dates is_available(..., partner_mode=True); a blank value
+    # means "TFW only", so it is hidden.
+    return [c for c in charges if c.get("available_to") in PARTNER_AVAILABLE_TO]
 
 
 def _without_default_for(charges):

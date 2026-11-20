@@ -211,6 +211,33 @@ class TestDeliveryDefault(unittest.TestCase):
         result = self._call(_load(real_pricing=True))
         self.assertEqual({c.name: c.is_default for c in result}, {"A": 0, "B": 1})
 
+    def test_fallback_in_partner_mode_hides_staff_only_charges(self):
+        STATE["partner"] = True
+        STATE["charges"] = [
+            _dict(name="S", default_rate=1, profiles_list=None, available_to="TFW only"),
+            _dict(name="B", default_rate=1, profiles_list=None, available_to="Both"),
+            _dict(name="A", default_rate=1, profiles_list=None, available_to="Agile only"),
+            _dict(name="Blank", default_rate=1, profiles_list=None, available_to=""),
+            _dict(name="Missing", default_rate=1, profiles_list=None),
+        ]
+        for module in (_load(with_cdd=False), _load(with_cdd=False, real_pricing=True)):
+            self.assertEqual(sorted(c.name for c in self._call(module)), ["A", "B"])
+
+    def test_fallback_for_staff_offers_every_charge(self):
+        STATE["partner"] = False
+        STATE["charges"] = [
+            _dict(name="S", default_rate=1, profiles_list=None, available_to="TFW only"),
+            _dict(name="A", default_rate=1, profiles_list=None, available_to="Agile only"),
+        ]
+        result = self._call(_load(with_cdd=False))
+        self.assertEqual(sorted(c.name for c in result), ["A", "S"])
+
+    def test_standalone_without_partner_gate_offers_every_charge(self):
+        STATE["charges"] = [_dict(name="S", default_rate=1, profiles_list=None, available_to="TFW only")]
+        module = _load(with_cdd=False)
+        sys.modules["posawesome.posawesome.api.partner_gate"] = None
+        self.assertEqual([c.name for c in self._call(module)], ["S"])
+
     def test_fallback_without_any_flag_column_sets_zero(self):
         STATE["charges"] = [_dict(name="A", default_rate=5, profiles_list=None)]
         result = self._call(_load(with_cdd=False))

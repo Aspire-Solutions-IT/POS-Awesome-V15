@@ -4,7 +4,7 @@ All notable changes.
 
 Release 15.35.0 — November 19, 2026
 ### ✨ Features
-- The default shipping method in the POS is now picked per audience: partners and non-partners each get the delivery charge set in the Delivery Charges "Default For" dropdown. Only a charge that is enabled, available to that audience and offered for the customer and POS profile is preselected. This needs customer_due_dates 2.40.0; without it the POS keeps the old default checkbox behaviour (AP-1). With Auto Set Delivery Charges on, a new order now gets that default charge instead of simply the first one (the first one is still used when no default is set). The POS is no longer sent the Default For value, and the old checkbox is also used if customer_due_dates is old or its Default For field is missing.
+- The default shipping method in the POS is now picked per audience: partners and non-partners each get the delivery charge set in the Delivery Charges "Default For" dropdown. Only a charge that is enabled, available to that audience and offered for the customer and POS profile is preselected. This needs customer_due_dates 2.40.0; without it the POS keeps the old default checkbox behaviour (AP-1). With Auto Set Delivery Charges on, a new order now gets that default charge instead of simply the first one (the first one is still used when no default is set). The POS is no longer sent the Default For value, and the old checkbox is also used if customer_due_dates is old or its Default For field is missing. If customer_due_dates cannot be loaded, sales partners are still only offered Agile only and Both charges.
 _Total: 1 change_
 
 Release 15.34.0 — November 16, 2026
