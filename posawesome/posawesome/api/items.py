@@ -117,6 +117,11 @@ def get_delta_items(
     resolved_limit = max(1, min(resolved_limit, 2000))
 
     effective_price_list = price_list or profile.get("selling_price_list")
+    if partner_pricing.is_partner_user():
+        # The changed-price lookup below must not follow a list the client chose.
+        effective_price_list = partner_pricing.get_customer_price_list(
+            partner_pricing.require_scoped_customer(customer)
+        )
     base_items = get_items(
         profile_json,
         price_list=effective_price_list,

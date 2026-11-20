@@ -13,6 +13,8 @@ For a partner user every request is checked in :func:`enforce` (``before_request
   narrow role and the row scoping in customer_due_dates, so they are allowed, apart
   from the write paths in ``FRAMEWORK_DENIED``. Partners write only through the POS
   Sales Order endpoints.
+* Endpoints that take a price list from the client (``PRICE_LIST`` rule) only get one the
+  partner can price from: ``allowed_price_lists``. Never a buying or other customer's list.
 * Allowed endpoints that take a customer or Sales Order are checked here, so the
   endpoint code needs no per-function scope logic: a customer must belong to one of
   the partner's Sales Partners, and so must the customer of any order referenced.
@@ -43,6 +45,10 @@ ORDER_NAME = {"order": "sales_order"}
 SELF_USER = {"self_user": "user"}
 ORDER_PAYLOAD_DATA = {"payload": ("data",)}
 ORDER_PAYLOAD_ORDER = {"payload": ("order",)}
+# price_list: names of arguments holding a Price List the partner may price from (see
+# allowed_price_lists). A blank value passes: the endpoints return nothing for it.
+PRICE_LIST = {"price_list": ("price_list",)}
+BARCODE_PRICE_LIST = {"price_list": ("selling_price_list",)}
 
 
 def _methods(prefix: str, names: dict[str, dict]) -> dict[str, dict]:
@@ -81,8 +87,8 @@ POS_METHODS: dict[str, dict] = {
             "get_item_detail": {},
             "get_items_count": {},
             "get_items_groups": {},
-            "get_items_from_barcode": {},
-            "get_price_for_uom": {},
+            "get_items_from_barcode": BARCODE_PRICE_LIST,
+            "get_price_for_uom": PRICE_LIST,
             "parse_scale_barcode": {},
             "search_serial_or_batch_or_barcode_number": {},
             "get_delta_items": OPTIONAL_CUSTOMER,
@@ -294,6 +300,63 @@ def is_customer_in_scope(customer, partners: list[str]) -> bool:
     return frappe.db.get_value("Customer", customer, "default_sales_partner") in partners
 
 
+def allowed_price_lists(partners: list[str]) -> set[str]:
+    """Selling price lists a partner with these Sales Partners may price from.
+
+    The default list of each in-scope customer (or their customer group), the lists of
+    delivery charges offered to partners, and the fallback list of each. Buying, disabled
+    and other customers' lists are never in the set.
+    """
+    if not partners:
+        return set()
+
+    from customer_due_dates.selling.pos_availability import is_available
+
+    lists: set[str] = set()
+    customers = frappe.get_all(
+        "Customer",
+        filters={"default_sales_partner": ["in", partners]},
+        fields=["default_price_list", "customer_group"],
+    )
+    groups = {c.customer_group for c in customers if c.customer_group}
+    lists.update(c.default_price_list for c in customers if c.default_price_list)
+    if groups:
+        lists.update(
+            frappe.get_all(
+                "Customer Group",
+                filters={"name": ["in", sorted(groups)], "default_price_list": ["is", "set"]},
+                pluck="default_price_list",
+            )
+        )
+
+    if frappe.db.has_column("Delivery Charges", "price_list"):
+        for charge in frappe.get_all(
+            "Delivery Charges",
+            filters={"price_list": ["is", "set"]},
+            fields=["price_list", "available_to"],
+        ):
+            if is_available(charge.available_to, True):
+                lists.add(charge.price_list)
+
+    if lists and frappe.db.has_column("Price List", "fallback_price_list"):
+        lists.update(
+            frappe.get_all(
+                "Price List",
+                filters={"name": ["in", sorted(lists)], "fallback_price_list": ["is", "set"]},
+                pluck="fallback_price_list",
+            )
+        )
+
+    if not lists:
+        return set()
+
+    return set(
+        frappe.get_all(
+            "Price List", filters={"name": ["in", sorted(lists)], "enabled": 1, "selling": 1}, pluck="name"
+        )
+    )
+
+
 def _requested_method(path: str, form) -> str | None:
     # Frappe prefers ``cmd`` over the path, and runs only the part before any "/".
     method = form.get("cmd")
@@ -419,6 +482,12 @@ def check_request(scope: dict, path: str, http_method: str, form) -> None:
 
     if rule.get("order"):
         if not is_customer_in_scope(_order_customer(form.get(rule["order"])), partners):
+            deny()
+
+    price_list_args = [a for a in rule.get("price_list", ()) if form.get(a) not in (None, "")]
+    if price_list_args:
+        allowed = allowed_price_lists(partners)
+        if any(not isinstance(form.get(a), str) or form.get(a) not in allowed for a in price_list_args):
             deny()
 
     for arg in rule.get("payload", ()):

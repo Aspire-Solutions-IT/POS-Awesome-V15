@@ -44,6 +44,17 @@ def get_price_for_uom(item_code, price_list, uom):
     if not (item_code and price_list and uom):
         return None
 
+    from posawesome.posawesome.api import partner_pricing
+
+    if partner_pricing.is_partner_user():
+        # The gate has already limited price_list to lists the partner can price from.
+        # Defence in depth: refuse here too, and never return another customer's row.
+        from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
+
+        if price_list not in allowed_price_lists(get_scope()["partners"]):
+            frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
+        return partner_pricing.get_visible_item_price(item_code, price_list, uom=uom)
+
     price = frappe.db.get_value(
         "Item Price",
         {

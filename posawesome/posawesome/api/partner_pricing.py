@@ -146,6 +146,41 @@ def get_price_list_rate(item_code, price_list, uom=None, conversion_factor=None,
     return flt(base.get("price_list_rate")) * (flt(conversion_factor) or 1.0)
 
 
+def get_visible_item_price(item_code, price_list, uom=None, currency=None):
+    """``price_list_rate`` of a selling Item Price a partner may see, or ``None``.
+
+    Used by the endpoints that look up one price from a client-supplied list. The list
+    itself is checked in the request gate (``allowed_price_lists``); this stops a
+    customer-specific row for someone else's customer on an allowed list from being read.
+    """
+    partners = get_scope()["partners"]
+    customers = (
+        frappe.get_all("Customer", filters={"default_sales_partner": ["in", partners]}, pluck="name")
+        if partners
+        else []
+    )
+    conditions = ["item_code = %(item_code)s", "price_list = %(price_list)s", "selling = 1"]
+    values = {"item_code": item_code, "price_list": price_list}
+    if customers:
+        conditions.append("(ifnull(customer, '') = '' or customer in %(customers)s)")
+        values["customers"] = tuple(customers)
+    else:
+        conditions.append("ifnull(customer, '') = ''")
+    if uom:
+        conditions.append("uom = %(uom)s")
+        values["uom"] = uom
+    if currency:
+        conditions.append("currency = %(currency)s")
+        values["currency"] = currency
+
+    rows = frappe.db.sql(
+        f"select price_list_rate from `tabItem Price` where {' and '.join(conditions)} "
+        "order by ifnull(customer, '') desc, valid_from desc limit 1",
+        values,
+    )
+    return rows[0][0] if rows else None
+
+
 def get_rate_with_fallback(item_code, price_list, fallback, uom=None, conversion_factor=None, customer=None):
     """Rate from ``price_list``, or from ``fallback`` when the item has no price on it."""
     rate = get_price_list_rate(item_code, price_list, uom, conversion_factor, customer)

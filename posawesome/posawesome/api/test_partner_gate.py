@@ -388,6 +388,151 @@ class TestBootPayload(unittest.TestCase):
         self.assertFalse(hasattr(boot, "posa_partner_mode"))
 
 
+class TestPriceListArguments(unittest.TestCase):
+    """price_list args from the client must be a list the partner can price from."""
+
+    ALLOWED = frozenset({"PL-OWN", "PL-CHARGE"})
+
+    def setUp(self):
+        self._orig = GATE.allowed_price_lists
+        self.seen = []
+
+        def fake(partners):
+            self.seen.append(list(partners))
+            return set(self.ALLOWED) if partners else set()
+
+        GATE.allowed_price_lists = fake
+
+    def tearDown(self):
+        GATE.allowed_price_lists = self._orig
+
+    def test_own_and_charge_lists_pass(self):
+        call(f"{API}items.get_price_for_uom", {"price_list": "PL-OWN"})
+        call(f"{API}items.get_price_for_uom", {"price_list": "PL-CHARGE"})
+        call(f"{API}items.get_items_from_barcode", {"selling_price_list": "PL-OWN"})
+
+    def test_a_buying_or_foreign_list_is_refused(self):
+        for price_list in ("PL-BUYING", "PL-OTHER-CUSTOMER", "Standard Buying"):
+            with self.assertRaises(FakePermissionError, msg=price_list):
+                call(f"{API}items.get_price_for_uom", {"price_list": price_list})
+            with self.assertRaises(FakePermissionError, msg=price_list):
+                call(f"{API}items.get_items_from_barcode", {"selling_price_list": price_list})
+
+    def test_blank_passes_because_the_endpoint_returns_nothing(self):
+        call(f"{API}items.get_price_for_uom", {"price_list": ""})
+        call(f"{API}items.get_price_for_uom", {})
+
+    def test_non_string_list_is_refused(self):
+        with self.assertRaises(FakePermissionError):
+            call(f"{API}items.get_price_for_uom", {"price_list": ["PL-OWN"]})
+
+    def test_partner_with_no_sales_partner_can_use_no_list(self):
+        with self.assertRaises(FakePermissionError):
+            call(f"{API}items.get_price_for_uom", {"price_list": "PL-OWN"}, scope=NO_PARTNER_SCOPE)
+
+    def test_the_rule_is_on_the_methods_the_browser_is_told_about(self):
+        self.assertIn("price_list", GATE.POS_METHODS[f"{API}items.get_price_for_uom"])
+        self.assertIn("price_list", GATE.POS_METHODS[f"{API}items.get_items_from_barcode"])
+
+
+class TestAllowedPriceLists(unittest.TestCase):
+    """allowed_price_lists against a small fake database."""
+
+    def setUp(self):
+        frappe = GATE.frappe
+        self._saved = {k: getattr(frappe, k, None) for k in ("get_all",)}
+        self._saved_db_has_column = getattr(frappe.db, "has_column", None)
+        customers = [
+            {"partner": "SP-A", "default_price_list": "PL-A", "customer_group": "G1"},
+            {"partner": "SP-A", "default_price_list": None, "customer_group": "G2"},
+            {"partner": "SP-B", "default_price_list": "PL-B", "customer_group": "G1"},
+        ]
+        groups = {"G1": "PL-GROUP", "G2": None}
+        charges = [
+            {"price_list": "PL-CONTAINER", "available_to": "Agile only"},
+            {"price_list": "PL-TFW-CHARGE", "available_to": "TFW only"},
+            {"price_list": "PL-BOTH", "available_to": "Both"},
+            {"price_list": "PL-BLANK", "available_to": None},
+        ]
+        price_lists = {
+            "PL-A": {"enabled": 1, "selling": 1, "fallback_price_list": "PL-STOCKIST"},
+            "PL-B": {"enabled": 1, "selling": 1, "fallback_price_list": None},
+            "PL-GROUP": {"enabled": 1, "selling": 1, "fallback_price_list": None},
+            "PL-CONTAINER": {"enabled": 1, "selling": 1, "fallback_price_list": None},
+            "PL-TFW-CHARGE": {"enabled": 1, "selling": 1, "fallback_price_list": None},
+            "PL-BOTH": {"enabled": 0, "selling": 1, "fallback_price_list": None},
+            "PL-STOCKIST": {"enabled": 1, "selling": 1, "fallback_price_list": None},
+            "Standard Buying": {"enabled": 1, "selling": 0, "fallback_price_list": None},
+        }
+        self.price_lists = price_lists
+
+        def get_all(doctype, filters=None, fields=None, pluck=None, **kw):
+            filters = filters or {}
+            if doctype == "Customer":
+                partners = filters["default_sales_partner"][1]
+                return [
+                    types.SimpleNamespace(**{k: c[k] for k in ("default_price_list", "customer_group")})
+                    for c in customers
+                    if c["partner"] in partners
+                ]
+            if doctype == "Customer Group":
+                return [groups[n] for n in filters["name"][1] if groups.get(n)]
+            if doctype == "Delivery Charges":
+                return [types.SimpleNamespace(**c) for c in charges]
+            if doctype == "Price List":
+                names = filters["name"][1]
+                if "fallback_price_list" in filters:
+                    return [price_lists[n]["fallback_price_list"] for n in names
+                            if price_lists.get(n, {}).get("fallback_price_list")]
+                return [
+                    n for n in names
+                    if price_lists.get(n, {}).get("enabled") and price_lists[n]["selling"]
+                ]
+            raise AssertionError(doctype)
+
+        frappe.get_all = get_all
+        frappe.db.has_column = lambda doctype, field: True
+        pos = types.ModuleType("customer_due_dates.selling.pos_availability")
+        pos.is_available = lambda available_to, partner_mode: (available_to or "TFW only") in (
+            ["Agile only", "Both"] if partner_mode else ["TFW only", "Both"]
+        )
+        self._mods = {}
+        for name, mod in (
+            ("customer_due_dates", types.ModuleType("customer_due_dates")),
+            ("customer_due_dates.selling", types.ModuleType("customer_due_dates.selling")),
+            ("customer_due_dates.selling.pos_availability", pos),
+        ):
+            self._mods[name] = sys.modules.get(name)
+            sys.modules[name] = mod
+
+    def tearDown(self):
+        for name, old in self._mods.items():
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
+        GATE.frappe.get_all = self._saved["get_all"]
+
+    def test_lists_a_partner_can_price_from(self):
+        self.assertEqual(
+            GATE.allowed_price_lists(["SP-A"]),
+            # own customer list, its fallback, the customer group list, and the charge list
+            # offered to partners. Not the TFW-only charge, a disabled list or a buying list.
+            {"PL-A", "PL-STOCKIST", "PL-GROUP", "PL-CONTAINER"},
+        )
+
+    def test_another_partners_customer_list_is_not_included(self):
+        self.assertNotIn("PL-B", GATE.allowed_price_lists(["SP-A"]))
+        self.assertIn("PL-B", GATE.allowed_price_lists(["SP-B"]))
+
+    def test_buying_lists_never_pass_even_if_a_charge_points_at_one(self):
+        self.price_lists["PL-CONTAINER"]["selling"] = 0
+        self.assertNotIn("PL-CONTAINER", GATE.allowed_price_lists(["SP-A"]))
+
+    def test_no_partner_has_no_lists(self):
+        self.assertEqual(GATE.allowed_price_lists([]), set())
+
+
 class TestEnforceEntryPoint(unittest.TestCase):
     def _gate(self, user, scope):
         impl = {"x.get_scope": lambda _user: scope}

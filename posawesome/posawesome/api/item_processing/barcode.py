@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 from frappe.utils import cint, cstr, flt
 from typing import Any, Dict, Optional
 
@@ -433,8 +434,19 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
     if frappe.db.has_column("Item", "custom_tfw_price"):
         custom_tfw_price = flt(getattr(item_doc, "custom_tfw_price", 0))
 
+    from posawesome.posawesome.api import partner_pricing
+
+    partner_mode = partner_pricing.is_partner_user()
+    if partner_mode:
+        from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
+
+        if selling_price_list and selling_price_list not in allowed_price_lists(get_scope()["partners"]):
+            frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
+        # A partner pays the price list rate: no TFW or on-sale override reaches the browser.
+        custom_tfw_price = 0
+
     pos_on_sale_price = 0
-    if frappe.db.has_column("Item", "pos_on_sale_price"):
+    if not partner_mode and frappe.db.has_column("Item", "pos_on_sale_price"):
         pos_on_sale_price = flt(getattr(item_doc, "pos_on_sale_price", 0))
 
     base_rate = None
@@ -442,6 +454,10 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
         base_rate = flt(scale_price)
     elif custom_tfw_price > 0:
         base_rate = custom_tfw_price
+    elif partner_mode:
+        base_rate = partner_pricing.get_visible_item_price(
+            item_code, selling_price_list, currency=currency
+        )
     else:
         base_rate = frappe.db.get_value(
             "Item Price",
