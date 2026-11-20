@@ -1467,6 +1467,14 @@ def _keep_computed_fields_on_save(doctype, name):
     Those fields are computed by the save, never taken from the cashier, and write
     permission on the order is still checked, so skipping the reset is safe here. The
     patch is limited to this one document and always restored.
+
+    The same reset blanks item_code (permlevel 1, read-only for a partner) on a NEW row
+    before it is inserted, so adding a line failed with "Mandatory: item_code". Rows
+    being inserted into this order are therefore let through too: set_order_defaults
+    fills them from the Item, and the cashier's payload is already reduced to qty, uom,
+    conversion factor and a server-priced rate by the managed-update normaliser.
+    Existing rows are saved with ignore_permissions and other orders' rows are not
+    matched (parenttype and parent must both be this order).
     """
     from frappe.model.document import Document
 
@@ -1474,6 +1482,14 @@ def _keep_computed_fields_on_save(doctype, name):
 
     def validate_higher_perm_levels(self):
         if self.doctype == doctype and self.name == name:
+            return
+        if (
+            self.doctype == f"{doctype} Item"
+            and self.get("parenttype") == doctype
+            and self.get("parent") == name
+            and self.is_new()
+            and self.meta.istable
+        ):
             return
         return original(self)
 
@@ -1593,11 +1609,15 @@ def _resolve_managed_sales_order_item_pricing(doc, item_code, uom=None):
     item_meta = frappe.db.get_value(
         "Item",
         item_code,
-        ["item_name", "description", "stock_uom", "has_variants"],
+        ["item_name", "description", "stock_uom", "has_variants", "disabled", "is_sales_item"],
         as_dict=True,
     )
     if not item_meta:
         frappe.throw(_("Item {0} does not exist.").format(item_code))
+    if cint(item_meta.get("disabled")):
+        frappe.throw(_("Item {0} is disabled.").format(item_code))
+    if cint(item_meta.get("is_sales_item", 1)) == 0:
+        frappe.throw(_("Item {0} is not a sales item.").format(item_code))
     if cint(item_meta.get("has_variants")):
         frappe.throw(_("Item {0} is a template. Please select a variant.").format(item_code))
 
