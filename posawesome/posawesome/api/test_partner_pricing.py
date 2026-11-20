@@ -551,6 +551,17 @@ class TestPaymentFields(unittest.TestCase):
             self.assertEqual(payload["allow_no_payment_order_submit"], 1)
         self.assertEqual(order["customer"], "C")
 
+    def test_pre_paid_advances_are_stripped_and_the_payment_type_is_left_alone(self):
+        order = {"advance_paid": 90, "advances": [{"allocated_amount": 90}], "payment_type": "Proforma"}
+        data = {"advance_paid": 5, "payment_type": "On Account"}
+        PRICING.neutralise_payment_fields(order, data)
+        for payload in (order, data):
+            self.assertEqual(payload["advance_paid"], 0)
+            self.assertNotIn("advances", payload)
+        # decided by the submit against the POS Profile, not here
+        self.assertEqual(order["payment_type"], "Proforma")
+        self.assertEqual(data["payment_type"], "On Account")
+
     def test_missing_data_is_fine(self):
         order = {}
         PRICING.neutralise_payment_fields(order, None)

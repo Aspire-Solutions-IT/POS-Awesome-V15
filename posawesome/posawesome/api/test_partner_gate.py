@@ -244,6 +244,50 @@ class TestOrderArguments(unittest.TestCase):
                 call(f"{API}sales_orders.{fn}", {"sales_order": "SO-B"})
 
 
+class TestSendProformaRule(unittest.TestCase):
+    """AP-12 D2.2: a partner may send a pro forma only for their own customers' orders."""
+
+    METHOD = f"{API}sales_orders.send_proforma"
+
+    def test_own_order_passes(self):
+        call(self.METHOD, {"sales_order": "SO-A"})
+
+    def test_another_partners_missing_or_blank_order_is_denied(self):
+        for name in ("SO-B", "SO-MISSING", "", None):
+            with self.subTest(name=name), self.assertRaises(FakePermissionError):
+                call(self.METHOD, {"sales_order": name})
+
+    def test_a_missing_argument_is_denied(self):
+        with self.assertRaises(FakePermissionError):
+            call(self.METHOD, {})
+
+    def test_the_rule_is_the_order_name_rule(self):
+        self.assertEqual(GATE.POS_METHODS[self.METHOD], GATE.ORDER_NAME)
+
+    def test_cmd_cannot_smuggle_a_different_order_through(self):
+        with self.assertRaises(FakePermissionError):
+            call(f"{API}sales_orders.get_managed_sales_order", {"cmd": self.METHOD, "sales_order": "SO-B"})
+
+    def test_payment_link_and_mail_endpoints_stay_closed_to_partners(self):
+        """Partners hold Sales Order email and Payment Request create only for send_proforma."""
+        for method in (
+            "frappe.core.doctype.communication.email.make",
+            "customer_due_dates.overrides.communication_email.make",
+            "customer_due_dates.revolut.api.create_payment_link",
+            "customer_due_dates.revolut.payment_link.create_payment_link",
+            "customer_due_dates.revolut.payment_link.get_active_payment_link",
+            "customer_due_dates.revolut.payment_link.delete_payment_link",
+            "erpnext.accounts.doctype.payment_request.payment_request.make_payment_request",
+            f"{API}sales_orders.create_managed_sales_order_payment_link",
+            f"{API}sales_orders.delete_managed_sales_order_payment_link",
+            f"{API}sales_orders.resend_managed_sales_order_receipt",
+            f"{API}sales_orders.hold_sales_order_from_pos",
+            "customer_due_dates.kit_items.overrides.sales_order.hold_sales_order_from_pos",
+        ):
+            with self.subTest(method=method), self.assertRaises(FakePermissionError):
+                call(method, {"sales_order": "SO-A"})
+
+
 class TestOrderPayloads(unittest.TestCase):
     METHOD = f"{API}sales_orders.update_sales_order"
 

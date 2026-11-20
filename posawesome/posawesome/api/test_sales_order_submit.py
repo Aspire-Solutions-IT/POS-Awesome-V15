@@ -14,7 +14,7 @@ def _install_stub_modules():
             return lambda wrapped: wrapped
         return fn
 
-    def _throw(message):
+    def _throw(message, exc=None, **_kwargs):
         raise RuntimeError(message)
 
     frappe_module = types.ModuleType("frappe")
@@ -25,7 +25,8 @@ def _install_stub_modules():
     frappe_module.get_cached_doc = lambda *args, **kwargs: SimpleNamespace()
     frappe_module.get_doc = lambda *args, **kwargs: None
     frappe_module.get_meta = lambda *args, **kwargs: SimpleNamespace(
-        get_field=lambda fieldname: SimpleNamespace(options="")
+        get_field=lambda fieldname: SimpleNamespace(options=""),
+        has_field=lambda fieldname: False,
     )
     frappe_module.get_all = lambda *args, **kwargs: []
     frappe_module.get_list = lambda *args, **kwargs: []
@@ -2858,7 +2859,14 @@ class TestItemChangePaymentLink(TestCase):
 
         link_module.create_payment_link = fake_create
         link_module.delete_payment_link = lambda **kwargs: calls["deleted"].append(kwargs)
-        link_module.get_active_payment_link = lambda *args: active_link
+        # The trusted, unchecked lookup. The whitelisted get_active_payment_link needs a
+        # Sales Order permission row that a cashier role does not have, so it must not be used.
+        link_module.find_active_payment_link = lambda *args: active_link
+
+        def refused(*_args, **_kwargs):
+            raise AssertionError("posawesome must use find_active_payment_link, not get_active_payment_link")
+
+        link_module.get_active_payment_link = refused
 
         def fake_single_value(doctype, field):
             return revolut_enabled if (doctype, field) == ("Revolut Settings", "enabled") else None
@@ -2969,3 +2977,540 @@ class TestItemChangePaymentLink(TestCase):
 
         self.assertEqual(calls["doc"].hold_log, [])
         release.assert_called_once_with("SO-TEST-0001", source="POS item change payment")
+
+
+class _PaymentTypeOrder:
+    """A Sales Order double that records the payload it was built from."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.name = "SO-PT-0001"
+        self.docstatus = 0
+        self.doctype = "Sales Order"
+        self.flags = SimpleNamespace(ignore_permissions=False)
+        self.posa_delivery_charges = payload.get("posa_delivery_charges")
+        self.must_be_fully_allocated = payload.get("must_be_fully_allocated", 0)
+        self.rounded_total = payload.get("rounded_total", 0)
+        self.grand_total = payload.get("grand_total", 0)
+
+    def update(self, values):
+        self.payload.update(values)
+
+    def save(self):
+        return self
+
+    def submit(self):
+        self.docstatus = 1
+
+    def precision(self, _fieldname):
+        return 2
+
+
+class TestPaymentTypeSubmit(TestCase):
+    """AP-12 D2.2: On Account and Proforma submits (profile switch, no payment, hold rules)."""
+
+    PROFILE = "Main POS"
+
+    def _order(self, **extra):
+        order = {
+            "customer": "CUST-0001",
+            "doctype": "Sales Order",
+            "company": "Test Company",
+            "pos_profile": self.PROFILE,
+            "payments": [{"mode_of_payment": "Cash", "amount": 100}],
+            "sales_order_settlement_state": "full",
+            "rounded_total": 100,
+            "grand_total": 100,
+            "items": [{"item_code": "ITEM-1", "qty": 1, "rate": 100}],
+        }
+        order.update(extra)
+        return order
+
+    def _submit(self, order, data=None, *, profile_flags=None, partner=False, assigned=True):
+        """Run the real _submit_sales_order. Returns (result_or_exception, calls)."""
+        calls = {"payloads": [], "hold": [], "enqueue": [], "credit": [], "payment_entries": []}
+        flags = {"posa_allow_on_account": 0, "posa_allow_proforma": 0, **(profile_flags or {})}
+
+        def fake_get_doc(payload_or_doctype, name=None):
+            if isinstance(payload_or_doctype, dict):
+                calls["payloads"].append(dict(payload_or_doctype))
+                return _PaymentTypeOrder(payload_or_doctype)
+            raise AssertionError(f"Unexpected get_doc call: {payload_or_doctype}, {name}")
+
+        def fake_get_value(doctype, name, fieldname=None, *args, **kwargs):
+            if doctype == "POS Profile":
+                return flags.get(fieldname)
+            return None
+
+        def fake_exists(doctype, *args, **kwargs):
+            return assigned if doctype == "POS Profile User" else False
+
+        hold_module = types.ModuleType("customer_due_dates.kit_items.overrides.sales_order")
+        hold_module.hold_sales_order_from_pos = lambda name, reason=None, auto_release_date=None: calls[
+            "hold"
+        ].append((name, reason))
+        modules = {
+            "customer_due_dates.kit_items": types.ModuleType("customer_due_dates.kit_items"),
+            "customer_due_dates.kit_items.overrides": types.ModuleType(
+                "customer_due_dates.kit_items.overrides"
+            ),
+            "customer_due_dates.kit_items.overrides.sales_order": hold_module,
+        }
+        with patch.dict(sys.modules, modules), patch.object(
+            sales_orders, "_map_delivery_dates"
+        ), patch.object(sales_orders, "_apply_ns_default_warehouse"), patch.object(
+            sales_orders, "_sync_shopify_notes_from_posa"
+        ), patch.object(sales_orders, "_apply_kit_meta_fields"), patch.object(
+            sales_orders, "_apply_delivery_charges_tax_row"
+        ), patch.object(sales_orders, "_apply_collection_flow_tag"), patch.object(
+            sales_orders, "_apply_collect_from_store_tag"
+        ), patch.object(sales_orders, "_auto_create_delivery_note_for_non_ns_items"), patch.object(
+            sales_orders, "_apply_new_sales_order_customer_credit",
+            side_effect=lambda so, order, data: calls["credit"].append(
+                (order.get("redeemed_customer_credit"), (data or {}).get("redeemed_customer_credit"))
+            ),
+        ), patch.object(
+            sales_orders, "_create_payment_entries",
+            side_effect=lambda *a: calls["payment_entries"].append(a),
+        ), patch.object(
+            sales_orders, "is_partner_user", return_value=partner
+        ), patch.object(
+            sales_orders.frappe, "enqueue", side_effect=lambda *a, **k: calls["enqueue"].append((a, k))
+        ), patch.object(
+            sales_orders.frappe.db, "exists", side_effect=fake_exists
+        ), patch.object(
+            sales_orders.frappe.db, "get_value", side_effect=fake_get_value
+        ), patch.object(
+            sales_orders.frappe.db, "get_single_value", return_value=None
+        ), patch.object(
+            sales_orders.frappe, "get_doc", side_effect=fake_get_doc
+        ):
+            try:
+                result = sales_orders._submit_sales_order(json.dumps(order), json.dumps(data or {}))
+            except RuntimeError as exc:
+                result = exc
+        return result, calls
+
+    # -- validation against the POS Profile ---------------------------------------
+
+    def test_a_type_the_profile_does_not_allow_is_rejected_before_anything_is_saved(self):
+        for payment_type, other_flag in (
+            ("On Account", {"posa_allow_proforma": 1}),
+            ("Proforma", {"posa_allow_on_account": 1}),
+        ):
+            with self.subTest(payment_type=payment_type):
+                result, calls = self._submit(self._order(), {"payment_type": payment_type}, profile_flags=other_flag)
+                self.assertIsInstance(result, RuntimeError)
+                self.assertIn("not enabled", str(result))
+                self.assertEqual(calls["payloads"], [])
+
+    def test_a_profile_the_user_does_not_sell_on_is_rejected(self):
+        result, calls = self._submit(
+            self._order(),
+            {"payment_type": "Proforma"},
+            profile_flags={"posa_allow_proforma": 1},
+            assigned=False,
+        )
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(calls["payloads"], [])
+
+    def test_the_pos_settings_default_profile_counts_as_assigned_when_the_field_exists(self):
+        meta = SimpleNamespace(has_field=lambda name: name == "pos_profile", get_field=lambda n: None)
+        with patch.object(sales_orders.frappe, "get_meta", return_value=meta), patch.object(
+            sales_orders.frappe.db, "exists", return_value=False
+        ), patch.object(sales_orders.frappe.db, "get_single_value", return_value="Main POS"):
+            self.assertTrue(sales_orders._user_may_use_pos_profile("Main POS"))
+            self.assertFalse(sales_orders._user_may_use_pos_profile("Other POS"))
+
+    def test_a_site_without_the_pos_settings_profile_field_does_not_crash(self):
+        with patch.object(sales_orders.frappe.db, "exists", return_value=False), patch.object(
+            sales_orders.frappe.db, "get_single_value", side_effect=AssertionError("field is missing")
+        ):
+            self.assertFalse(sales_orders._user_may_use_pos_profile("Main POS"))
+
+    def test_missing_profile_and_unknown_type_are_rejected(self):
+        order = self._order()
+        order.pop("pos_profile")
+        result, _calls = self._submit(order, {"payment_type": "On Account"}, profile_flags={"posa_allow_on_account": 1})
+        self.assertIsInstance(result, RuntimeError)
+
+        result, calls = self._submit(self._order(), {"payment_type": "Cheque"})
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("Unknown payment type", str(result))
+        self.assertEqual(calls["payloads"], [])
+
+    def test_the_type_can_be_sent_in_the_order_payload_too(self):
+        _result, calls = self._submit(
+            self._order(payment_type="On Account"), profile_flags={"posa_allow_on_account": 1}
+        )
+        self.assertEqual(calls["payloads"][0]["posa_payment_type"], "On Account")
+        self.assertNotIn("payment_type", calls["payloads"][0])
+
+    # -- On Account ----------------------------------------------------------------
+
+    def test_on_account_submits_with_no_payment_and_is_not_held(self):
+        result, calls = self._submit(
+            self._order(redeemed_customer_credit=30),
+            {"payment_type": "On Account", "redeemed_customer_credit": 30},
+            profile_flags={"posa_allow_on_account": 1},
+        )
+
+        self.assertEqual(result["name"], "SO-PT-0001")
+        payload = calls["payloads"][0]
+        self.assertEqual(payload["posa_payment_type"], "On Account")
+        self.assertEqual(payload["payments"], [])
+        self.assertEqual(payload["sales_order_settlement_state"], "none")
+        self.assertEqual(payload["allow_no_payment_order_submit"], 1)
+        self.assertEqual(calls["credit"], [(0, 0)])  # no customer credit is spent
+        self.assertEqual(calls["enqueue"], [])
+        self.assertEqual(calls["payment_entries"], [])
+        self.assertEqual(calls["hold"], [], "On Account follows the normal process: no forced hold")
+        self.assertNotEqual(payload.get("posa_pending_auto_hold_reason"), "No Payment")
+
+    # -- Proforma ------------------------------------------------------------------
+
+    def test_proforma_submits_with_no_payment_and_holds_for_no_payment(self):
+        result, calls = self._submit(
+            self._order(), {"payment_type": "Proforma"}, profile_flags={"posa_allow_proforma": 1}
+        )
+
+        self.assertEqual(result["name"], "SO-PT-0001")
+        payload = calls["payloads"][0]
+        self.assertEqual(payload["posa_payment_type"], "Proforma")
+        self.assertEqual(payload["posa_pending_auto_hold_reason"], "No Payment")
+        self.assertEqual(payload["payments"], [])
+        self.assertEqual(payload["sales_order_settlement_state"], "none")
+        self.assertEqual(calls["enqueue"], [])
+        self.assertEqual(len(calls["hold"]), 1)
+        self.assertEqual(calls["hold"][0][0], "SO-PT-0001")
+
+    def test_proforma_hold_reason_cannot_be_overridden_by_the_browser(self):
+        _result, calls = self._submit(
+            self._order(posa_pending_auto_hold_reason="Other"),
+            {"payment_type": "Proforma"},
+            profile_flags={"posa_allow_proforma": 1},
+        )
+        self.assertEqual(calls["payloads"][0]["posa_pending_auto_hold_reason"], "No Payment")
+
+    def test_proforma_cannot_be_split_into_delivery_groups(self):
+        order = self._order(posa_split_delivery=1, posa_split_groups=[{"group_id": "g1"}])
+        with patch.object(sales_orders, "_is_split_group_submit", return_value=True):
+            result, calls = self._submit(order, {"payment_type": "Proforma"}, profile_flags={"posa_allow_proforma": 1})
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("split", str(result))
+        self.assertEqual(calls["hold"], [])
+
+    # -- unchanged flows ------------------------------------------------------------
+
+    def test_empty_type_and_paid_keep_the_normal_payment_flow(self):
+        for payment_type in ("", "Paid"):
+            with self.subTest(payment_type=payment_type):
+                result, calls = self._submit(self._order(), {"payment_type": payment_type})
+                self.assertEqual(result["name"], "SO-PT-0001")
+                payload = calls["payloads"][0]
+                self.assertEqual(payload["posa_payment_type"], payment_type)
+                self.assertEqual(payload["payments"], [{"mode_of_payment": "Cash", "amount": 100}])
+                self.assertEqual(len(calls["enqueue"]), 1)  # the payment entry job
+                self.assertEqual(calls["hold"], [])
+
+    def test_a_posa_payment_type_set_by_the_browser_is_always_overwritten(self):
+        for forged in ("Proforma", "On Account", "Paid"):
+            with self.subTest(forged=forged):
+                _result, calls = self._submit(
+                    self._order(posa_payment_type=forged),
+                    profile_flags={"posa_allow_proforma": 1, "posa_allow_on_account": 1},
+                )
+                self.assertEqual(calls["payloads"][0]["posa_payment_type"], "")
+                self.assertEqual(calls["hold"], [])
+
+    # -- partners --------------------------------------------------------------------
+
+    def test_partner_may_submit_proforma_and_on_account_when_their_profile_allows_it(self):
+        flags = {"posa_allow_proforma": 1, "posa_allow_on_account": 1}
+        for payment_type in ("Proforma", "On Account"):
+            with self.subTest(payment_type=payment_type):
+                result, calls = self._submit(
+                    self._order(), {"payment_type": payment_type}, profile_flags=flags, partner=True
+                )
+                self.assertEqual(result["name"], "SO-PT-0001")
+                self.assertEqual(calls["payloads"][0]["posa_payment_type"], payment_type)
+                self.assertEqual(len(calls["hold"]), 1 if payment_type == "Proforma" else 0)
+
+    def test_partner_is_refused_a_type_their_profile_does_not_allow(self):
+        for payment_type in ("Proforma", "On Account"):
+            with self.subTest(payment_type=payment_type):
+                result, calls = self._submit(self._order(), {"payment_type": payment_type}, partner=True)
+                self.assertIsInstance(result, RuntimeError)
+                self.assertEqual(calls["payloads"], [])
+
+    def test_partner_can_never_submit_a_payment_credit_or_advance(self):
+        """Tamper cases: every money field a payload could carry, with and without a type."""
+        flags = {"posa_allow_proforma": 1, "posa_allow_on_account": 1}
+        for payment_type in ("", "Proforma", "On Account", "Paid"):
+            with self.subTest(payment_type=payment_type):
+                order = self._order(
+                    redeemed_customer_credit=50,
+                    advance_paid=100,
+                    advances=[{"reference_name": "PE-1", "allocated_amount": 100}],
+                    sales_order_settlement_state="full",
+                )
+                data = {
+                    "payment_type": payment_type,
+                    "payments": [{"mode_of_payment": "Cash", "amount": 100}],
+                    "redeemed_customer_credit": 50,
+                    "sales_order_settlement_state": "full",
+                }
+                result, calls = self._submit(order, data, profile_flags=flags, partner=True)
+
+                self.assertEqual(result["name"], "SO-PT-0001")
+                payload = calls["payloads"][0]
+                self.assertEqual(payload["payments"], [])
+                self.assertEqual(payload["redeemed_customer_credit"], 0)
+                self.assertEqual(payload["advance_paid"], 0)
+                self.assertNotIn("advances", payload)
+                self.assertEqual(payload["sales_order_settlement_state"], "none")
+                self.assertEqual(calls["credit"], [(0, 0)])
+                self.assertEqual(calls["enqueue"], [])
+                self.assertEqual(calls["payment_entries"], [])
+                # "Paid" is not a partner type: it becomes "" rather than being kept
+                self.assertEqual(
+                    payload["posa_payment_type"], "" if payment_type == "Paid" else payment_type
+                )
+
+    def test_partner_payload_cannot_forge_the_type_field(self):
+        _result, calls = self._submit(
+            self._order(posa_payment_type="Proforma"),
+            profile_flags={"posa_allow_proforma": 1},
+            partner=True,
+        )
+        self.assertEqual(calls["payloads"][0]["posa_payment_type"], "")
+        self.assertEqual(calls["hold"], [])
+
+    def test_update_sales_order_drops_a_browser_supplied_type(self):
+        seen = {}
+        with patch.object(sales_orders, "_map_delivery_dates"), patch.object(
+            sales_orders, "_apply_ns_default_warehouse"
+        ), patch.object(sales_orders, "_force_peterborough_store_collection"), patch.object(
+            sales_orders, "_ensure_unique_customer_order_ref"
+        ), patch.object(
+            sales_orders, "_save_sales_order_doc_from_payload",
+            side_effect=lambda payload: seen.update(payload),
+        ), patch.dict(
+            sys.modules,
+            {"posawesome.posawesome.api.stainguard": SimpleNamespace(validate_pos_stainguard=lambda _d: None)},
+        ):
+            sales_orders.update_sales_order(json.dumps({"customer": "C", "posa_payment_type": "Proforma"}))
+        self.assertNotIn("posa_payment_type", seen)
+
+
+class _ProformaOrder:
+    def __init__(self, **values):
+        self.name = "SO-PF-0001"
+        self.doctype = "Sales Order"
+        self.docstatus = 1
+        self.customer = "CUST-A"
+        self.owner = "cashier@example.com"
+        self.pos_profile = "Main POS"
+        self.customer_address = "ADDR-BILL"
+        self.shipping_address_name = "ADDR-SHIP"
+        self.posa_payment_type = "Proforma"
+        self.__dict__.update(values)
+
+    def get(self, fieldname, default=None):
+        return getattr(self, fieldname, default)
+
+
+class TestSendProforma(TestCase):
+    def _link_module(self, result=None, error=None):
+        module = types.ModuleType("customer_due_dates.revolut.payment_link")
+        module.calls = []
+
+        def create(*args, **kwargs):
+            module.calls.append((args, kwargs))
+            if error:
+                raise error
+            return result or {
+                "payment_request": "PR-1",
+                "checkout_url": "https://checkout.example/abc",
+                "already_paid": False,
+                "email_sent": True,
+            }
+
+        module._create_payment_link = create
+        module.resolve_proforma_recipient = lambda customer, billing, shipping: "buyer@example.com"
+        return module
+
+    def _send(self, doc=None, *, user="cashier@example.com", partner=False, scope=None, write=False,
+              assigned=False, locked=True, link=None):
+        doc = doc or _ProformaOrder()
+        link = link or self._link_module()
+        events = []
+        modules = {
+            "customer_due_dates.revolut": types.ModuleType("customer_due_dates.revolut"),
+            "customer_due_dates.revolut.payment_link": link,
+        }
+
+        def get_value(doctype, name, fieldname=None, *args, **kwargs):
+            if kwargs.get("for_update"):
+                events.append(("lock", doctype, name, fieldname))
+                return name if locked else None
+            return None
+
+        with patch.dict(sys.modules, modules), patch.object(
+            sales_orders.frappe.db, "get_value", side_effect=get_value
+        ), patch.object(
+            sales_orders.frappe.db, "exists", return_value=assigned
+        ), patch.object(
+            sales_orders.frappe.db, "savepoint", side_effect=lambda n: events.append(("savepoint", n)), create=True
+        ), patch.object(
+            sales_orders.frappe.db, "rollback", side_effect=lambda **k: events.append(("rollback", k)), create=True
+        ), patch.object(
+            sales_orders.frappe, "get_doc", return_value=doc
+        ), patch.object(
+            sales_orders.frappe, "has_permission", return_value=write, create=True
+        ), patch.object(
+            sales_orders.frappe, "clear_messages", create=True
+        ), patch.object(
+            sales_orders.frappe, "PermissionError", PermissionError, create=True
+        ), patch.object(
+            sales_orders.frappe, "DoesNotExistError", LookupError, create=True
+        ), patch.object(
+            sales_orders.frappe, "log_error", side_effect=lambda **k: events.append(("log_error", k))
+        ), patch.object(
+            sales_orders.frappe.session, "user", user
+        ), patch.object(
+            sales_orders, "is_partner_user", return_value=partner
+        ), patch.object(
+            sales_orders, "get_scope", return_value={"is_partner": partner, "partners": scope or []}
+        ), patch.object(
+            sales_orders, "is_customer_in_scope",
+            side_effect=lambda customer, partners: customer == "CUST-A" and "SP-A" in partners,
+        ):
+            try:
+                result = sales_orders.send_proforma("SO-PF-0001")
+            except Exception as exc:
+                result = exc
+        return result, events, link
+
+    def test_sends_the_pro_forma_with_the_resolved_recipient_after_locking_the_row(self):
+        result, events, link = self._send()
+
+        self.assertEqual(
+            result,
+            {"ok": True, "link": "https://checkout.example/abc", "email_sent": True, "error": ""},
+        )
+        self.assertEqual(events[0], ("lock", "Sales Order", "SO-PF-0001", "name"))
+        args, kwargs = link.calls[0]
+        self.assertEqual(args, ("Sales Order", "SO-PF-0001"))
+        self.assertEqual(kwargs["proforma"], True)
+        self.assertEqual(kwargs["send_email"], True)
+        self.assertEqual(kwargs["check_permission"], False)
+        self.assertEqual(kwargs["email_to"], "buyer@example.com")
+
+    def test_is_whitelisted_for_post_only(self):
+        import inspect
+
+        self.assertIn("methods=[\"POST\"]", inspect.getsource(sales_orders).split("def send_proforma")[0][-120:])
+
+    def test_a_retry_just_asks_again_and_gets_the_reused_link(self):
+        first, _e1, link = self._send()
+        second, _e2, _l = self._send(link=link)
+        self.assertEqual(first["link"], second["link"])
+        self.assertEqual(len(link.calls), 2)  # cdd's reuse makes the second call a no-op on Revolut
+
+    def test_failure_leaves_the_order_alone_logs_and_returns_the_error(self):
+        link = self._link_module(error=RuntimeError("Revolut integration is disabled."))
+        result, events, _link = self._send(link=link)
+
+        self.assertEqual(
+            result, {"ok": False, "link": None, "email_sent": False, "error": "Revolut integration is disabled."}
+        )
+        names = [event[0] for event in events]
+        self.assertIn("rollback", names)
+        self.assertIn("log_error", names)
+        self.assertEqual(names.index("savepoint") < names.index("rollback"), True)
+
+    def test_a_failed_mail_is_reported_but_the_link_is_returned(self):
+        link = self._link_module(
+            result={"checkout_url": "https://checkout.example/abc", "already_paid": False, "email_sent": False}
+        )
+        result, _events, _l = self._send(link=link)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["email_sent"])
+        self.assertEqual(result["link"], "https://checkout.example/abc")
+        self.assertIn("could not be sent", result["error"])
+
+    def test_an_already_paid_order_sends_nothing(self):
+        link = self._link_module(result={"checkout_url": None, "already_paid": True, "email_sent": False})
+        result, _events, _l = self._send(link=link)
+        self.assertFalse(result["email_sent"])
+        self.assertIn("already been paid", result["error"])
+
+    def test_owner_writer_and_profile_user_are_allowed_others_are_not(self):
+        doc = _ProformaOrder(owner="someone.else@example.com")
+        denied, _e, link = self._send(doc)
+        self.assertIsInstance(denied, RuntimeError)
+        self.assertIn("not permitted", str(denied))
+        self.assertEqual(link.calls, [])
+
+        for kwargs in ({"write": True}, {"assigned": True}, {"user": "someone.else@example.com"}):
+            with self.subTest(kwargs=kwargs):
+                result, _e, _l = self._send(_ProformaOrder(owner="someone.else@example.com"), **kwargs)
+                self.assertTrue(isinstance(result, dict) and result["ok"], result)
+
+    def test_rfs_flag_does_not_matter_agile_customers_are_allowed(self):
+        result, _e, _l = self._send(_ProformaOrder(rfs_order=0, is_pos=1))
+        self.assertTrue(result["ok"])
+
+    def test_a_partner_may_send_only_for_their_own_customers(self):
+        own, _e, _l = self._send(partner=True, scope=["SP-A"])
+        self.assertTrue(own["ok"])
+
+        other, _e, link = self._send(_ProformaOrder(customer="CUST-B"), partner=True, scope=["SP-A"])
+        self.assertIn("not permitted", str(other))
+        self.assertEqual(link.calls, [])
+
+        # being the owner and having write access make no difference to a partner
+        mine = _ProformaOrder(customer="CUST-B", owner="cashier@example.com")
+        again, _e, link = self._send(mine, partner=True, scope=["SP-A"], write=True, assigned=True)
+        self.assertIn("not permitted", str(again))
+        self.assertEqual(link.calls, [])
+
+    def test_state_checks(self):
+        for doc, text in (
+            (_ProformaOrder(docstatus=0), "must be submitted"),
+            (_ProformaOrder(posa_payment_type="On Account"), "not a pro forma"),
+            (_ProformaOrder(posa_payment_type=""), "not a pro forma"),
+            (_ProformaOrder(customer="13682"), "not available"),
+        ):
+            with self.subTest(text=text):
+                result, _e, link = self._send(doc, write=True)
+                self.assertIsInstance(result, RuntimeError)
+                self.assertIn(text, str(result))
+                self.assertEqual(link.calls, [])
+
+    def test_unknown_order_is_not_found(self):
+        result, _e, link = self._send(locked=False)
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("not found", str(result))
+        self.assertEqual(link.calls, [])
+
+
+class TestManagedOrderLinkLookupIsTheTrustedOne(TestCase):
+    def test_sales_order_management_does_not_need_a_sales_order_permission_row(self):
+        module = types.ModuleType("customer_due_dates.revolut.payment_link")
+        module.find_active_payment_link = lambda doctype, name: {"checkout_url": f"https://x/{name}"}
+
+        def refused(*_a, **_k):
+            raise AssertionError("must not use the permission-checked lookup")
+
+        module.get_active_payment_link = refused
+        with patch.dict(
+            sys.modules,
+            {
+                "customer_due_dates.revolut": types.ModuleType("customer_due_dates.revolut"),
+                "customer_due_dates.revolut.payment_link": module,
+            },
+        ), patch.object(sales_orders.frappe.db, "get_single_value", return_value=1):
+            link = sales_orders._get_managed_sales_order_revolut_link(SimpleNamespace(name="SO-1"))
+        self.assertEqual(link, {"checkout_url": "https://x/SO-1"})

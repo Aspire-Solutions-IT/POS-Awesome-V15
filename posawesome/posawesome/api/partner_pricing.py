@@ -309,6 +309,12 @@ def neutralise_payment_fields(order: dict, data: dict | None = None) -> None:
         payload["redeemed_customer_credit"] = 0
         payload["sales_order_settlement_state"] = "none"
         payload["allow_no_payment_order_submit"] = 1
+        # Nothing may arrive pre-paid either: advances are read-only fields a payload
+        # could still try to set. ``payment_type`` is deliberately not touched here; the
+        # submit validates it against the POS Profile (Paid is reset, On Account and
+        # Proforma are no-payment types, so they are safe for a partner).
+        payload["advance_paid"] = 0
+        payload.pop("advances", None)
 
 
 def enforce_sales_order_pricing(doc, method=None) -> None:

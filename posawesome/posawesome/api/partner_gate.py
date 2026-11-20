@@ -163,6 +163,7 @@ POS_METHODS: dict[str, dict] = {
             "get_unique_order_ref": {},
             "get_managed_sales_order": ORDER_NAME,
             "get_pos_order_summary": ORDER_NAME,
+            "send_proforma": ORDER_NAME,
             "get_managed_sales_order_new_item_details": ORDER_NAME,
             "update_sales_order": ORDER_PAYLOAD_DATA,
             "update_managed_sales_order": ORDER_PAYLOAD_DATA,
@@ -211,6 +212,9 @@ FRAMEWORK_DENIED = (
     "frappe.model.workflow.",
     "frappe.share.",
     "frappe.email.",
+    # A partner can email their own orders (the pro forma send needs it), but only through
+    # send_proforma: the generic mailer takes any recipient and any text.
+    "frappe.core.doctype.communication.",
     "frappe.core.doctype.data_import.",
     "frappe.core.doctype.data_export.",
     "frappe.core.doctype.user.user.",
