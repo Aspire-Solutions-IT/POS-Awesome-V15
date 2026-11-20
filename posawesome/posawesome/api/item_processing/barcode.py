@@ -388,6 +388,15 @@ def build_scale_barcode(
 
 @frappe.whitelist()
 def get_items_from_barcode(selling_price_list, currency, barcode):
+    from posawesome.posawesome.api import partner_pricing
+
+    partner_mode = partner_pricing.is_partner_user()
+    if partner_mode:
+        from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
+
+        if selling_price_list and selling_price_list not in allowed_price_lists(get_scope()["partners"]):
+            frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
+
     scale_data = _parse_scale_barcode_data(barcode)
     item_code = None
     scale_qty = None
@@ -434,14 +443,7 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
     if frappe.db.has_column("Item", "custom_tfw_price"):
         custom_tfw_price = flt(getattr(item_doc, "custom_tfw_price", 0))
 
-    from posawesome.posawesome.api import partner_pricing
-
-    partner_mode = partner_pricing.is_partner_user()
     if partner_mode:
-        from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
-
-        if selling_price_list and selling_price_list not in allowed_price_lists(get_scope()["partners"]):
-            frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
         # A partner pays the price list rate: no TFW or on-sale override reaches the browser.
         custom_tfw_price = 0
 

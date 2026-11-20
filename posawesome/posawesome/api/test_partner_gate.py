@@ -445,9 +445,10 @@ class TestAllowedPriceLists(unittest.TestCase):
         customers = [
             {"partner": "SP-A", "default_price_list": "PL-A", "customer_group": "G1"},
             {"partner": "SP-A", "default_price_list": None, "customer_group": "G2"},
+            {"partner": "SP-A", "default_price_list": None, "customer_group": "G3"},
             {"partner": "SP-B", "default_price_list": "PL-B", "customer_group": "G1"},
         ]
-        groups = {"G1": "PL-GROUP", "G2": None}
+        groups = {"G1": "PL-GROUP-IGNORED", "G2": None, "G3": "PL-GROUP"}
         charges = [
             {"price_list": "PL-CONTAINER", "available_to": "Agile only"},
             {"price_list": "PL-TFW-CHARGE", "available_to": "TFW only"},
@@ -458,6 +459,7 @@ class TestAllowedPriceLists(unittest.TestCase):
             "PL-A": {"enabled": 1, "selling": 1, "fallback_price_list": "PL-STOCKIST"},
             "PL-B": {"enabled": 1, "selling": 1, "fallback_price_list": None},
             "PL-GROUP": {"enabled": 1, "selling": 1, "fallback_price_list": None},
+            "PL-GROUP-IGNORED": {"enabled": 1, "selling": 1, "fallback_price_list": None},
             "PL-CONTAINER": {"enabled": 1, "selling": 1, "fallback_price_list": None},
             "PL-TFW-CHARGE": {"enabled": 1, "selling": 1, "fallback_price_list": None},
             "PL-BOTH": {"enabled": 0, "selling": 1, "fallback_price_list": None},
@@ -516,8 +518,9 @@ class TestAllowedPriceLists(unittest.TestCase):
     def test_lists_a_partner_can_price_from(self):
         self.assertEqual(
             GATE.allowed_price_lists(["SP-A"]),
-            # own customer list, its fallback, the customer group list, and the charge list
-            # offered to partners. Not the TFW-only charge, a disabled list or a buying list.
+            # own customer list, its fallback, the group list of a customer with no list of
+            # their own, and the charge list offered to partners. Not the group list of a
+            # customer who has their own, the TFW-only charge, a disabled list or a buying list.
             {"PL-A", "PL-STOCKIST", "PL-GROUP", "PL-CONTAINER"},
         )
 

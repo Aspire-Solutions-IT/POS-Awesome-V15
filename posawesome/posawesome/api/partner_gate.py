@@ -303,7 +303,8 @@ def is_customer_in_scope(customer, partners: list[str]) -> bool:
 def allowed_price_lists(partners: list[str]) -> set[str]:
     """Selling price lists a partner with these Sales Partners may price from.
 
-    The default list of each in-scope customer (or their customer group), the lists of
+    The default list of each in-scope customer (or their customer group's, when the
+    customer has none), the lists of
     delivery charges offered to partners, and the fallback list of each. Buying, disabled
     and other customers' lists are never in the set.
     """
@@ -318,7 +319,8 @@ def allowed_price_lists(partners: list[str]) -> set[str]:
         filters={"default_sales_partner": ["in", partners]},
         fields=["default_price_list", "customer_group"],
     )
-    groups = {c.customer_group for c in customers if c.customer_group}
+    # The customer group's list only applies to a customer with no list of their own.
+    groups = {c.customer_group for c in customers if c.customer_group and not c.default_price_list}
     lists.update(c.default_price_list for c in customers if c.default_price_list)
     if groups:
         lists.update(
