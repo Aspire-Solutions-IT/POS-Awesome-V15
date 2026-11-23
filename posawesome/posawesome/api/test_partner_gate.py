@@ -252,6 +252,13 @@ class TestSendProformaRule(unittest.TestCase):
     def test_own_order_passes(self):
         call(self.METHOD, {"sales_order": "SO-A"})
 
+    def test_default_recipient_lookup_is_limited_to_own_customers(self):
+        method = f"{API}sales_orders.get_proforma_default_recipient"
+        call(method, {"customer": "CUST-A"})
+        for form in ({"customer": "CUST-B"}, {"customer": ""}, {}):
+            with self.subTest(form=form), self.assertRaises(FakePermissionError):
+                call(method, form)
+
     def test_another_partners_missing_or_blank_order_is_denied(self):
         for name in ("SO-B", "SO-MISSING", "", None):
             with self.subTest(name=name), self.assertRaises(FakePermissionError):

@@ -3887,6 +3887,21 @@ def _apply_payment_type(order, data):
     return requested
 
 
+def _apply_proforma_recipient(order, data, payment_type):
+    """The address the partner confirmed for the pro forma, taken from ``proforma_recipient``
+    in ``data`` or ``order`` and removed from both. One plain address (checked before
+    anything is saved, so a bad one rejects the whole submit); blank means the customer's
+    own. Only a Proforma order carries one: for any other type it is dropped, never trusted."""
+    typed = ""
+    for payload in (data, order):
+        if isinstance(payload, dict):
+            candidate = cstr(payload.pop("proforma_recipient", "") or "").strip()
+            typed = typed or candidate
+    if payment_type != PAYMENT_TYPE_PROFORMA:
+        return ""
+    return validate_optional_email(typed)
+
+
 def _may_send_proforma(doc):
     """Only a Sales Partner login sends a pro forma, and only for its own customers'
     orders. Staff use the normal payment-link actions; they are not pro forma senders.
@@ -3917,6 +3932,41 @@ def _plain_error(exc):
             if text:
                 break
     return re.sub(r"<[^>]+>", "", text).strip() or _("The pro forma could not be sent.")
+
+
+@frappe.whitelist()
+def get_proforma_default_recipient(customer):
+    """Who a pro forma for this customer would go to (Invoice Email, then the customer's
+    address emails, then the customer email), so the POS can ask the partner to confirm it
+    before anything is submitted. Read-only. A partner may only ask about their own
+    customers (the gate checks this too; repeated here so the method is safe on its own);
+    staff need read access to the Customer.
+
+    Returns ``{"recipient", "dev_site_override"}``. On a ``.localhost`` site the real
+    recipient is hidden: ``recipient`` is the developer address that every pro forma email
+    is redirected to, and ``dev_site_override`` is true so the UI can say so."""
+    customer = cstr(customer or "").strip()
+    if not customer:
+        frappe.throw(_("Customer is required."))
+    if not frappe.db.exists("Customer", customer):
+        frappe.throw(_("Customer {0} was not found.").format(customer), frappe.DoesNotExistError)
+
+    user = frappe.session.user
+    if is_partner_user(user):
+        allowed = is_customer_in_scope(customer, get_scope(user)["partners"])
+    else:
+        allowed = frappe.has_permission("Customer", "read", customer)
+    if not allowed:
+        frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
+
+    from customer_due_dates.revolut import payment_link
+
+    if payment_link.DEV_SITE_MARKER in (frappe.local.site or ""):
+        return {"recipient": payment_link.DEV_SITE_PROFORMA_RECIPIENT, "dev_site_override": True}
+    return {
+        "recipient": payment_link.resolve_proforma_recipient(customer) or "",
+        "dev_site_override": False,
+    }
 
 
 @frappe.whitelist(methods=["POST"])
@@ -4018,6 +4068,7 @@ def _submit_sales_order(order, data=None):
         # Partners place orders; they never collect payment or spend customer credit.
         neutralise_payment_fields(order, data)
     payment_type = _apply_payment_type(order, data)
+    proforma_recipient = _apply_proforma_recipient(order, data, payment_type)
     if payment_type in NO_PAYMENT_TYPES:
         # Both types are "submit without payment": nothing is collected at the till and no
         # customer credit is spent (the no-payment block below empties payments and sets
@@ -4137,4 +4188,8 @@ def _submit_sales_order(order, data=None):
     if payment_type == PAYMENT_TYPE_PROFORMA:
         _hold_proforma_order(so_doc)
 
-    return {"name": so_doc.name, "status": so_doc.docstatus, "doctype": so_doc.doctype}
+    result = {"name": so_doc.name, "status": so_doc.docstatus, "doctype": so_doc.doctype}
+    if proforma_recipient:
+        # Validated above; the success dialog's one automatic send uses it.
+        result["proforma_recipient"] = proforma_recipient
+    return result

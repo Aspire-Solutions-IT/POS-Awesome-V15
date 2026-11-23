@@ -167,16 +167,57 @@ describe("OrderSuccessDialog pro forma", () => {
 	describe("editable recipient", () => {
 		const recipientInput = (wrapper: any) => wrapper.find('[data-testid="proforma-recipient"]');
 
-		it("prefills the field with the customer's address and sends the first time without one", async () => {
-			sendProforma.mockResolvedValue({ ...ok, recipient: "invoice@x.example", recipientDefault: "invoice@x.example" });
+		it("sends the first time to the confirmed address and hides the field until asked", async () => {
+			sendProforma.mockResolvedValue({ ...ok, recipient: "typed@x.example", recipientDefault: "invoice@x.example" });
+			useUIStore().showOrderSuccess({
+				orders: ["SO-1"],
+				profile: {},
+				noPayment: true,
+				paymentType: "Proforma",
+				proformaRecipient: "typed@x.example",
+			});
+			const wrapper = mountDialog();
+			await flushPromises();
+
+			// one send, to the address confirmed before submit; nothing re-sends on open
+			expect(sendProforma).toHaveBeenCalledTimes(1);
+			expect(sendProforma).toHaveBeenCalledWith("SO-1", { resend: false, recipient: "typed@x.example" });
+			// sent: no field and no send button, just the way to ask for them
+			expect(recipientInput(wrapper).exists()).toBe(false);
+			expect(wrapper.find('[data-testid="proforma-retry"]').exists()).toBe(false);
+
+			await wrapper.find('[data-testid="proforma-change-recipient"]').trigger("click");
+			expect((recipientInput(wrapper).element as HTMLInputElement).value).toBe("typed@x.example");
+			expect(wrapper.find('[data-testid="proforma-retry"]').text()).toBe("Send");
+			expect(wrapper.find('[data-testid="proforma-change-recipient"]').exists()).toBe(false);
+		});
+
+		it("resends to a new address after a successful send, then hides the field again", async () => {
+			sendProforma.mockResolvedValueOnce({ ...ok, recipient: "first@x.example", recipientDefault: "first@x.example" });
 			open("Proforma");
 			const wrapper = mountDialog();
 			await flushPromises();
 
-			expect(sendProforma).toHaveBeenCalledWith("SO-1", { resend: false, recipient: "" });
-			expect((recipientInput(wrapper).element as HTMLInputElement).value).toBe("invoice@x.example");
-			// the field is editable for a pro forma (it is no longer disabled)
-			expect(recipientInput(wrapper).attributes("disabled")).toBeUndefined();
+			await wrapper.find('[data-testid="proforma-change-recipient"]').trigger("click");
+			await recipientInput(wrapper).setValue("second@y.example");
+			sendProforma.mockResolvedValueOnce({ ...ok, recipient: "second@y.example" });
+			await wrapper.find('[data-testid="proforma-retry"]').trigger("click");
+			await flushPromises();
+
+			expect(sendProforma).toHaveBeenCalledTimes(2);
+			expect(sendProforma).toHaveBeenLastCalledWith("SO-1", { resend: true, recipient: "second@y.example" });
+			expect(wrapper.find('[data-testid="proforma-outcome"]').text()).toContain("second@y.example");
+			expect(recipientInput(wrapper).exists()).toBe(false);
+		});
+
+		it("shows the field together with Retry when the first send failed", async () => {
+			sendProforma.mockResolvedValueOnce({ ...ok, ok: false, link: "", emailSent: false, recipient: "a@x.example" });
+			open("Proforma");
+			const wrapper = mountDialog();
+			await flushPromises();
+			expect(recipientInput(wrapper).exists()).toBe(true);
+			expect(wrapper.find('[data-testid="proforma-retry"]').exists()).toBe(true);
+			expect(wrapper.find('[data-testid="proforma-change-recipient"]').exists()).toBe(false);
 		});
 
 		it("Retry sends to the address in the field", async () => {
@@ -199,6 +240,7 @@ describe("OrderSuccessDialog pro forma", () => {
 
 			expect(sendProforma).toHaveBeenLastCalledWith("SO-1", { resend: true, recipient: "other@y.example" });
 			// what the user typed is not overwritten by the server's default
+			await wrapper.find('[data-testid="proforma-change-recipient"]').trigger("click");
 			expect((recipientInput(wrapper).element as HTMLInputElement).value).toBe(" other@y.example ");
 			expect(wrapper.find('[data-testid="proforma-outcome"]').text()).toContain("other@y.example");
 		});
@@ -244,6 +286,7 @@ describe("OrderSuccessDialog pro forma", () => {
 
 		const text = wrapper.text();
 		expect(text).not.toContain("first failed");
+		await wrapper.find('[data-testid="proforma-change-recipient"]').trigger("click");
 		expect(wrapper.find('[data-testid="proforma-recipient"]').exists()).toBe(true);
 		expect((wrapper.find('[data-testid="proforma-recipient"]').element as HTMLInputElement).value).toBe(
 			"second@x.example",

@@ -16,6 +16,7 @@ export const PAYMENT_TYPE_ON_ACCOUNT = "On Account";
 export const PAYMENT_TYPE_PROFORMA = "Proforma";
 
 const SEND_PROFORMA_METHOD = "posawesome.posawesome.api.sales_orders.send_proforma";
+const DEFAULT_RECIPIENT_METHOD = "posawesome.posawesome.api.sales_orders.get_proforma_default_recipient";
 
 export type ProformaResult = {
 	ok: boolean;
@@ -159,7 +160,46 @@ export async function sendProforma(
 	}
 }
 
+export type ProformaDefaultRecipient = {
+	/** The customer's pro forma address ("" when none is on file); on a dev site, the address mail is diverted to. */
+	recipient: string;
+	/** True on a development site, where every pro forma email goes to `recipient` whatever is typed. */
+	devSiteOverride: boolean;
+	/** False when the lookup itself failed: the caller must then ask for an address. */
+	ok: boolean;
+};
+
+/**
+ * Who a pro forma for this customer would go to, asked BEFORE the order is submitted so the
+ * partner can confirm or change it. Never throws: a failed lookup comes back as `ok: false`
+ * with a blank recipient, which makes the partner type one.
+ */
+export async function fetchProformaDefaultRecipient(customer: string): Promise<ProformaDefaultRecipient> {
+	try {
+		const response: any = await new Promise((resolve, reject) => {
+			frappe.call({
+				method: DEFAULT_RECIPIENT_METHOD,
+				args: { customer },
+				callback: (r: any) => resolve(r),
+				error: (r: any) => reject(r),
+			});
+		});
+		const message = response?.message;
+		if (!message || typeof message !== "object") {
+			return { recipient: "", devSiteOverride: false, ok: false };
+		}
+		return {
+			recipient: text(message.recipient),
+			devSiteOverride: Boolean(message.dev_site_override),
+			ok: true,
+		};
+	} catch {
+		return { recipient: "", devSiteOverride: false, ok: false };
+	}
+}
+
 export default {
+	fetchProformaDefaultRecipient,
 	sendProforma,
 	describeProformaResult,
 	normaliseProformaResponse,

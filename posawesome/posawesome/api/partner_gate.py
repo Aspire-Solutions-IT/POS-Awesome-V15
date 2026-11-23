@@ -164,6 +164,7 @@ POS_METHODS: dict[str, dict] = {
             "get_managed_sales_order": ORDER_NAME,
             "get_pos_order_summary": ORDER_NAME,
             "send_proforma": ORDER_NAME,
+            "get_proforma_default_recipient": REQUIRED_CUSTOMER,
             "get_managed_sales_order_new_item_details": ORDER_NAME,
             "update_sales_order": ORDER_PAYLOAD_DATA,
             "update_managed_sales_order": ORDER_PAYLOAD_DATA,

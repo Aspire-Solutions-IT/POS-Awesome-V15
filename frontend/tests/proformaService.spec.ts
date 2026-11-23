@@ -5,6 +5,7 @@ import {
 	isValidProformaRecipient,
 	normaliseProformaResponse,
 	sendProforma,
+	fetchProformaDefaultRecipient,
 } from "../src/posapp/services/proformaService";
 
 const tr = (value: string, args?: any[]) =>
@@ -129,6 +130,37 @@ describe("sendProforma", () => {
 
 		await sendProforma("SO-1", { resend: true, recipient: "   " });
 		expect(call.mock.calls[1][0].args.recipient).toBeUndefined();
+	});
+});
+
+describe("fetchProformaDefaultRecipient", () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("asks for the customer's default and reads the dev flag", async () => {
+		const call = vi.fn((opts: any) =>
+			opts.callback({ message: { recipient: " a@x.example ", dev_site_override: true } }),
+		);
+		vi.stubGlobal("frappe", { call });
+		await expect(fetchProformaDefaultRecipient("CUST-A")).resolves.toEqual({
+			recipient: "a@x.example",
+			devSiteOverride: true,
+			ok: true,
+		});
+		expect(call.mock.calls[0][0]).toMatchObject({
+			method: "posawesome.posawesome.api.sales_orders.get_proforma_default_recipient",
+			args: { customer: "CUST-A" },
+		});
+	});
+
+	it("never throws: a failed or empty lookup is ok false with no address", async () => {
+		vi.stubGlobal("frappe", { call: (opts: any) => opts.error({ message: "denied" }) });
+		await expect(fetchProformaDefaultRecipient("CUST-A")).resolves.toEqual({
+			recipient: "",
+			devSiteOverride: false,
+			ok: false,
+		});
+		vi.stubGlobal("frappe", { call: (opts: any) => opts.callback({}) });
+		await expect(fetchProformaDefaultRecipient("CUST-A")).resolves.toMatchObject({ ok: false });
 	});
 });
 

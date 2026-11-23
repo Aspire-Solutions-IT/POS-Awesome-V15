@@ -3075,6 +3075,8 @@ class TestPaymentTypeSubmit(TestCase):
         ), patch.object(
             sales_orders, "is_partner_user", return_value=partner
         ), patch.object(
+            sales_orders.frappe, "ValidationError", ValueError, create=True
+        ), patch.object(
             sales_orders.frappe, "enqueue", side_effect=lambda *a, **k: calls["enqueue"].append((a, k))
         ), patch.object(
             sales_orders.frappe.db, "exists", side_effect=fake_exists
@@ -3255,6 +3257,57 @@ class TestPaymentTypeSubmit(TestCase):
                 self.assertEqual(result["name"], "SO-PT-0001")
                 self.assertEqual(calls["payloads"][0]["posa_payment_type"], payment_type)
                 self.assertEqual(len(calls["hold"]), 1 if payment_type == "Proforma" else 0)
+
+    def test_confirmed_proforma_recipient_is_validated_stripped_and_returned(self):
+        flags = {"posa_allow_proforma": 1}
+        for where in ("data", "order"):
+            with self.subTest(where=where):
+                order, data = self._order(), {"payment_type": "Proforma"}
+                {"data": data, "order": order}[where]["proforma_recipient"] = "  buyer@example.com "
+                result, calls = self._submit(order, data, profile_flags=flags, partner=True)
+                self.assertEqual(result["proforma_recipient"], "buyer@example.com")
+                # Never reaches the Sales Order document.
+                self.assertNotIn("proforma_recipient", calls["payloads"][0])
+                self.assertEqual(len(calls["hold"]), 1)
+
+    def test_no_recipient_means_the_result_carries_none(self):
+        result, _calls = self._submit(
+            self._order(), {"payment_type": "Proforma"}, profile_flags={"posa_allow_proforma": 1}, partner=True
+        )
+        self.assertNotIn("proforma_recipient", result)
+
+    def test_a_bad_proforma_recipient_rejects_the_submit_before_anything_is_saved(self):
+        flags = {"posa_allow_proforma": 1}
+        for bad in ("a@example.com, b@example.com", "a@example.com\nb@example.com"):
+            with self.subTest(bad=bad):
+                result, calls = self._submit(
+                    self._order(),
+                    {"payment_type": "Proforma", "proforma_recipient": bad},
+                    profile_flags=flags,
+                    partner=True,
+                )
+                self.assertIsInstance(result, RuntimeError)
+                self.assertEqual(calls["payloads"], [])
+                self.assertEqual(calls["hold"], [])
+
+    def test_a_proforma_recipient_on_any_other_type_is_dropped(self):
+        result, calls = self._submit(
+            self._order(),
+            {"payment_type": "On Account", "proforma_recipient": "buyer@example.com"},
+            profile_flags={"posa_allow_on_account": 1},
+            partner=True,
+        )
+        self.assertNotIn("proforma_recipient", result)
+        self.assertNotIn("proforma_recipient", calls["payloads"][0])
+
+    def test_staff_still_cannot_pick_proforma_by_sending_a_recipient(self):
+        result, calls = self._submit(
+            self._order(),
+            {"payment_type": "Proforma", "proforma_recipient": "buyer@example.com"},
+            profile_flags={"posa_allow_proforma": 1},
+        )
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(calls["payloads"], [])
 
     def test_partner_is_refused_a_type_their_profile_does_not_allow(self):
         for payment_type in ("Proforma", "On Account"):
@@ -3946,3 +3999,59 @@ class TestManagedPaymentLinkAccess(TestCase):
         )
         self.assertIsInstance(result, RuntimeError)
         self.assertIn("Resend Pro Forma", str(result))
+
+
+class TestGetProformaDefaultRecipient(TestCase):
+    def _call(self, customer="CUST-A", *, partner=True, scope=("SP-A",), site="agile.example.com",
+              staff_can_read=True, resolved="buyer@example.com", exists=True):
+        link = types.ModuleType("customer_due_dates.revolut.payment_link")
+        link.DEV_SITE_MARKER = ".localhost"
+        link.DEV_SITE_PROFORMA_RECIPIENT = "dev@example.com"
+        link.resolve_proforma_recipient = lambda c, *a: resolved
+        modules = {
+            "customer_due_dates.revolut": types.ModuleType("customer_due_dates.revolut"),
+            "customer_due_dates.revolut.payment_link": link,
+        }
+        with patch.dict(sys.modules, modules), patch.object(
+            sales_orders.frappe.db, "exists", return_value=exists
+        ), patch.object(
+            sales_orders, "is_partner_user", return_value=partner
+        ), patch.object(
+            sales_orders, "get_scope", return_value={"is_partner": partner, "partners": list(scope)}
+        ), patch.object(
+            sales_orders, "is_customer_in_scope", side_effect=lambda c, partners: c == "CUST-A" and "SP-A" in partners
+        ), patch.object(
+            sales_orders.frappe, "has_permission", return_value=staff_can_read, create=True
+        ), patch.object(
+            sales_orders.frappe, "PermissionError", PermissionError, create=True
+        ), patch.object(
+            sales_orders.frappe, "DoesNotExistError", LookupError, create=True
+        ), patch.object(
+            sales_orders.frappe.local, "site", site
+        ):
+            try:
+                return sales_orders.get_proforma_default_recipient(customer)
+            except Exception as exc:
+                return exc
+
+    def test_partner_gets_their_customers_default(self):
+        self.assertEqual(self._call(), {"recipient": "buyer@example.com", "dev_site_override": False})
+
+    def test_no_email_on_file_is_blank(self):
+        self.assertEqual(self._call(resolved="")["recipient"], "")
+
+    def test_dev_site_returns_the_override_and_flags_it(self):
+        self.assertEqual(
+            self._call(site="agile.localhost"), {"recipient": "dev@example.com", "dev_site_override": True}
+        )
+
+    def test_partner_cannot_read_another_partners_customer(self):
+        self.assertIsInstance(self._call("CUST-B"), RuntimeError)
+
+    def test_staff_need_read_access_to_the_customer(self):
+        self.assertEqual(self._call(partner=False)["recipient"], "buyer@example.com")
+        self.assertIsInstance(self._call(partner=False, staff_can_read=False), RuntimeError)
+
+    def test_blank_or_unknown_customer_is_refused(self):
+        self.assertIsInstance(self._call(""), RuntimeError)
+        self.assertIsInstance(self._call(exists=False), RuntimeError)

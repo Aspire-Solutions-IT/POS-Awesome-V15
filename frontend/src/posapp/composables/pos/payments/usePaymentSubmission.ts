@@ -64,6 +64,8 @@ export interface SubmissionControlOptions {
 	allowNoPaymentOrderSubmit?: boolean;
 	/** "On Account" or "Proforma"; validated again by the server against the POS Profile. */
 	paymentType?: string;
+	/** The pro forma address the partner confirmed; the server validates it again. */
+	proformaRecipient?: string;
 	/** Photos for Yellow Ticket lines; linked to the sale on the server after submit. */
 	yellowTicketPhotos?: Record<string, any>;
 }
@@ -723,6 +725,10 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 			),
 			yellow_ticket_photos: controlOptions.yellowTicketPhotos || undefined,
 			payment_type: salesOrderCheckout ? controlOptions.paymentType || undefined : undefined,
+			proforma_recipient:
+				salesOrderCheckout && controlOptions.paymentType === "Proforma"
+					? controlOptions.proformaRecipient || undefined
+					: undefined,
 			sales_order_settlement_state: salesOrderCheckout
 				? (
 					controlOptions.allowNoPaymentOrderSubmit &&

@@ -403,6 +403,12 @@
 			@update:phone-dialog="phone_dialog = $event"
 			@request-payment="request_payment"
 		/>
+		<ProformaConfirmDialog
+			v-model="proformaConfirmOpen"
+			:customer="String(invoice_doc?.customer || '')"
+			:customer-name="String(invoice_doc?.customer_name || '')"
+			@confirm="confirmProformaRecipient"
+		/>
 		<MissingOrderAddressDialog
 			v-model="missingOrderAddressDialog"
 			@customer-collected="confirmCustomerCollectedOrder"
@@ -475,6 +481,7 @@ import { PAYMENT_TYPE_ON_ACCOUNT, PAYMENT_TYPE_PROFORMA } from "../../services/p
 import PaymentSummary from "./payments/PaymentSummary.vue";
 import InvoiceTotals from "./payments/InvoiceTotals.vue";
 import PaymentActionButtons from "./payments/PaymentActionButtons.vue";
+import ProformaConfirmDialog from "./payments/ProformaConfirmDialog.vue";
 import PaymentMethods from "./payments/PaymentMethods.vue";
 import PaymentGiftCardSection from "./payments/PaymentGiftCardSection.vue";
 import PaymentRedemption from "./payments/PaymentRedemption.vue";
@@ -2399,7 +2406,7 @@ const submitWithoutPaymentOrder = async () => {
 
 // Both types are saved by the server in one step (and the pro forma email follows it), so they
 // can't be queued in the offline outbox.
-const submitWithPaymentType = async (paymentType) => {
+const submitWithPaymentType = async (paymentType, extraOptions = {}) => {
 	if (isOffline()) {
 		toastStore.show({
 			title: __("{0} orders need an online connection", [
@@ -2418,12 +2425,30 @@ const submitWithPaymentType = async (paymentType) => {
 	await submitInvoiceWrapper(false, undefined, {
 		allowNoPaymentOrderSubmit: true,
 		paymentType,
+		...extraOptions,
 	});
 };
 
 const submitOnAccountOrder = () => submitWithPaymentType(PAYMENT_TYPE_ON_ACCOUNT);
-// The server puts a pro forma order on hold itself, so no forceHoldOrder here.
-const submitProformaOrder = () => submitWithPaymentType(PAYMENT_TYPE_PROFORMA);
+
+// A pro forma asks who it goes to BEFORE anything is submitted: the dialog opens first
+// (never offline, and never on the wizard's first step), and only its "Send & Submit"
+// submits the order, carrying the confirmed address. The server puts the order on hold
+// itself, so no forceHoldOrder here.
+const proformaConfirmOpen = ref(false);
+const submitProformaOrder = () => {
+	if (isOffline()) {
+		return submitWithPaymentType(PAYMENT_TYPE_PROFORMA);
+	}
+	if (isWizardFlow.value && currentStep.value === 1) {
+		return submitWithPaymentType(PAYMENT_TYPE_PROFORMA);
+	}
+	proformaConfirmOpen.value = true;
+};
+const confirmProformaRecipient = async (recipient) => {
+	proformaConfirmOpen.value = false;
+	await submitWithPaymentType(PAYMENT_TYPE_PROFORMA, { proformaRecipient: recipient });
+};
 
 const shouldConfirmMissingOrderAddress = (options = {}) => {
 	if (options.skipMissingAddressConfirmation) {
@@ -2846,6 +2871,8 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 						// offers a shortcut into Sales Order Management to send a payment link.
 						noPayment: Boolean(options.allowNoPaymentOrderSubmit),
 						paymentType: options.paymentType || "",
+						// The address the partner confirmed; the dialog's one automatic send uses it.
+						proformaRecipient: options.proformaRecipient || "",
 					});
 				}
 			},
@@ -2859,6 +2886,7 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 		}, {
 			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),
 			paymentType: options.paymentType || undefined,
+			proformaRecipient: options.proformaRecipient || undefined,
 			yellowTicketPhotos,
 		});
 		if (yellowTicketPhotos) {

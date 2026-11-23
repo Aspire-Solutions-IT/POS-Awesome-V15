@@ -988,6 +988,23 @@ describe("usePaymentSubmission", () => {
 			{ allowNoPaymentOrderSubmit: true },
 		);
 		expect((invoiceService.submitInvoice as any).mock.calls[1][0].payment_type).toBeUndefined();
+
+		// The confirmed pro forma address travels with a Proforma submit only.
+		await build().submitInvoice(
+			false,
+			{ onFinishNavigation: vi.fn() },
+			{ allowNoPaymentOrderSubmit: true, paymentType: "Proforma", proformaRecipient: "buyer@x.example" },
+		);
+		expect((invoiceService.submitInvoice as any).mock.calls[2][0]).toMatchObject({
+			payment_type: "Proforma",
+			proforma_recipient: "buyer@x.example",
+		});
+		await build().submitInvoice(
+			false,
+			{ onFinishNavigation: vi.fn() },
+			{ allowNoPaymentOrderSubmit: true, paymentType: "On Account", proformaRecipient: "buyer@x.example" },
+		);
+		expect((invoiceService.submitInvoice as any).mock.calls[3][0].proforma_recipient).toBeUndefined();
 	});
 
 	it("blocks Sales Order deposits when a collection delivery charge is selected", async () => {

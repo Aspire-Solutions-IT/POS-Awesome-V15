@@ -78,9 +78,22 @@
 						<div v-if="proformaLink" class="order-success__proforma-link">
 							<a :href="proformaLink" target="_blank" rel="noopener">{{ __("Payment link") }}</a>
 						</div>
-						<!-- Where the pro forma goes: filled with the customer's own address once the
-						     first send answers; Retry / Resend sends to whatever it holds. -->
+						<!-- The first send already went to the address confirmed before submit.
+						     The field only appears together with a send action: always when the
+						     last attempt needs a retry, else after "Resend to a different address". -->
+						<v-btn
+							v-if="proformaOutcome && !proformaBusy && !recipientVisible"
+							variant="text"
+							size="small"
+							prepend-icon="mdi-email-edit-outline"
+							class="mt-2"
+							data-testid="proforma-change-recipient"
+							@click="showRecipientField = true"
+						>
+							{{ __("Resend to a different address") }}
+						</v-btn>
 						<v-text-field
+							v-if="recipientVisible"
 							v-model="proformaRecipient"
 							:label="__('Send pro forma to')"
 							:placeholder="__('The customer\'s pro forma email address')"
@@ -113,7 +126,7 @@
 					{{ __("Done") }}
 				</v-btn>
 				<v-btn
-					v-if="isProforma && orders.length === 1 && proformaOutcome?.canRetry"
+					v-if="isProforma && orders.length === 1 && recipientVisible"
 					color="primary"
 					variant="flat"
 					prepend-icon="mdi-email-sync-outline"
@@ -121,7 +134,7 @@
 					data-testid="proforma-retry"
 					@click="runProforma(true)"
 				>
-					{{ proformaOutcome.state === "failed" ? __("Retry") : __("Resend Pro Forma") }}
+					{{ resendLabel }}
 				</v-btn>
 				<v-btn
 					v-if="orders.length === 1 && !isProforma"
@@ -183,10 +196,21 @@ const dialogTitle = computed(() => {
 const proformaBusy = ref(false);
 const proformaOutcome = ref(null);
 const proformaLink = ref("");
-// The address the pro forma goes to. Blank until the first send answers with the customer's
-// own address; the first automatic send always uses that default, Retry / Resend uses this.
+// The address a Retry / Resend goes to: filled from the first send's answer. The first (automatic)
+// send goes to the address the partner confirmed before submitting (blank: the customer's own).
 const proformaRecipient = ref("");
 const proformaRecipientEdited = ref(false);
+// Opened by "Resend to a different address" after a successful send.
+const showRecipientField = ref(false);
+// The field is only ever offered with a send action: when the last attempt can be retried, or once asked for.
+const recipientVisible = computed(
+	() => Boolean(proformaOutcome.value) && (Boolean(proformaOutcome.value?.canRetry) || showRecipientField.value),
+);
+const resendLabel = computed(() => {
+	const state = proformaOutcome.value?.state;
+	if (state === "failed") return __("Retry");
+	return state === "sent" ? __("Send") : __("Resend Pro Forma");
+});
 const proformaRecipientError = computed(() =>
 	isValidProformaRecipient(proformaRecipient.value) ? "" : __("Enter a valid email address"),
 );
@@ -205,7 +229,9 @@ const runProforma = async (resend = false) => {
 	try {
 		const result = await sendProforma(name, {
 			resend,
-			recipient: resend ? String(proformaRecipient.value ?? "").trim() : "",
+			recipient: resend
+				? String(proformaRecipient.value ?? "").trim()
+				: String(uiStore.orderSuccess?.proformaRecipient || "").trim(),
 		});
 		if (run !== proformaRun || orderNames.value[0] !== name) return;
 		proformaLink.value = result.link || "";
@@ -213,6 +239,8 @@ const runProforma = async (resend = false) => {
 			proformaRecipient.value = result.recipient || result.recipientDefault || proformaRecipient.value;
 		}
 		proformaOutcome.value = describeProformaResult(result, __, result.recipient);
+		// A resend that worked closes the field again; a failed one keeps it (with Retry).
+		if (resend && !proformaOutcome.value.canRetry) showRecipientField.value = false;
 	} finally {
 		if (run === proformaRun) proformaBusy.value = false;
 	}
@@ -329,6 +357,7 @@ watch(
 		proformaLink.value = "";
 		proformaRecipient.value = "";
 		proformaRecipientEdited.value = false;
+		showRecipientField.value = false;
 		Object.keys(summaries).forEach((key) => delete summaries[key]);
 		names.forEach((name) => {
 			summaries[name] = { state: "loading" };
