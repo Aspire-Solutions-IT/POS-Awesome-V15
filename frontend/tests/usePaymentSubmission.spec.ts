@@ -936,6 +936,60 @@ describe("usePaymentSubmission", () => {
 		);
 	});
 
+	it("sends the payment type with a zero-payment Sales Order, and not with an ordinary submit", async () => {
+		const invoiceService =
+			(await import("../src/posapp/services/invoiceService")).default;
+		(invoiceService.submitInvoice as any).mockResolvedValue({
+			name: "SO-0003B",
+			doctype: "Sales Order",
+			docstatus: 1,
+		});
+		const build = () => {
+			const invoiceDoc = ref<any>({
+				name: "SO-0003B",
+				doctype: "Sales Order",
+				is_return: 0,
+				items: [{ item_code: "ITEM-1", qty: 1 }],
+				payments: [{ mode_of_payment: "Cash", amount: 0, type: "Cash" }],
+				rounded_total: 300,
+				grand_total: 300,
+			});
+			return usePaymentSubmission({
+				invoiceDoc,
+				posProfile: ref({ posa_create_only_sales_order: 1, posa_allow_partial_payment: 0 }),
+				stockSettings: ref({}),
+				invoiceType: ref("Order"),
+				formatFloat: (value) => Number(value || 0),
+				stores: {
+					toastStore: { show: vi.fn() },
+					uiStore: { setLastInvoice: vi.fn(), setLastStockAdjustment: vi.fn() },
+					customersStore: { setSelectedCustomer: vi.fn() },
+					invoiceStore: { invoiceDoc: invoiceDoc.value },
+				},
+				isCashback: ref(false),
+				paidChange: ref(0),
+				creditChange: ref(0),
+				redeemedCustomerCredit: ref(0),
+				customerCreditDict: ref([]),
+				diff_payment: ref(300),
+			});
+		};
+
+		await build().submitInvoice(
+			false,
+			{ onFinishNavigation: vi.fn() },
+			{ allowNoPaymentOrderSubmit: true, paymentType: "On Account" },
+		);
+		expect((invoiceService.submitInvoice as any).mock.calls[0][0].payment_type).toBe("On Account");
+
+		await build().submitInvoice(
+			false,
+			{ onFinishNavigation: vi.fn() },
+			{ allowNoPaymentOrderSubmit: true },
+		);
+		expect((invoiceService.submitInvoice as any).mock.calls[1][0].payment_type).toBeUndefined();
+	});
+
 	it("blocks Sales Order deposits when a collection delivery charge is selected", async () => {
 		const invoiceDoc = ref<any>({
 			name: "SO-0004",

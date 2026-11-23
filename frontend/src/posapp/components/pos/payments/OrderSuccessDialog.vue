@@ -13,7 +13,7 @@
 						{{ noPayment ? "mdi-cart-check" : "mdi-check-circle" }}
 					</v-icon>
 					<h2 class="order-success__title">
-						{{ noPayment ? __("Order Placed") : __("Payment Successful") }}
+						{{ dialogTitle }}
 					</h2>
 				</div>
 
@@ -56,6 +56,30 @@
 						</div>
 					</div>
 
+					<!-- Pro forma: the email goes out right after the order is saved. -->
+					<div
+						v-if="isProforma && orders.length === 1"
+						class="order-success__proforma"
+						data-testid="proforma-status"
+					>
+						<div v-if="proformaBusy" class="order-success__window-pending">
+							<v-progress-circular indeterminate size="18" width="2" color="primary" />
+							<span>{{ __("Sending the pro forma…") }}</span>
+						</div>
+						<v-alert
+							v-else-if="proformaOutcome"
+							:type="proformaOutcome.level"
+							variant="tonal"
+							density="compact"
+							data-testid="proforma-outcome"
+						>
+							{{ proformaOutcome.message }}
+						</v-alert>
+						<div v-if="proformaLink" class="order-success__proforma-link">
+							<a :href="proformaLink" target="_blank" rel="noopener">{{ __("Payment link") }}</a>
+						</div>
+					</div>
+
 					<v-btn
 						v-if="orders.length > 1"
 						color="primary"
@@ -75,7 +99,18 @@
 					{{ __("Done") }}
 				</v-btn>
 				<v-btn
-					v-if="orders.length === 1"
+					v-if="isProforma && orders.length === 1 && proformaOutcome?.canRetry"
+					color="primary"
+					variant="flat"
+					prepend-icon="mdi-email-sync-outline"
+					:disabled="proformaBusy"
+					data-testid="proforma-retry"
+					@click="runProforma(true)"
+				>
+					{{ proformaOutcome.state === "failed" ? __("Retry") : __("Resend Pro Forma") }}
+				</v-btn>
+				<v-btn
+					v-if="orders.length === 1 && !isProforma"
 					:color="noPayment ? 'default' : 'primary'"
 					:variant="noPayment ? 'tonal' : 'flat'"
 					prepend-icon="mdi-printer"
@@ -84,7 +119,7 @@
 					{{ __("Print Receipt") }}
 				</v-btn>
 				<v-btn
-					v-if="noPayment && orders.length === 1 && !isPartner"
+					v-if="noPayment && orders.length === 1 && !isPartner && !paymentType"
 					color="primary"
 					variant="flat"
 					prepend-icon="mdi-credit-card-outline"
@@ -100,10 +135,16 @@
 <script setup>
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useUIStore } from "../../../stores/uiStore.js";
+import { useUIStore } from "../../../stores/uiStore";
 import { useFormat } from "../../../format";
 import { openReceiptPdf } from "../../../utils/receiptPdfUrl";
 import { isPartnerMode } from "../../../utils/partnerMode";
+import {
+	PAYMENT_TYPE_ON_ACCOUNT,
+	PAYMENT_TYPE_PROFORMA,
+	describeProformaResult,
+	sendProforma,
+} from "../../../services/proformaService";
 
 defineOptions({
 	name: "OrderSuccessDialog",
@@ -114,6 +155,33 @@ const __ = window.__ || ((text) => text);
 const uiStore = useUIStore();
 const router = useRouter();
 const { formatCurrency, currencySymbol } = useFormat();
+
+// "On Account" / "Proforma": which payment type this order was submitted with (or "").
+const paymentType = computed(() => String(uiStore.orderSuccess?.paymentType || ""));
+const isProforma = computed(() => paymentType.value === PAYMENT_TYPE_PROFORMA);
+const dialogTitle = computed(() => {
+	if (isProforma.value) return __("Pro Forma Order Placed");
+	if (paymentType.value === PAYMENT_TYPE_ON_ACCOUNT) return __("Order Placed On Account");
+	return noPayment.value ? __("Order Placed") : __("Payment Successful");
+});
+
+const proformaBusy = ref(false);
+const proformaOutcome = ref(null);
+const proformaLink = ref("");
+
+// The order is already saved and on hold when this runs, so a failure only means "not sent yet".
+const runProforma = async (resend = false) => {
+	const name = orderNames.value[0];
+	if (!name || proformaBusy.value) return;
+	proformaBusy.value = true;
+	try {
+		const result = await sendProforma(name, { resend });
+		proformaLink.value = result.link || "";
+		proformaOutcome.value = describeProformaResult(result, __);
+	} finally {
+		proformaBusy.value = false;
+	}
+};
 
 // "Submit without payment": reframe the dialog as "Order Placed" and offer a
 // shortcut into Sales Order Management with the payment-link button flashing.
@@ -219,11 +287,16 @@ watch(
 	orderNames,
 	(names) => {
 		clearTimers();
+		proformaOutcome.value = null;
+		proformaLink.value = "";
 		Object.keys(summaries).forEach((key) => delete summaries[key]);
 		names.forEach((name) => {
 			summaries[name] = { state: "loading" };
 			fetchSummary(name);
 		});
+		if (isProforma.value && names.length === 1) {
+			void runProforma(false);
+		}
 	},
 	{ immediate: true },
 );
@@ -243,6 +316,15 @@ onBeforeUnmount(clearTimers);
 	font-size: 1.5rem;
 	font-weight: 600;
 	margin: 0;
+}
+
+.order-success__proforma {
+	margin-top: 14px;
+}
+
+.order-success__proforma-link {
+	margin-top: 8px;
+	font-size: 0.9rem;
 }
 
 .order-success__order + .order-success__order {

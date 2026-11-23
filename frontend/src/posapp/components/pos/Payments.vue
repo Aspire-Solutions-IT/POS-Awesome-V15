@@ -381,9 +381,13 @@
 				:highlightSubmit="highlightSubmit"
 				:compact="dialogMode"
 				:show-submit-without-payment="showSubmitWithoutPayment"
+				:show-on-account="showOnAccount"
+				:show-proforma="showProforma"
 				@submit="submit"
 				@submit-and-print="submit(undefined, false, true)"
 				@submit-without-payment="submitWithoutPaymentOrder"
+				@submit-on-account="submitOnAccountOrder"
+				@submit-proforma="submitProformaOrder"
 				@cancel="back_to_invoice"
 			/>
 		</div>
@@ -464,6 +468,7 @@ import {
 	storedSupplyByRowId,
 } from "../../utils/suggestedSplitGroups";
 import api from "../../services/api";
+import { PAYMENT_TYPE_ON_ACCOUNT, PAYMENT_TYPE_PROFORMA } from "../../services/proformaService";
 
 // Components
 import PaymentSummary from "./payments/PaymentSummary.vue";
@@ -1121,6 +1126,21 @@ const showSubmitWithoutPayment = computed(
 	() =>
 		isPartner ||
 		(invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order)),
+);
+
+// On Account and Pro Forma are Sales Order submit options switched on per POS Profile.
+// Pro Forma is the Sales Partner flow only (the server refuses it for staff).
+const salesOrderPaymentTypeAllowed = computed(
+	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
+);
+const showOnAccount = computed(
+	() => salesOrderPaymentTypeAllowed.value && Boolean(Number(pos_profile.value?.posa_allow_on_account || 0)),
+);
+const showProforma = computed(
+	() =>
+		isPartner &&
+		salesOrderPaymentTypeAllowed.value &&
+		Boolean(Number(pos_profile.value?.posa_allow_proforma || 0)),
 );
 
 const getWriteOffLimit = (profile) => {
@@ -2381,6 +2401,34 @@ const submitWithoutPaymentOrder = async () => {
 	});
 };
 
+// Both types are saved by the server in one step (and the pro forma email follows it), so they
+// can't be queued in the offline outbox.
+const submitWithPaymentType = async (paymentType) => {
+	if (isOffline()) {
+		toastStore.show({
+			title: __("{0} orders need an online connection", [
+				paymentType === PAYMENT_TYPE_PROFORMA ? __("Pro Forma") : __("On Account"),
+			]),
+			color: "warning",
+		});
+		return;
+	}
+	if (isWizardFlow.value && currentStep.value === 1) {
+		if (canProceedToPayment.value) {
+			currentStep.value = 2;
+		}
+		return;
+	}
+	await submitInvoiceWrapper(false, undefined, {
+		allowNoPaymentOrderSubmit: true,
+		paymentType,
+	});
+};
+
+const submitOnAccountOrder = () => submitWithPaymentType(PAYMENT_TYPE_ON_ACCOUNT);
+// The server puts a pro forma order on hold itself, so no forceHoldOrder here.
+const submitProformaOrder = () => submitWithPaymentType(PAYMENT_TYPE_PROFORMA);
+
 const shouldConfirmMissingOrderAddress = (options = {}) => {
 	if (options.skipMissingAddressConfirmation) {
 		return false;
@@ -2801,6 +2849,7 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 						// "Submit without payment" -> the dialog reads "Order Placed" and
 						// offers a shortcut into Sales Order Management to send a payment link.
 						noPayment: Boolean(options.allowNoPaymentOrderSubmit),
+						paymentType: options.paymentType || "",
 					});
 				}
 			},
@@ -2813,6 +2862,7 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 			...callbackOverrides,
 		}, {
 			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),
+			paymentType: options.paymentType || undefined,
 			yellowTicketPhotos,
 		});
 		if (yellowTicketPhotos) {

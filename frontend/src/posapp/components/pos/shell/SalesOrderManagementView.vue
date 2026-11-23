@@ -134,6 +134,9 @@
 									<strong>{{ order.customer_name || order.customer }}</strong>
 									<span>{{ order.status || __("Unknown") }}</span>
 								</div>
+								<div v-if="paymentTypeLabel(order)" class="order-list-item__meta">
+									<span data-testid="order-payment-type">{{ paymentTypeLabel(order) }}</span>
+								</div>
 								<div class="order-list-item__meta">
 									<span>{{ order.name }}</span>
 									<span>{{ formatDate(order.transaction_date) }}</span>
@@ -237,7 +240,27 @@
 							</v-menu>
 							<template v-if="isSplitLayout">
 								<v-btn
-									v-if="selectedOrder && !isPartner"
+									v-if="canResendProforma"
+									color="primary"
+									variant="tonal"
+									prepend-icon="mdi-email-sync-outline"
+									:loading="proformaLoading"
+									:disabled="proformaLoading"
+									data-testid="resend-proforma"
+									@click="resendProforma"
+								>
+									{{ __("Resend Pro Forma") }}
+								</v-btn>
+								<v-chip
+									v-if="selectedOrder && paymentTypeLabel(selectedOrder)"
+									size="small"
+									variant="tonal"
+									data-testid="selected-payment-type"
+								>
+									{{ paymentTypeLabel(selectedOrder) }}
+								</v-chip>
+								<v-btn
+									v-if="selectedOrder && !isPartner && !isProformaOrder"
 									color="primary"
 									variant="tonal"
 									prepend-icon="mdi-email-outline"
@@ -276,7 +299,15 @@
 								</template>
 								<v-list density="compact">
 									<v-list-item
-										v-if="!isPartner"
+										v-if="canResendProforma"
+										prepend-icon="mdi-email-sync-outline"
+										:title="__('Resend Pro Forma')"
+										:disabled="proformaLoading"
+										data-testid="resend-proforma-menu"
+										@click="resendProforma"
+									/>
+									<v-list-item
+										v-if="!isPartner && !isProformaOrder"
 										prepend-icon="mdi-email-outline"
 										:title="__('Email Receipt')"
 										:disabled="receiptLoading"
@@ -1268,6 +1299,13 @@ import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
 import RaiseClaimDialog from "../claims/RaiseClaimDialog.vue";
 import { isPartnerMode } from "../../../utils/partnerMode";
+import { isOffline } from "../../../../offline/index";
+import {
+	PAYMENT_TYPE_ON_ACCOUNT,
+	PAYMENT_TYPE_PROFORMA,
+	describeProformaResult,
+	sendProforma,
+} from "../../../services/proformaService";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { isValidOptionalEmail } from "../../../utils/emailValidation";
@@ -1287,6 +1325,8 @@ type ManagedSalesOrderListRow = {
 	prefered_earliest_delivery_date?: string | null;
 	customer_ref?: string | null;
 	customer_order_ref?: string | null;
+	/** "", "Paid", "On Account" or "Proforma" (older servers omit it). */
+	posa_payment_type?: string | null;
 	currency?: string | null;
 	pos_profile?: string | null;
 	grand_total?: number | null;
@@ -1874,6 +1914,46 @@ const openStreamLink = (name = selectedStreamPickList.value) => {
 // A Sales Partner places and edits orders but never takes payment or emails receipts:
 // Agile invoices the order.
 const isPartner = isPartnerMode();
+
+// Pro forma: partners resend their own orders' pro forma; the manual receipt is refused
+// by the server for these orders, so it is not offered.
+const isProformaOrder = computed(
+	() => String(selectedOrder.value?.posa_payment_type || "").trim() === PAYMENT_TYPE_PROFORMA,
+);
+const canResendProforma = computed(
+	() =>
+		isPartner &&
+		isProformaOrder.value &&
+		!["Cancelled", "Closed", "Completed", "Draft"].includes(String(selectedOrder.value?.status || "")),
+);
+const paymentTypeLabel = (order: { posa_payment_type?: string | null } | null | undefined) => {
+	const type = String(order?.posa_payment_type || "").trim();
+	if (type === PAYMENT_TYPE_PROFORMA) return __("Pro Forma");
+	if (type === PAYMENT_TYPE_ON_ACCOUNT) return __("On Account");
+	return "";
+};
+const proformaLoading = ref(false);
+const resendProforma = async () => {
+	const order = selectedOrder.value;
+	if (!order || proformaLoading.value) return;
+	if (isOffline()) {
+		toastStore.show({ title: __("Resending a pro forma needs an online connection"), color: "warning" });
+		return;
+	}
+	proformaLoading.value = true;
+	try {
+		const result = await sendProforma(order.name, { resend: true });
+		const outcome = describeProformaResult(result, __);
+		toastStore.show({
+			title: outcome.state === "sent" ? __("Pro forma sent") : __("Pro forma not fully sent"),
+			detail: outcome.message,
+			color: outcome.level,
+		});
+	} finally {
+		proformaLoading.value = false;
+	}
+};
+
 const hasTakePaymentOptions = computed(
 	() =>
 		!isPartner &&

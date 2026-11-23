@@ -62,6 +62,8 @@ export interface SubmissionCallbacks {
 
 export interface SubmissionControlOptions {
 	allowNoPaymentOrderSubmit?: boolean;
+	/** "On Account" or "Proforma"; validated again by the server against the POS Profile. */
+	paymentType?: string;
 	/** Photos for Yellow Ticket lines; linked to the sale on the server after submit. */
 	yellowTicketPhotos?: Record<string, any>;
 }
@@ -720,6 +722,7 @@ export function usePaymentSubmission(options: PaymentSubmissionOptions) {
 				salesOrderCheckout && controlOptions.allowNoPaymentOrderSubmit,
 			),
 			yellow_ticket_photos: controlOptions.yellowTicketPhotos || undefined,
+			payment_type: salesOrderCheckout ? controlOptions.paymentType || undefined : undefined,
 			sales_order_settlement_state: salesOrderCheckout
 				? (
 					controlOptions.allowNoPaymentOrderSubmit &&
