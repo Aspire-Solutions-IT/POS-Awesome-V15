@@ -2,6 +2,13 @@
 
 All notable changes.
 
+Release 15.32.0 — November 23, 2026
+### ✨ Features
+- Sales Order Management: orders with Stainguard cover can be edited in POS again until Staingard has given the warranty a delivery date. Item changes go through the normal order update, so the complete warranty is re-sent to Staingard. Once the warranty has a delivery date (or every item in the order's split has been delivered) the whole order, and every other order in the same split, is locked: the order shows the warranty reference and delivery date and asks the cashier to contact Customer Services, and the server refuses item changes
+- Sales Order Management: the Stainguard cover line is shown as "Stainguard cover" and is read only. It cannot be edited, removed or added by hand, including from Add Items, and the server rejects those changes too
+- Sales Order Management: when an item change moves the value of what is covered into another Stainguard band, the cover line is swapped for the item of the new band at its price. The payment dialog shows the new cover before any payment is taken and the premium is included in the amount due; after saving, the order shows the swapped line and a note saying which cover it moved to. A change that leaves no cover band covering the new value is refused with a clear message. If the cover is held on another order of the same split, the message names that order
+_Total: 3 changes_
+
 Release 15.31.1 — November 16, 2026
 ### 🐞 Bug Fixes
 - Sales Order Management: orders with Stainguard cover (including any order in the same split as one) are now locked against editing in POS. The order shows "This order has Stainguard cover and cannot be edited in POS. Please contact Customer Services." and item changes are rejected on the server too, so the warranty held by Stainguard can no longer drift from the order

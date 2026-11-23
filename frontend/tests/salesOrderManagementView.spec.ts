@@ -37,6 +37,16 @@ vi.mock("../src/posapp/components/pos/items/ItemsSelector.vue", async () => {
 	};
 });
 
+// The view sizes its layout with Vuetify's display composable, which needs the Vuetify
+// plugin installed. Mount it as a wide desktop (list and detail side by side).
+vi.mock("vuetify", async (importOriginal) => {
+	const { ref } = await import("vue");
+	return {
+		...(await importOriginal<Record<string, unknown>>()),
+		useDisplay: () => ({ lgAndUp: ref(true), xs: ref(false) }),
+	};
+});
+
 vi.mock("../src/posapp/stores/toastStore.js", () => ({
 	useToastStore: () => ({
 		show: vi.fn(),
@@ -996,5 +1006,233 @@ describe("SalesOrderManagementView", () => {
 		expect(detailCall?.[1]).toMatchObject({ sales_order: "SO-1" });
 		expect(somRouterReplace).toHaveBeenCalledWith({ path: "/sales-orders", query: {} });
 		expect(wrapper.text()).toContain("SO-1");
+	});
+
+	describe("Stainguard cover", () => {
+		const coverRow = {
+			name: "SOI-COVER",
+			item_code: "STG-A",
+			item_name: "Stainguard Cover A",
+			description: "Cover",
+			warehouse: "Main - TC",
+			uom: "Nos",
+			qty: 1,
+			picked_qty: 0,
+			delivered_qty: 0,
+			rate: 20,
+			conversion_factor: 1,
+			delivery_date: "2026-07-30",
+			is_locked: true,
+			lock_reason: "Stainguard cover is set automatically from the order's value, so it cannot be edited or removed.",
+			is_stainguard_cover: true,
+			linked_pick_lists: [],
+		};
+		const coverDetail = { ...baseDetail, items: [baseDetail.items[1], coverRow] };
+		const swap = {
+			from_item: "STG-A",
+			to_item: "STG-B",
+			to_item_name: "Stainguard Cover B",
+			rate: 35,
+			covered_amount: 600,
+			order: "SO-1",
+			same_order: true,
+		};
+
+		beforeEach(() => {
+			// The view formats these messages itself, so the stub has to fill in the placeholders.
+			vi.stubGlobal("__", (value: string, args: unknown[] = []) =>
+				value.replace(/\{(\d+)\}/g, (_match, index) => String(args[Number(index)] ?? "")),
+			);
+		});
+
+		const detailRows = (wrapper: any) => wrapper.findAll("tbody tr");
+		const rowFor = (wrapper: any, code: string) =>
+			detailRows(wrapper).find((row: any) => row.text().includes(code))!;
+		const qtyInput = (row: any) =>
+			row.findAll("input.items-input").find((input: any) => input.attributes("min") === "0.01");
+		const removeButton = (row: any) =>
+			row.findAll("button").find((button: any) => button.text().trim() === "Remove");
+
+		const mountCoverOrder = async (detail: Record<string, any> = coverDetail, extra?: any) => {
+			mockApi((method, args) => {
+				if (method.endsWith("get_managed_sales_order")) return detail;
+				return extra?.(method, args);
+			});
+			const wrapper = mountView();
+			await flushPromises();
+			return wrapper;
+		};
+
+		it("shows the cover line read only while the goods stay editable", async () => {
+			const wrapper = await mountCoverOrder();
+
+			const cover = rowFor(wrapper, "STG-A");
+			expect(cover.text()).toContain("Stainguard cover");
+			expect(cover.text()).toContain("cannot be edited or removed");
+			expect(qtyInput(cover).attributes("readonly")).toBeDefined();
+			expect(removeButton(cover).attributes("disabled")).toBeDefined();
+
+			const goods = rowFor(wrapper, "ITEM-OPEN");
+			expect(qtyInput(goods).attributes("readonly")).toBeUndefined();
+			expect(removeButton(goods).attributes("disabled")).toBeUndefined();
+		});
+
+		it("keeps the cover read only even if the server did not lock the row", async () => {
+			const wrapper = await mountCoverOrder({
+				...coverDetail,
+				items: [baseDetail.items[1], { ...coverRow, is_locked: false }],
+			});
+
+			const cover = rowFor(wrapper, "STG-A");
+			expect(qtyInput(cover).attributes("readonly")).toBeDefined();
+			expect(removeButton(cover).attributes("disabled")).toBeDefined();
+		});
+
+		it("sends the cover row back unchanged when the goods are edited", async () => {
+			const wrapper = await mountCoverOrder(coverDetail, (method) => {
+				if (method.endsWith("update_managed_sales_order_items")) return coverDetail;
+				return undefined;
+			});
+
+			await qtyInput(rowFor(wrapper, "ITEM-OPEN")).setValue("3");
+			await findSaveButton(wrapper)!.trigger("click");
+			await flushPromises();
+
+			const saved = (api.call as any).mock.calls.find(
+				(call: any[]) => call[0] === "posawesome.posawesome.api.sales_orders.update_managed_sales_order_items",
+			);
+			expect(saved[1].data.items).toEqual([
+				expect.objectContaining({ docname: "SOI-OPEN", qty: 3 }),
+				expect.objectContaining({ docname: "SOI-COVER", item_code: "STG-A", qty: 1 }),
+			]);
+		});
+
+		it("explains the lock and disables every control once the warranty has a delivery date", async () => {
+			const reason =
+				"This order is covered by Stainguard warranty SGR-1 (delivery date 2026-11-20), so it can no longer be edited in POS. Please contact Customer Services.";
+			const wrapper = await mountCoverOrder({ ...coverDetail, order_level_lock: { is_locked: true, reason } });
+
+			expect(wrapper.text()).toContain("delivery date 2026-11-20");
+			expect(wrapper.text()).toContain("Customer Services");
+			const addButton = wrapper.findAll("button").find((b: any) => b.text().trim() === "Add Items");
+			expect(addButton!.attributes("disabled")).toBeDefined();
+			expect(qtyInput(rowFor(wrapper, "ITEM-OPEN")).attributes("readonly")).toBeDefined();
+			expect(removeButton(rowFor(wrapper, "ITEM-OPEN")).attributes("disabled")).toBeDefined();
+		});
+
+		it("shows the cover the order will move to before the payment is taken", async () => {
+			const wrapper = await mountCoverOrder(coverDetail, (method) => {
+				if (method.endsWith("preview_managed_sales_order_items")) {
+					return { ...increasePreview, stainguard_swap: swap };
+				}
+				return undefined;
+			});
+
+			await qtyInput(rowFor(wrapper, "ITEM-OPEN")).setValue("8");
+			await findSaveButton(wrapper)!.trigger("click");
+			await flushPromises();
+
+			expect(wrapper.text()).toContain("Payment Required");
+			const notice = wrapper.find("[data-test='stainguard-swap-preview']");
+			expect(notice.exists()).toBe(true);
+			expect(notice.text()).toContain("changes from STG-A to Stainguard Cover B");
+			expect(notice.text()).toContain("35");
+		});
+
+		it("shows the swapped line and says so after a save that changed the band", async () => {
+			const swapped = {
+				...coverDetail,
+				items: [
+					baseDetail.items[1],
+					{ ...coverRow, name: "SOI-COVER-B", item_code: "STG-B", item_name: "Stainguard Cover B", rate: 35 },
+				],
+				stainguard_swap: swap,
+			};
+			let saved = false;
+			mockApi((method) => {
+				// What the server holds once the save has landed.
+				if (method.endsWith("get_managed_sales_order")) return saved ? swapped : coverDetail;
+				if (method.endsWith("update_managed_sales_order_items")) {
+					saved = true;
+					return swapped;
+				}
+				return undefined;
+			});
+			const wrapper = mountView();
+			await flushPromises();
+
+			await qtyInput(rowFor(wrapper, "ITEM-OPEN")).setValue("1");
+			await findSaveButton(wrapper)!.trigger("click");
+			await flushPromises();
+
+			const itemsTable = wrapper.find("tbody").text();
+			expect(itemsTable).toContain("STG-B");
+			expect(itemsTable).not.toContain("STG-A");
+			const notice = wrapper.find("[data-test='stainguard-swap-notice']");
+			expect(notice.text()).toContain("changes from STG-A to Stainguard Cover B");
+		});
+
+		it("says nothing about the cover when an edit keeps the band", async () => {
+			const wrapper = await mountCoverOrder(coverDetail, (method) => {
+				if (method.endsWith("update_managed_sales_order_items")) return coverDetail;
+				return undefined;
+			});
+
+			await qtyInput(rowFor(wrapper, "ITEM-OPEN")).setValue("3");
+			await findSaveButton(wrapper)!.trigger("click");
+			await flushPromises();
+
+			expect(wrapper.find("[data-test='stainguard-swap-notice']").exists()).toBe(false);
+		});
+
+		it("names the order holding the cover when it sits on another order of the split", async () => {
+			const wrapper = await mountCoverOrder(coverDetail, (method) => {
+				if (method.endsWith("preview_managed_sales_order_items")) {
+					return { ...increasePreview, stainguard_swap: { ...swap, same_order: false, order: "SO-OWNER" } };
+				}
+				return undefined;
+			});
+
+			await qtyInput(rowFor(wrapper, "ITEM-OPEN")).setValue("8");
+			await findSaveButton(wrapper)!.trigger("click");
+			await flushPromises();
+
+			expect(wrapper.find("[data-test='stainguard-swap-preview']").text()).toContain("SO-OWNER");
+		});
+
+		it("shows the server's refusal and saves nothing when no cover fits the new value", async () => {
+			const refusal =
+				"After this change the order would be worth 2000.00, which no Stainguard cover covers, so it cannot be saved.";
+			const wrapper = await mountCoverOrder(coverDetail, (method) => {
+				if (method.endsWith("preview_managed_sales_order_items")) throw { message: refusal };
+				return undefined;
+			});
+
+			await qtyInput(rowFor(wrapper, "ITEM-OPEN")).setValue("20");
+			await findSaveButton(wrapper)!.trigger("click");
+			await flushPromises();
+
+			expect(wrapper.text()).toContain("no Stainguard cover covers");
+			const saved = (api.call as any).mock.calls.find((call: any[]) =>
+				call[0].endsWith("update_managed_sales_order_items"),
+			);
+			expect(saved).toBeFalsy();
+			expect(wrapper.text()).not.toContain("Payment Required");
+		});
+
+		it("shows the server's message when a cover is picked as a new item", async () => {
+			selectorItem.current = { item_code: "STG-B", stock_uom: "Nos" };
+			const wrapper = await mountCoverOrder(coverDetail, (method) => {
+				if (method.endsWith("get_managed_sales_order_new_item_details")) {
+					throw { message: "Stainguard cover is set automatically and cannot be added in POS." };
+				}
+				return undefined;
+			});
+			await addItemThroughSelector(wrapper);
+			await flushPromises();
+
+			expect(wrapper.text()).toContain("cannot be added in POS");
+			expect(wrapper.text()).not.toContain("New");
+		});
 	});
 });
