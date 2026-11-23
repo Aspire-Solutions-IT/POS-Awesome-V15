@@ -763,22 +763,25 @@ def _search_managed_sales_order_names(search_term, base_filters):
     return names
 
 
-def _is_managed_sales_order_doc(doc):
+def _is_managed_sales_order_doc(doc, allow_proforma=False):
     if not doc or cstr(getattr(doc, "doctype", "")).strip() != "Sales Order":
         return False
     if cint(getattr(doc, "docstatus", 0)) != 1:
         return False
     # Partner orders are Agile-side, so never RFS; the request gate has already
-    # confined a partner to their own customers' orders.
-    if cint(getattr(doc, "rfs_order", 0)) != 1 and not is_partner_user():
+    # confined a partner to their own customers' orders. Staff may also reach a Proforma
+    # order (a partner's, so not RFS) where the caller says so: only to send or resend its
+    # pro forma payment link.
+    is_proforma = cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA
+    if cint(getattr(doc, "rfs_order", 0)) != 1 and not is_partner_user() and not (allow_proforma and is_proforma):
         return False
     if cint(getattr(doc, "is_pos", 0)) != 1:
         return False
     return cstr(getattr(doc, "customer", "")).strip() not in MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS
 
 
-def _validate_managed_sales_order_doc(doc):
-    if not _is_managed_sales_order_doc(doc):
+def _validate_managed_sales_order_doc(doc, allow_proforma=False):
+    if not _is_managed_sales_order_doc(doc, allow_proforma=allow_proforma):
         frappe.throw(_("Sales Order is not available in POS management."))
     _require_partner_scope_for_order(doc)
 
@@ -2337,6 +2340,9 @@ def _send_item_change_payment_link(doc, amount_due, recipient, payment, credit_a
         send_email=send_email,
         # Authorised by this whitelisted layer, as in create_managed_sales_order_payment_link.
         check_permission=False,
+        # The item changes above must roll back with a failure here, so nothing in the link
+        # code may commit them half-applied.
+        atomic=True,
     )
 
     doc.reload()
@@ -2838,7 +2844,7 @@ def pay_managed_sales_order_balance(
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_managed_sales_order_payment_link(sales_order, amount=None, email=None, send_email=1):
     """Create a Revolut hosted-checkout payment link for this order's outstanding balance
     and email it to the customer.
@@ -2847,13 +2853,19 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
     only creates and sends the link. The Payment Entry is created later, when the
     customer actually pays, by customer_due_dates' Revolut webhook handler. See
     customer_due_dates.revolut.payment_link.create_payment_link for the rest of that flow.
+
+    POST only: it creates a Revolut order and queues an email, and a GET is rolled back by
+    Frappe, which would lose the local record of an order that stays payable.
+
+    Staff may send and resend the pro forma link for ANY Proforma order (a partner's
+    included); a partner only for their own customers' orders (_validate_managed_sales_order_doc).
     """
     sales_order_name = cstr(sales_order or "").strip()
     if not sales_order_name:
         frappe.throw(_("Sales Order name is required."))
 
     doc = frappe.get_doc("Sales Order", sales_order_name)
-    _validate_managed_sales_order_doc(doc)
+    _validate_managed_sales_order_doc(doc, allow_proforma=True)
 
     order_total = flt(getattr(doc, "grand_total", None) or 0)
     advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
@@ -2870,9 +2882,10 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
     is_proforma = cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA
     if is_proforma:
         # A pro forma order's email follows the pro forma policy (its recipient chain and
-        # the dev-site redirect, applied inside create_payment_link); only an address the
-        # operator typed overrides the chain.
-        recipient = validate_optional_email(email)
+        # the dev-site redirect, applied inside create_payment_link). The address the
+        # dialog submits is the receipt address it was prefilled with, so a browser-supplied
+        # address is ignored for a pro forma: the server resolves the recipient.
+        recipient = None
     else:
         # Same resolution the receipt resend uses, so the link defaults to wherever this
         # order's paperwork already goes rather than asking the till operator to know it.
@@ -2908,7 +2921,7 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_managed_sales_order_payment_link(sales_order):
     """Cancel this order's pending Revolut payment link, on Revolut's side and ours.
     Refuses if Revolut already completed it -- create_managed_sales_order_payment_link
@@ -3869,23 +3882,24 @@ def _plain_error(exc):
 
 
 @frappe.whitelist(methods=["POST"])
-def send_proforma(sales_order):
+def send_proforma(sales_order, resend=0):
     """Create the payment link for a submitted Proforma order and email the customer the
     pro forma PDF with that link.
 
-    Runs after the submit has committed (never inside it: a rollback after the Revolut
-    call would orphan a Revolut order). The row lock makes a double click or a retry wait
-    for the first call, and the link reuse in customer_due_dates makes the retry return
-    the same link, so there is never a second Payment Request. A failure leaves the order
-    submitted and On Hold and is returned (and logged) rather than raised, so the POS can
-    say "order saved, pro forma not sent" and offer Retry.
+    Runs after the submit has committed (never inside it). No row lock is held here: the
+    customer_due_dates function serialises on the Sales Order itself, never across its
+    Revolut calls, and commits once the Revolut order is recorded, so the link survives
+    whatever happens to the rest of the request. A retry reuses the link and, unless
+    ``resend`` is set, sends nothing more when the email for it is already queued or sent
+    (an email that ended in an Error is sent again). A failure leaves the order submitted
+    and On Hold and is returned (and logged) rather than raised, so the POS can say "order
+    saved, pro forma not sent" and offer Retry.
     """
     sales_order_name = cstr(sales_order or "").strip()
     if not sales_order_name:
         frappe.throw(_("Sales Order name is required."))
 
-    # Held until this request commits.
-    if not frappe.db.get_value("Sales Order", sales_order_name, "name", for_update=True):
+    if not frappe.db.get_value("Sales Order", sales_order_name, "name"):
         frappe.throw(_("Sales Order {0} was not found.").format(sales_order_name), frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Sales Order", sales_order_name)
@@ -3901,8 +3915,6 @@ def send_proforma(sales_order):
 
     from customer_due_dates.revolut.payment_link import _create_payment_link, resolve_proforma_recipient
 
-    savepoint = "posa_send_proforma"
-    frappe.db.savepoint(savepoint)
     try:
         recipient = resolve_proforma_recipient(
             doc.customer, doc.get("customer_address"), doc.get("shipping_address_name")
@@ -3915,9 +3927,12 @@ def send_proforma(sales_order):
             # Authorised above, as in create_managed_sales_order_payment_link.
             check_permission=False,
             proforma=True,
+            resend=bool(cint(resend)),
         )
     except Exception as exc:
-        frappe.db.rollback(save_point=savepoint)
+        # Only what happened since the link code's last commit is undone; a Revolut order it
+        # created is cancelled by that code before it re-raises.
+        frappe.db.rollback()
         error = _plain_error(exc)
         frappe.clear_messages()
         frappe.log_error(

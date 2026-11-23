@@ -913,6 +913,8 @@
 						<v-text-field
 							v-model="revolutForm.email"
 							:label="__('Send To')"
+							:placeholder="isProformaOrder ? __('The customer\'s pro forma email address') : ''"
+							:disabled="isProformaOrder"
 							density="compact"
 							hide-details="auto"
 							type="email"
@@ -2201,7 +2203,11 @@ const openRevolutDialog = () => {
 	revolutError.value = "";
 	revolutResult.value = null;
 	revolutForm.amount = String(selectedOrder.value.outstanding_balance || "");
-	revolutForm.email = String(selectedOrder.value.receipt_email?.recipient || "");
+	// A pro forma goes to the recipient the server resolves for the customer (Invoice Email,
+	// then address emails); the receipt address is never submitted as an override for it.
+	revolutForm.email = isProformaOrder.value
+		? ""
+		: String(selectedOrder.value.receipt_email?.recipient || "");
 	revolutForm.sendEmail = true;
 	revolutDialogOpen.value = true;
 };
@@ -2230,12 +2236,15 @@ const submitRevolutPaymentLink = async () => {
 			payment_request?: string | null;
 			checkout_url?: string | null;
 			already_paid?: boolean;
+			email_sent?: boolean;
+			attachment_ok?: boolean;
+			email_error?: string;
 		}>(
 			"posawesome.posawesome.api.sales_orders.create_managed_sales_order_payment_link",
 			{
 				sales_order: selectedOrder.value.name,
 				amount: revolutForm.amount,
-				email: revolutForm.sendEmail ? revolutForm.email : null,
+				email: revolutForm.sendEmail && !isProformaOrder.value ? revolutForm.email : null,
 				send_email: revolutForm.sendEmail ? 1 : 0,
 			},
 			{ freeze: true, freeze_message: __("Creating payment link...") },
@@ -2262,6 +2271,17 @@ const submitRevolutPaymentLink = async () => {
 			checkout_url: message?.checkout_url,
 		};
 
+		if (revolutForm.sendEmail && message?.email_sent === false) {
+			// The link exists but nothing was emailed (a pro forma whose PDF failed to render
+			// queues nothing): say so, the dialog's resend sends the whole thing again.
+			toastStore.show({
+				title: message.email_error
+					? __("Payment link created, but the email was not sent: {0}", [message.email_error])
+					: __("Payment link created, but the email was not sent."),
+				color: "warning",
+			});
+			return;
+		}
 		toastStore.show({
 			title: revolutForm.sendEmail
 				? __("Payment link created and emailed to the customer.")

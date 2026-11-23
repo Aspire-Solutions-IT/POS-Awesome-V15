@@ -2,6 +2,12 @@
 
 All notable changes.
 
+Release 15.36.0 — November 23, 2026
+### ✨ Features
+- The POS can submit orders as On Account or Pro Forma when the POS Profile allows it. Sales partners can choose Pro Forma; the pro forma PDF and its payment link are emailed to the customer's pro forma address. Staff can send and resend the pro forma link for any Pro Forma order, and the address shown in the payment link dialog is no longer used for a pro forma (the server picks the customer's pro forma address).
+- If a pro forma PDF cannot be made, no email is sent and the cashier or partner is told; sending again sends the whole pro forma.
+_Total: 2 changes_
+
 Release 15.35.0 — November 19, 2026
 ### ✨ Features
 - The default shipping method in the POS is now picked per audience: partners and non-partners each get the delivery charge set in the Delivery Charges "Default For" dropdown. Only a charge that is enabled, available to that audience and offered for the customer and POS profile is preselected. This needs customer_due_dates 2.40.0; without it the POS keeps the old default checkbox behaviour (AP-1). With Auto Set Delivery Charges on, a new order now gets that default charge instead of simply the first one (the first one is still used when no default is set). The POS is no longer sent the Default For value, and the old checkbox is also used if customer_due_dates is old or its Default For field is missing. If customer_due_dates cannot be loaded, sales partners are still only offered Agile only and Both charges.

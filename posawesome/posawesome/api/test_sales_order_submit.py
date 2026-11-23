@@ -3373,6 +3373,7 @@ class TestSendProforma(TestCase):
         def get_value(doctype, name, fieldname=None, *args, **kwargs):
             if kwargs.get("for_update"):
                 events.append(("lock", doctype, name, fieldname))
+            if fieldname == "name":
                 return name if locked else None
             return None
 
@@ -3425,13 +3426,34 @@ class TestSendProforma(TestCase):
                 "error": "",
             },
         )
-        self.assertEqual(events[0], ("lock", "Sales Order", "SO-PF-0001", "name"))
+        # No row lock is taken here: the link code locks the order itself and never across HTTP.
+        self.assertEqual([e for e in events if e[0] == "lock"], [])
         args, kwargs = link.calls[0]
         self.assertEqual(args, ("Sales Order", "SO-PF-0001"))
         self.assertEqual(kwargs["proforma"], True)
         self.assertEqual(kwargs["send_email"], True)
         self.assertEqual(kwargs["check_permission"], False)
         self.assertEqual(kwargs["email_to"], "buyer@example.com")
+        self.assertEqual(kwargs["resend"], False)
+
+    def test_resend_is_explicit(self):
+        _result, _events, link = self._send(link=None)
+        self.assertEqual(link.calls[0][1]["resend"], False)
+        module = self._link_module()
+        doc = _ProformaOrder()
+        modules = {
+            "customer_due_dates.revolut": types.ModuleType("customer_due_dates.revolut"),
+            "customer_due_dates.revolut.payment_link": module,
+        }
+        with patch.dict(sys.modules, modules), patch.object(
+            sales_orders.frappe.db, "get_value", return_value="SO-PF-0001"
+        ), patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
+            sales_orders.frappe.session, "user", "partner@example.com"
+        ), patch.object(sales_orders, "is_partner_user", return_value=True), patch.object(
+            sales_orders, "get_scope", return_value={"is_partner": True, "partners": ["SP-A"]}
+        ), patch.object(sales_orders, "is_customer_in_scope", return_value=True):
+            sales_orders.send_proforma("SO-PF-0001", resend=1)
+        self.assertEqual(module.calls[0][1]["resend"], True)
 
     def test_is_whitelisted_for_post_only(self):
         import inspect
@@ -3461,7 +3483,8 @@ class TestSendProforma(TestCase):
         names = [event[0] for event in events]
         self.assertIn("rollback", names)
         self.assertIn("log_error", names)
-        self.assertEqual(names.index("savepoint") < names.index("rollback"), True)
+        # no savepoint: the link code commits as it goes, so there is none to roll back to
+        self.assertNotIn("savepoint", names)
 
     def test_a_failed_mail_is_reported_but_the_link_is_returned(self):
         link = self._link_module(
@@ -3659,6 +3682,78 @@ class TestManagedPaymentLinkAccess(TestCase):
         )
         self.assertEqual(result, {"sales_order": {"name": "SO-PL-0001"}})
         self.assertEqual(created[0][0], "delete")
+
+    def test_a_pro_forma_ignores_the_address_the_browser_submits(self):
+        """The dialog is prefilled with the receipt address and submits it back; for a
+        pro forma the server resolves the recipient (Invoice Email chain, dev override)."""
+        doc = self._doc(posa_payment_type="Proforma")
+        result, created = self._run(
+            sales_orders.create_managed_sales_order_payment_link,
+            doc,
+            sales_order="SO-PL-0001",
+            email="receipt@example.com",
+        )
+        self.assertEqual(result["checkout_url"], "https://x/pr")
+        kw = created[0]
+        self.assertIsNone(kw["email_to"])
+        self.assertTrue(kw["proforma"])
+        self.assertTrue(kw["resend"])
+
+    def test_the_managed_payment_link_routes_are_post_only(self):
+        import inspect
+
+        source = inspect.getsource(sales_orders)
+        for name in ("create_managed_sales_order_payment_link", "delete_managed_sales_order_payment_link"):
+            with self.subTest(name=name):
+                self.assertIn('@frappe.whitelist(methods=["POST"])\ndef ' + name, source)
+
+    def test_staff_reach_any_pro_forma_order_but_only_for_the_payment_link(self):
+        """A partner's Proforma order is Agile-side (not RFS): staff may send and resend its
+        pro forma link, nothing else about it, and no other non-RFS order."""
+        base = {"doctype": "Sales Order", "docstatus": 1, "rfs_order": 0, "is_pos": 1, "customer": "CUST-A"}
+        proforma = SimpleNamespace(**base, posa_payment_type="Proforma")
+        plain = SimpleNamespace(**base, posa_payment_type="")
+        with patch.object(sales_orders, "is_partner_user", return_value=False):
+            self.assertTrue(sales_orders._is_managed_sales_order_doc(proforma, allow_proforma=True))
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(proforma))  # other endpoints unchanged
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(plain, allow_proforma=True))
+            unpaid_draft = SimpleNamespace(**{**base, "docstatus": 0}, posa_payment_type="Proforma")
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(unpaid_draft, allow_proforma=True))
+
+    def test_staff_resend_of_a_partners_pro_forma_goes_through_the_managed_action(self):
+        doc = self._doc(posa_payment_type="Proforma", customer="CUST-B")
+        # the real managed check (not stubbed): staff, non-RFS Proforma order
+        doc.doctype = "Sales Order"
+        doc.docstatus = 1
+        doc.rfs_order = 0
+        doc.is_pos = 1
+        with patch.object(sales_orders, "_is_managed_sales_order_doc", sales_orders._is_managed_sales_order_doc):
+            result, created = self._run_real_managed(doc)
+        self.assertEqual(result["checkout_url"], "https://x/pr")
+        self.assertTrue(created[0]["proforma"])
+        self.assertTrue(created[0]["resend"])
+        self.assertFalse(created[0]["check_permission"])
+
+    def _run_real_managed(self, doc):
+        created = []
+        link_module = types.ModuleType("customer_due_dates.revolut.payment_link")
+        link_module.create_payment_link = lambda **kw: created.append(kw) or {
+            "payment_request": "PR-1", "checkout_url": "https://x/pr", "already_paid": False,
+            "email_sent": True,
+        }
+        modules = {
+            "customer_due_dates.revolut": types.ModuleType("customer_due_dates.revolut"),
+            "customer_due_dates.revolut.payment_link": link_module,
+        }
+        with patch.dict(sys.modules, modules), patch.object(
+            sales_orders.frappe, "get_doc", return_value=doc
+        ), patch.object(sales_orders.frappe.session, "user", "cashier@example.com"), patch.object(
+            sales_orders, "is_partner_user", return_value=False
+        ), patch.object(
+            sales_orders, "_serialize_managed_sales_order", side_effect=lambda d: {"name": d.name}
+        ):
+            result = sales_orders.create_managed_sales_order_payment_link(sales_order=doc.name)
+        return result, created
 
     def test_a_partner_is_refused_another_partners_order_on_every_managed_endpoint(self):
         doc = self._doc(customer="CUST-B")
