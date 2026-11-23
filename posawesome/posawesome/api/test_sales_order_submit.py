@@ -3361,7 +3361,7 @@ class TestSendProforma(TestCase):
         return module
 
     def _send(self, doc=None, *, user="partner@example.com", partner=True, scope=("SP-A",), write=False,
-              assigned=False, locked=True, link=None):
+              assigned=False, locked=True, link=None, **call_kwargs):
         doc = doc or _ProformaOrder()
         link = link or self._link_module()
         events = []
@@ -3408,12 +3408,12 @@ class TestSendProforma(TestCase):
             side_effect=lambda customer, partners: customer in ("CUST-A", "13682") and "SP-A" in partners,
         ):
             try:
-                result = sales_orders.send_proforma("SO-PF-0001")
+                result = sales_orders.send_proforma("SO-PF-0001", **call_kwargs)
             except Exception as exc:
                 result = exc
         return result, events, link
 
-    def test_sends_the_pro_forma_with_the_resolved_recipient_after_locking_the_row(self):
+    def test_sends_the_pro_forma_with_the_servers_default_recipient_and_no_row_lock(self):
         result, events, link = self._send()
 
         self.assertEqual(
@@ -3424,6 +3424,9 @@ class TestSendProforma(TestCase):
                 "email_sent": True,
                 "attachment_ok": True,
                 "error": "",
+                "in_progress": False,
+                "recipient": "",
+                "recipient_default": "",
             },
         )
         # No row lock is taken here: the link code locks the order itself and never across HTTP.
@@ -3433,8 +3436,55 @@ class TestSendProforma(TestCase):
         self.assertEqual(kwargs["proforma"], True)
         self.assertEqual(kwargs["send_email"], True)
         self.assertEqual(kwargs["check_permission"], False)
-        self.assertEqual(kwargs["email_to"], "buyer@example.com")
+        # nothing typed: the link code resolves the customer's own address (and applies the dev override)
+        self.assertIsNone(kwargs["email_to"])
         self.assertEqual(kwargs["resend"], False)
+
+    def test_a_typed_recipient_is_passed_through_and_the_default_is_returned_for_prefilling(self):
+        link = self._link_module(
+            result={
+                "payment_request": "PR-1",
+                "checkout_url": "https://checkout.example/abc",
+                "already_paid": False,
+                "email_sent": True,
+                "recipient": "typed@example.com",
+                "recipient_default": "invoice@example.com",
+            }
+        )
+        result, _events, link = self._send(link=link, resend=1, recipient=" typed@example.com ")
+
+        kwargs = link.calls[0][1]
+        self.assertEqual(kwargs["email_to"], "typed@example.com")
+        self.assertTrue(kwargs["resend"])  # a changed address is an explicit resend
+        self.assertEqual(result["recipient"], "typed@example.com")
+        self.assertEqual(result["recipient_default"], "invoice@example.com")
+
+    def test_a_recipient_that_is_not_one_valid_address_is_refused_before_anything_is_created(self):
+        for bad in ("a@b.example, c@d.example",):
+            with self.subTest(recipient=bad), patch.object(
+                sales_orders.frappe, "ValidationError", ValueError, create=True
+            ):
+                result, _events, link = self._send(recipient=bad)
+                self.assertIsInstance(result, RuntimeError)
+                self.assertIn("not a valid email address", str(result))
+                self.assertEqual(link.calls, [])
+
+    def test_a_link_still_being_created_is_reported_not_as_a_failure(self):
+        link = self._link_module(
+            result={
+                "payment_request": "PR-1",
+                "checkout_url": None,
+                "already_paid": False,
+                "email_sent": False,
+                "email_error": "A payment link is already being created for this order. Try again in a moment.",
+                "in_progress": True,
+            }
+        )
+        result, _events, _link = self._send(link=link)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["in_progress"])
+        self.assertFalse(result["email_sent"])
+        self.assertIn("already being created", result["error"])
 
     def test_resend_is_explicit(self):
         _result, _events, link = self._send(link=None)
@@ -3683,27 +3733,48 @@ class TestManagedPaymentLinkAccess(TestCase):
         self.assertEqual(result, {"sales_order": {"name": "SO-PL-0001"}})
         self.assertEqual(created[0][0], "delete")
 
-    def test_a_pro_forma_ignores_the_address_the_browser_submits(self):
-        """The dialog is prefilled with the receipt address and submits it back; for a
-        pro forma the server resolves the recipient (Invoice Email chain, dev override)."""
+    def test_a_pro_forma_uses_the_address_typed_in_the_dialog_else_the_servers_chain(self):
+        """The dialog is prefilled with the customer's pro forma address and submits whatever
+        it now holds; blank means the server resolves it (Invoice Email chain, dev override)."""
         doc = self._doc(posa_payment_type="Proforma")
         result, created = self._run(
             sales_orders.create_managed_sales_order_payment_link,
             doc,
             sales_order="SO-PL-0001",
-            email="receipt@example.com",
+            email="typed@example.com",
         )
         self.assertEqual(result["checkout_url"], "https://x/pr")
         kw = created[0]
-        self.assertIsNone(kw["email_to"])
+        self.assertEqual(kw["email_to"], "typed@example.com")
         self.assertTrue(kw["proforma"])
         self.assertTrue(kw["resend"])
+
+        _result, created = self._run(
+            sales_orders.create_managed_sales_order_payment_link, doc, sales_order="SO-PL-0001", email=""
+        )
+        self.assertIsNone(created[0]["email_to"])
+
+    def test_a_pro_forma_address_that_is_not_a_single_valid_address_is_refused(self):
+        doc = self._doc(posa_payment_type="Proforma")
+        with patch.object(sales_orders.frappe, "ValidationError", ValueError, create=True):
+            result, created = self._run(
+                sales_orders.create_managed_sales_order_payment_link,
+                doc,
+                sales_order="SO-PL-0001",
+                email="a@b.example, c@d.example",
+            )
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(created, [])
 
     def test_the_managed_payment_link_routes_are_post_only(self):
         import inspect
 
         source = inspect.getsource(sales_orders)
-        for name in ("create_managed_sales_order_payment_link", "delete_managed_sales_order_payment_link"):
+        for name in (
+            "create_managed_sales_order_payment_link",
+            "delete_managed_sales_order_payment_link",
+            "update_managed_sales_order_items_with_payment",
+        ):
             with self.subTest(name=name):
                 self.assertIn('@frappe.whitelist(methods=["POST"])\ndef ' + name, source)
 
@@ -3713,12 +3784,51 @@ class TestManagedPaymentLinkAccess(TestCase):
         base = {"doctype": "Sales Order", "docstatus": 1, "rfs_order": 0, "is_pos": 1, "customer": "CUST-A"}
         proforma = SimpleNamespace(**base, posa_payment_type="Proforma")
         plain = SimpleNamespace(**base, posa_payment_type="")
-        with patch.object(sales_orders, "is_partner_user", return_value=False):
+        with patch.object(sales_orders, "is_partner_user", return_value=False), patch.object(
+            sales_orders, "_is_pos_staff_for_order", return_value=True
+        ):
             self.assertTrue(sales_orders._is_managed_sales_order_doc(proforma, allow_proforma=True))
             self.assertFalse(sales_orders._is_managed_sales_order_doc(proforma))  # other endpoints unchanged
             self.assertFalse(sales_orders._is_managed_sales_order_doc(plain, allow_proforma=True))
             unpaid_draft = SimpleNamespace(**{**base, "docstatus": 0}, posa_payment_type="Proforma")
             self.assertFalse(sales_orders._is_managed_sales_order_doc(unpaid_draft, allow_proforma=True))
+
+    def test_a_user_who_is_not_staff_gets_no_pro_forma_exception(self):
+        base = {"doctype": "Sales Order", "docstatus": 1, "rfs_order": 0, "is_pos": 1, "customer": "CUST-A"}
+        proforma = SimpleNamespace(**base, posa_payment_type="Proforma")
+        with patch.object(sales_orders, "is_partner_user", return_value=False), patch.object(
+            sales_orders, "_is_pos_staff_for_order", return_value=False
+        ):
+            self.assertFalse(sales_orders._is_managed_sales_order_doc(proforma, allow_proforma=True))
+
+    def _staff_check(self, user, user_type, *, can_read=False, on_profile=False):
+        doc = SimpleNamespace(name="SO-1")
+        with patch.object(sales_orders.frappe.session, "user", user), patch.object(
+            sales_orders.frappe.db, "get_value", return_value=user_type
+        ), patch.object(sales_orders.frappe, "has_permission", return_value=can_read, create=True), patch.object(
+            sales_orders.frappe.db, "exists", return_value=on_profile
+        ):
+            return sales_orders._is_pos_staff_for_order(doc)
+
+    def test_pos_staff_means_a_system_user_who_can_read_the_order_or_sells_on_a_profile(self):
+        self.assertTrue(self._staff_check("cashier@example.com", "System User", can_read=True))
+        self.assertTrue(self._staff_check("cashier@example.com", "System User", on_profile=True))
+        self.assertTrue(self._staff_check("Administrator", "System User"))
+        # a System User with neither is not POS staff
+        self.assertFalse(self._staff_check("clerk@example.com", "System User"))
+
+    def test_a_website_user_or_guest_is_never_pos_staff(self):
+        self.assertFalse(self._staff_check("web@example.com", "Website User", can_read=True, on_profile=True))
+        self.assertFalse(self._staff_check("Guest", "Website User", can_read=True))
+
+    def test_a_website_user_with_no_sales_order_access_is_refused_a_partners_checkout_link(self):
+        """The reported hole: the staff exception used to check the order type only."""
+        doc = self._doc(posa_payment_type="Proforma", customer="CUST-B")
+        doc.doctype, doc.docstatus, doc.rfs_order, doc.is_pos = "Sales Order", 1, 0, 1
+        with patch.object(sales_orders, "_is_pos_staff_for_order", return_value=False):
+            with self.assertRaises(RuntimeError) as raised:
+                self._run_real_managed(doc)
+        self.assertIn("not available in POS management", str(raised.exception))
 
     def test_staff_resend_of_a_partners_pro_forma_goes_through_the_managed_action(self):
         doc = self._doc(posa_payment_type="Proforma", customer="CUST-B")
@@ -3727,12 +3837,30 @@ class TestManagedPaymentLinkAccess(TestCase):
         doc.docstatus = 1
         doc.rfs_order = 0
         doc.is_pos = 1
-        with patch.object(sales_orders, "_is_managed_sales_order_doc", sales_orders._is_managed_sales_order_doc):
+        with patch.object(sales_orders, "_is_pos_staff_for_order", return_value=True):
             result, created = self._run_real_managed(doc)
         self.assertEqual(result["checkout_url"], "https://x/pr")
         self.assertTrue(created[0]["proforma"])
         self.assertTrue(created[0]["resend"])
         self.assertFalse(created[0]["check_permission"])
+
+    def test_a_partner_reaches_their_own_pro_forma_order_but_not_another_partners(self):
+        for customer, allowed in (("CUST-A", True), ("CUST-B", False)):
+            with self.subTest(customer=customer):
+                doc = self._doc(posa_payment_type="Proforma", customer=customer)
+                doc.doctype, doc.docstatus, doc.rfs_order, doc.is_pos = "Sales Order", 1, 0, 1
+                with patch.object(sales_orders, "_is_managed_sales_order_doc", sales_orders._is_managed_sales_order_doc):
+                    result, created = self._run(
+                        sales_orders.create_managed_sales_order_payment_link,
+                        doc,
+                        partner=True,
+                        sales_order="SO-PL-0001",
+                    )
+                if allowed:
+                    self.assertEqual(result["checkout_url"], "https://x/pr")
+                else:
+                    self.assertIsInstance(result, RuntimeError)
+                    self.assertEqual(created, [])
 
     def _run_real_managed(self, doc):
         created = []

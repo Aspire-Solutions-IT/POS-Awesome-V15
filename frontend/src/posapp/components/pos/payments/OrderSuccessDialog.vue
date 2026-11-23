@@ -78,6 +78,20 @@
 						<div v-if="proformaLink" class="order-success__proforma-link">
 							<a :href="proformaLink" target="_blank" rel="noopener">{{ __("Payment link") }}</a>
 						</div>
+						<!-- Where the pro forma goes: filled with the customer's own address once the
+						     first send answers; Retry / Resend sends to whatever it holds. -->
+						<v-text-field
+							v-model="proformaRecipient"
+							:label="__('Send pro forma to')"
+							:placeholder="__('The customer\'s pro forma email address')"
+							:error-messages="proformaRecipientError ? [proformaRecipientError] : []"
+							density="compact"
+							hide-details="auto"
+							type="email"
+							class="pos-themed-input mt-3"
+							data-testid="proforma-recipient"
+							@update:model-value="proformaRecipientEdited = true"
+						/>
 					</div>
 
 					<v-btn
@@ -103,7 +117,7 @@
 					color="primary"
 					variant="flat"
 					prepend-icon="mdi-email-sync-outline"
-					:disabled="proformaBusy"
+					:disabled="proformaBusy || Boolean(proformaRecipientError)"
 					data-testid="proforma-retry"
 					@click="runProforma(true)"
 				>
@@ -143,6 +157,7 @@ import {
 	PAYMENT_TYPE_ON_ACCOUNT,
 	PAYMENT_TYPE_PROFORMA,
 	describeProformaResult,
+	isValidProformaRecipient,
 	sendProforma,
 } from "../../../services/proformaService";
 
@@ -168,18 +183,38 @@ const dialogTitle = computed(() => {
 const proformaBusy = ref(false);
 const proformaOutcome = ref(null);
 const proformaLink = ref("");
+// The address the pro forma goes to. Blank until the first send answers with the customer's
+// own address; the first automatic send always uses that default, Retry / Resend uses this.
+const proformaRecipient = ref("");
+const proformaRecipientEdited = ref(false);
+const proformaRecipientError = computed(() =>
+	isValidProformaRecipient(proformaRecipient.value) ? "" : __("Enter a valid email address"),
+);
+
+// Every send is tied to the order it was started for: a slow answer for an earlier order must
+// not paint over (or free) the order shown now.
+let proformaRun = 0;
 
 // The order is already saved and on hold when this runs, so a failure only means "not sent yet".
 const runProforma = async (resend = false) => {
 	const name = orderNames.value[0];
 	if (!name || proformaBusy.value) return;
+	if (resend && proformaRecipientError.value) return;
+	const run = ++proformaRun;
 	proformaBusy.value = true;
 	try {
-		const result = await sendProforma(name, { resend });
+		const result = await sendProforma(name, {
+			resend,
+			recipient: resend ? String(proformaRecipient.value ?? "").trim() : "",
+		});
+		if (run !== proformaRun || orderNames.value[0] !== name) return;
 		proformaLink.value = result.link || "";
-		proformaOutcome.value = describeProformaResult(result, __);
+		if (!proformaRecipientEdited.value) {
+			proformaRecipient.value = result.recipient || result.recipientDefault || proformaRecipient.value;
+		}
+		proformaOutcome.value = describeProformaResult(result, __, result.recipient);
 	} finally {
-		proformaBusy.value = false;
+		if (run === proformaRun) proformaBusy.value = false;
 	}
 };
 
@@ -287,8 +322,13 @@ watch(
 	orderNames,
 	(names) => {
 		clearTimers();
+		// A new order: whatever an earlier order's send is still doing is no longer shown here.
+		proformaRun += 1;
+		proformaBusy.value = false;
 		proformaOutcome.value = null;
 		proformaLink.value = "";
+		proformaRecipient.value = "";
+		proformaRecipientEdited.value = false;
 		Object.keys(summaries).forEach((key) => delete summaries[key]);
 		names.forEach((name) => {
 			summaries[name] = { state: "loading" };

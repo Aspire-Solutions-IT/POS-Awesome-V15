@@ -247,7 +247,7 @@
 									:loading="proformaLoading"
 									:disabled="proformaLoading"
 									data-testid="resend-proforma"
-									@click="resendProforma"
+									@click="openProformaDialog"
 								>
 									{{ __("Resend Pro Forma") }}
 								</v-btn>
@@ -304,7 +304,7 @@
 										:title="__('Resend Pro Forma')"
 										:disabled="proformaLoading"
 										data-testid="resend-proforma-menu"
-										@click="resendProforma"
+										@click="openProformaDialog"
 									/>
 									<v-list-item
 										v-if="!isPartner && !isProformaOrder"
@@ -914,7 +914,6 @@
 							v-model="revolutForm.email"
 							:label="__('Send To')"
 							:placeholder="isProformaOrder ? __('The customer\'s pro forma email address') : ''"
-							:disabled="isProformaOrder"
 							density="compact"
 							hide-details="auto"
 							type="email"
@@ -1022,6 +1021,42 @@
 		<!-- Resending is a deliberate act, so the recipient is shown and editable before
 		     anything is queued rather than the receipt silently going wherever the order
 		     happens to point. -->
+		<!-- Resend Pro Forma: the address is editable and prefilled with the customer's own. -->
+		<v-dialog v-model="proformaDialogOpen" max-width="460">
+			<v-card class="pos-themed-card">
+				<v-card-title>{{ __("Resend Pro Forma") }}</v-card-title>
+				<v-card-text class="pt-2">
+					<p class="mb-3">
+						{{ __("Email the pro forma and payment link for {0} to:", [selectedOrder?.name || ""]) }}
+					</p>
+					<v-text-field
+						v-model="proformaForm.email"
+						:label="__('Send To')"
+						:placeholder="__('The customer\'s pro forma email address')"
+						:error-messages="proformaFormError ? [proformaFormError] : []"
+						density="compact"
+						hide-details="auto"
+						type="email"
+						class="pos-themed-input"
+						data-testid="proforma-resend-email"
+					/>
+				</v-card-text>
+				<v-card-actions class="justify-end">
+					<v-btn variant="text" @click="closeProformaDialog">{{ __("Cancel") }}</v-btn>
+					<v-btn
+						color="primary"
+						variant="flat"
+						:loading="proformaLoading"
+						:disabled="proformaLoading"
+						data-testid="proforma-resend-send"
+						@click="resendProforma"
+					>
+						{{ __("Send") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+
 		<v-dialog v-model="receiptDialogOpen" max-width="520">
 			<v-card class="pos-themed-card">
 				<v-card-title>{{ __("Email Receipt") }}</v-card-title>
@@ -1306,6 +1341,7 @@ import {
 	PAYMENT_TYPE_ON_ACCOUNT,
 	PAYMENT_TYPE_PROFORMA,
 	describeProformaResult,
+	isValidProformaRecipient,
 	sendProforma,
 } from "../../../services/proformaService";
 import { useToastStore } from "../../../stores/toastStore.js";
@@ -1467,6 +1503,8 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
 	receipt_email?: ManagedSalesOrderReceiptEmail | null;
+	/** Where a pro forma for this order goes by default (Pro Forma orders only). */
+	proforma_recipient?: string | null;
 	revolut_payment_link?: ManagedSalesOrderRevolutLink | null;
 	delivery_charge_collection?: number | null;
 	company?: string | null;
@@ -1935,17 +1973,48 @@ const paymentTypeLabel = (order: { posa_payment_type?: string | null } | null | 
 	return "";
 };
 const proformaLoading = ref(false);
-const resendProforma = async () => {
+const proformaDialogOpen = ref(false);
+const proformaForm = reactive({ email: "" });
+const proformaFormError = ref("");
+
+// Resend Pro Forma asks where to send it: the field is prefilled with the customer's own
+// pro forma address and can be changed for this send.
+const openProformaDialog = () => {
 	const order = selectedOrder.value;
 	if (!order || proformaLoading.value) return;
 	if (isOffline()) {
 		toastStore.show({ title: __("Resending a pro forma needs an online connection"), color: "warning" });
 		return;
 	}
+	proformaForm.email = String(order.proforma_recipient || "");
+	proformaFormError.value = "";
+	proformaDialogOpen.value = true;
+};
+
+const closeProformaDialog = () => {
+	proformaDialogOpen.value = false;
+	proformaFormError.value = "";
+};
+
+const resendProforma = async () => {
+	const order = selectedOrder.value;
+	if (!order || proformaLoading.value) return;
+	if (!isValidProformaRecipient(proformaForm.email)) {
+		proformaFormError.value = __("Enter a valid email address");
+		return;
+	}
+	if (isOffline()) {
+		toastStore.show({ title: __("Resending a pro forma needs an online connection"), color: "warning" });
+		return;
+	}
 	proformaLoading.value = true;
 	try {
-		const result = await sendProforma(order.name, { resend: true });
-		const outcome = describeProformaResult(result, __);
+		const result = await sendProforma(order.name, {
+			resend: true,
+			recipient: String(proformaForm.email ?? "").trim(),
+		});
+		const outcome = describeProformaResult(result, __, result.recipient);
+		proformaDialogOpen.value = false;
 		toastStore.show({
 			title: outcome.state === "sent" ? __("Pro forma sent") : __("Pro forma not fully sent"),
 			detail: outcome.message,
@@ -2203,10 +2272,10 @@ const openRevolutDialog = () => {
 	revolutError.value = "";
 	revolutResult.value = null;
 	revolutForm.amount = String(selectedOrder.value.outstanding_balance || "");
-	// A pro forma goes to the recipient the server resolves for the customer (Invoice Email,
-	// then address emails); the receipt address is never submitted as an override for it.
+	// A pro forma is prefilled with where the customer's pro forma goes (Invoice Email, then
+	// address emails), not the receipt address; the sender may change it.
 	revolutForm.email = isProformaOrder.value
-		? ""
+		? String(selectedOrder.value.proforma_recipient || "")
 		: String(selectedOrder.value.receipt_email?.recipient || "");
 	revolutForm.sendEmail = true;
 	revolutDialogOpen.value = true;
@@ -2244,7 +2313,7 @@ const submitRevolutPaymentLink = async () => {
 			{
 				sales_order: selectedOrder.value.name,
 				amount: revolutForm.amount,
-				email: revolutForm.sendEmail && !isProformaOrder.value ? revolutForm.email : null,
+				email: revolutForm.sendEmail ? revolutForm.email : null,
 				send_email: revolutForm.sendEmail ? 1 : 0,
 			},
 			{ freeze: true, freeze_message: __("Creating payment link...") },

@@ -47,6 +47,23 @@ const ButtonStub = defineComponent({
 			h("button", { "data-testid": attrs["data-testid"], onClick: () => emit("click") }, slots.default?.());
 	},
 });
+// Renders the field's value and error text; typing is simulated through the input's events.
+const TextFieldStub = defineComponent({
+	inheritAttrs: false,
+	props: { modelValue: { type: String, default: "" }, errorMessages: { type: Array, default: () => [] } },
+	emits: ["update:modelValue"],
+	setup(props, { attrs, emit }) {
+		return () =>
+			h("div", {}, [
+				h("input", {
+					"data-testid": attrs["data-testid"],
+					value: props.modelValue,
+					onInput: (event: any) => emit("update:modelValue", event.target.value),
+				}),
+				h("span", { "data-testid": "recipient-error" }, (props.errorMessages as string[]).join(" ")),
+			]);
+	},
+});
 const AlertStub = defineComponent({
 	setup(_, { attrs, slots }) {
 		return () => h("div", { "data-testid": attrs["data-testid"] }, slots.default?.());
@@ -64,12 +81,22 @@ const mountDialog = () =>
 				VIcon: BoxStub,
 				VProgressCircular: BoxStub,
 				VAlert: AlertStub,
+				VTextField: TextFieldStub,
 				VBtn: ButtonStub,
 			},
 		},
 	});
 
-const ok = { ok: true, link: "https://pay/x", emailSent: true, attachmentOk: true, error: "" };
+const ok = {
+	ok: true,
+	link: "https://pay/x",
+	emailSent: true,
+	attachmentOk: true,
+	error: "",
+	inProgress: false,
+	recipient: "",
+	recipientDefault: "",
+};
 
 describe("OrderSuccessDialog pro forma", () => {
 	beforeEach(() => {
@@ -92,7 +119,7 @@ describe("OrderSuccessDialog pro forma", () => {
 		await flushPromises();
 
 		expect(sendProforma).toHaveBeenCalledTimes(1);
-		expect(sendProforma).toHaveBeenCalledWith("SO-1", { resend: false });
+		expect(sendProforma).toHaveBeenCalledWith("SO-1", { resend: false, recipient: "" });
 		expect(wrapper.text()).toContain("Pro Forma Order Placed");
 		expect(wrapper.find('[data-testid="proforma-outcome"]').text()).toContain("emailed");
 		expect(wrapper.find('[data-testid="proforma-retry"]').exists()).toBe(false);
@@ -110,7 +137,7 @@ describe("OrderSuccessDialog pro forma", () => {
 		await wrapper.find('[data-testid="proforma-retry"]').trigger("click");
 		await flushPromises();
 
-		expect(sendProforma).toHaveBeenLastCalledWith("SO-1", { resend: true });
+		expect(sendProforma).toHaveBeenLastCalledWith("SO-1", { resend: true, recipient: "" });
 		expect(wrapper.find('[data-testid="proforma-retry"]').exists()).toBe(false);
 	});
 
@@ -135,5 +162,93 @@ describe("OrderSuccessDialog pro forma", () => {
 		expect(sendProforma).not.toHaveBeenCalled();
 		expect(wrapper.text()).toContain("Order Placed On Account");
 		expect(wrapper.find('[data-testid="proforma-status"]').exists()).toBe(false);
+	});
+
+	describe("editable recipient", () => {
+		const recipientInput = (wrapper: any) => wrapper.find('[data-testid="proforma-recipient"]');
+
+		it("prefills the field with the customer's address and sends the first time without one", async () => {
+			sendProforma.mockResolvedValue({ ...ok, recipient: "invoice@x.example", recipientDefault: "invoice@x.example" });
+			open("Proforma");
+			const wrapper = mountDialog();
+			await flushPromises();
+
+			expect(sendProforma).toHaveBeenCalledWith("SO-1", { resend: false, recipient: "" });
+			expect((recipientInput(wrapper).element as HTMLInputElement).value).toBe("invoice@x.example");
+			// the field is editable for a pro forma (it is no longer disabled)
+			expect(recipientInput(wrapper).attributes("disabled")).toBeUndefined();
+		});
+
+		it("Retry sends to the address in the field", async () => {
+			sendProforma.mockResolvedValueOnce({
+				...ok,
+				ok: false,
+				link: "",
+				emailSent: false,
+				recipient: "invoice@x.example",
+				recipientDefault: "invoice@x.example",
+			});
+			open("Proforma");
+			const wrapper = mountDialog();
+			await flushPromises();
+
+			await recipientInput(wrapper).setValue(" other@y.example ");
+			sendProforma.mockResolvedValueOnce({ ...ok, recipient: "other@y.example", recipientDefault: "invoice@x.example" });
+			await wrapper.find('[data-testid="proforma-retry"]').trigger("click");
+			await flushPromises();
+
+			expect(sendProforma).toHaveBeenLastCalledWith("SO-1", { resend: true, recipient: "other@y.example" });
+			// what the user typed is not overwritten by the server's default
+			expect((recipientInput(wrapper).element as HTMLInputElement).value).toBe(" other@y.example ");
+			expect(wrapper.find('[data-testid="proforma-outcome"]').text()).toContain("other@y.example");
+		});
+
+		it("blocks an invalid address with a message and sends nothing", async () => {
+			sendProforma.mockResolvedValueOnce({ ...ok, ok: false, link: "", emailSent: false });
+			open("Proforma");
+			const wrapper = mountDialog();
+			await flushPromises();
+			sendProforma.mockClear();
+
+			await recipientInput(wrapper).setValue("not-an-email");
+			expect(wrapper.find('[data-testid="recipient-error"]').text()).toContain("Enter a valid email address");
+			await wrapper.find('[data-testid="proforma-retry"]').trigger("click");
+			await flushPromises();
+			expect(sendProforma).not.toHaveBeenCalled();
+
+			await recipientInput(wrapper).setValue("a@b.example, c@d.example");
+			expect(wrapper.find('[data-testid="recipient-error"]').text()).toContain("Enter a valid email address");
+		});
+	});
+
+	it("a slow answer for the previous order never shows in the next order's dialog", async () => {
+		let releaseFirst: (_value: any) => void = () => undefined;
+		sendProforma.mockImplementationOnce(() => new Promise((resolve) => (releaseFirst = resolve)));
+		open("Proforma");
+		const wrapper = mountDialog();
+		await flushPromises();
+
+		// the next order replaces the dialog before the first send has answered
+		sendProforma.mockResolvedValueOnce({ ...ok, link: "https://pay/second", recipient: "second@x.example" });
+		useUIStore().showOrderSuccess({
+			orders: ["SO-2"],
+			profile: {},
+			noPayment: true,
+			paymentType: "Proforma",
+		});
+		await flushPromises();
+		expect(sendProforma).toHaveBeenLastCalledWith("SO-2", { resend: false, recipient: "" });
+
+		releaseFirst({ ...ok, ok: false, link: "https://pay/first", emailSent: false, error: "first failed", recipient: "first@x.example" });
+		await flushPromises();
+
+		const text = wrapper.text();
+		expect(text).not.toContain("first failed");
+		expect(wrapper.find('[data-testid="proforma-recipient"]').exists()).toBe(true);
+		expect((wrapper.find('[data-testid="proforma-recipient"]').element as HTMLInputElement).value).toBe(
+			"second@x.example",
+		);
+		expect(wrapper.html()).not.toContain("https://pay/first");
+		expect(wrapper.find('[data-testid="proforma-outcome"]').text()).toContain("emailed");
 	});
 });

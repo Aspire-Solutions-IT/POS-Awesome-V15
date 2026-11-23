@@ -462,6 +462,7 @@ import { resolvePaymentPrintFormatDoctypes } from "../../utils/paymentPrintDocty
 import { resolvePaymentPrintFormat } from "../../utils/paymentPrintFormat";
 import { parseBooleanSetting } from "../../utils/stock";
 import { isPartnerMode } from "../../utils/partnerMode";
+import { resolvePaymentTypeOptions } from "../../utils/paymentTypeOptions";
 import {
 	buildSuggestedSplitGroups,
 	hasCompleteSupplyTypes,
@@ -1122,26 +1123,21 @@ const validatePayment = computed(() => {
 // A Sales Partner only places orders: no payment methods, credit or gift cards.
 const isPartner = isPartnerMode();
 
-const showSubmitWithoutPayment = computed(
-	() =>
-		isPartner ||
-		(invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order)),
+// On Account and Pro Forma are Sales Order submit options switched on per POS Profile. Pro
+// Forma is the Sales Partner flow only (the server refuses it for staff). For a partner they
+// replace "Place Order"; a partner whose profile offers neither keeps it.
+const paymentTypeOptions = computed(() =>
+	resolvePaymentTypeOptions({
+		isPartner,
+		isOrder: invoiceType.value === "Order",
+		createOnlySalesOrder: Boolean(pos_profile.value?.posa_create_only_sales_order),
+		allowOnAccount: Boolean(Number(pos_profile.value?.posa_allow_on_account || 0)),
+		allowProforma: Boolean(Number(pos_profile.value?.posa_allow_proforma || 0)),
+	}),
 );
-
-// On Account and Pro Forma are Sales Order submit options switched on per POS Profile.
-// Pro Forma is the Sales Partner flow only (the server refuses it for staff).
-const salesOrderPaymentTypeAllowed = computed(
-	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
-);
-const showOnAccount = computed(
-	() => salesOrderPaymentTypeAllowed.value && Boolean(Number(pos_profile.value?.posa_allow_on_account || 0)),
-);
-const showProforma = computed(
-	() =>
-		isPartner &&
-		salesOrderPaymentTypeAllowed.value &&
-		Boolean(Number(pos_profile.value?.posa_allow_proforma || 0)),
-);
+const showSubmitWithoutPayment = computed(() => paymentTypeOptions.value.showSubmitWithoutPayment);
+const showOnAccount = computed(() => paymentTypeOptions.value.showOnAccount);
+const showProforma = computed(() => paymentTypeOptions.value.showProforma);
 
 const getWriteOffLimit = (profile) => {
 	if (!profile) return null;

@@ -45,6 +45,22 @@ const ListItemStub = defineComponent({
 		return () => h("button", { "data-testid": attrs["data-testid"], onClick: () => emit("click") }, props.title);
 	},
 });
+const TextFieldStub = defineComponent({
+	inheritAttrs: false,
+	props: { modelValue: { type: String, default: "" }, errorMessages: { type: Array, default: () => [] } },
+	emits: ["update:modelValue"],
+	setup(props, { attrs, emit }) {
+		return () =>
+			h("div", {}, [
+				h("input", {
+					"data-testid": attrs["data-testid"],
+					value: props.modelValue,
+					onInput: (event: any) => emit("update:modelValue", event.target.value),
+				}),
+				h("span", { "data-testid": `${attrs["data-testid"]}-error` }, (props.errorMessages as string[]).join(" ")),
+			]);
+	},
+});
 const DialogStub = defineComponent({
 	props: { modelValue: { type: Boolean, default: false } },
 	setup(props, { slots }) {
@@ -66,6 +82,7 @@ const detail = (type: string, status = "To Deliver") => ({
 	grand_total: 100,
 	outstanding_balance: 100,
 	posa_payment_type: type,
+	proforma_recipient: type === "Proforma" ? "invoice@x.example" : "",
 	items: [],
 });
 
@@ -85,7 +102,7 @@ const mountView = () =>
 			components: {
 				VContainer: BoxStub, VRow: BoxStub, VCol: BoxStub, VCard: BoxStub, VCardTitle: BoxStub,
 				VCardText: BoxStub, VCardActions: BoxStub, VAlert: BoxStub, VBtn: BtnStub, VTable: BoxStub,
-				VDialog: DialogStub, VSelect: BoxStub, VTextField: BoxStub, VTextarea: BoxStub,
+				VDialog: DialogStub, VSelect: BoxStub, VTextField: TextFieldStub, VTextarea: BoxStub,
 				VCheckbox: BoxStub, VueDatePicker: BoxStub, VNavigationDrawer: BoxStub,
 				VMenu: BoxStub, VList: BoxStub, VListItem: ListItemStub, VChip: BoxStub,
 			},
@@ -112,8 +129,13 @@ describe("SalesOrderManagementView pro forma", () => {
 		} as any);
 	});
 
-	it("shows the type in the list and lets a partner resend, via a POST send_proforma with resend", async () => {
-		const call = vi.fn((opts: any) => opts.callback({ message: { ok: true, email_sent: true, attachment_ok: true } }));
+	const sentOk = (extra: Record<string, any> = {}) =>
+		vi.fn((opts: any) =>
+			opts.callback({ message: { ok: true, email_sent: true, attachment_ok: true, ...extra } }),
+		);
+
+	it("shows the type in the list and lets a partner resend to the prefilled default, via a POST send_proforma with resend", async () => {
+		const call = sentOk({ recipient: "invoice@x.example" });
 		asPartner(call);
 		mockOrders("Proforma");
 		const wrapper = mountView();
@@ -121,14 +143,51 @@ describe("SalesOrderManagementView pro forma", () => {
 
 		expect(wrapper.find('[data-testid="order-payment-type"]').text()).toBe("Pro Forma");
 		await wrapper.find('[data-testid="resend-proforma"]').trigger("click");
+		const field = wrapper.find('[data-testid="proforma-resend-email"]');
+		expect((field.element as HTMLInputElement).value).toBe("invoice@x.example");
+		expect(call).not.toHaveBeenCalled(); // opening the dialog sends nothing
+		await wrapper.find('[data-testid="proforma-resend-send"]').trigger("click");
 		await flush();
 
 		expect(call.mock.calls[0][0]).toMatchObject({
 			method: "posawesome.posawesome.api.sales_orders.send_proforma",
 			type: "POST",
-			args: { sales_order: "SO-1", resend: 1 },
+			args: { sales_order: "SO-1", resend: 1, recipient: "invoice@x.example" },
 		});
 		expect(toastShow).toHaveBeenCalledWith(expect.objectContaining({ color: "success" }));
+	});
+
+	it("sends to the address typed in the Resend Pro Forma dialog", async () => {
+		const call = sentOk({ recipient: "other@y.example" });
+		asPartner(call);
+		mockOrders("Proforma");
+		const wrapper = mountView();
+		await flush();
+
+		await wrapper.find('[data-testid="resend-proforma"]').trigger("click");
+		await wrapper.find('[data-testid="proforma-resend-email"]').setValue(" other@y.example ");
+		await wrapper.find('[data-testid="proforma-resend-send"]').trigger("click");
+		await flush();
+
+		expect(call.mock.calls[0][0].args).toMatchObject({ resend: 1, recipient: "other@y.example" });
+	});
+
+	it("blocks an invalid address in the Resend Pro Forma dialog with a message", async () => {
+		const call = sentOk();
+		asPartner(call);
+		mockOrders("Proforma");
+		const wrapper = mountView();
+		await flush();
+
+		await wrapper.find('[data-testid="resend-proforma"]').trigger("click");
+		await wrapper.find('[data-testid="proforma-resend-email"]').setValue("a@b.example, c@d.example");
+		await wrapper.find('[data-testid="proforma-resend-send"]').trigger("click");
+		await flush();
+
+		expect(call).not.toHaveBeenCalled();
+		expect(wrapper.find('[data-testid="proforma-resend-email-error"]').text()).toContain(
+			"Enter a valid email address",
+		);
 	});
 
 	it("reports an unsent pro forma as a warning, not a success", async () => {
@@ -137,6 +196,7 @@ describe("SalesOrderManagementView pro forma", () => {
 		const wrapper = mountView();
 		await flush();
 		await wrapper.find('[data-testid="resend-proforma"]').trigger("click");
+		await wrapper.find('[data-testid="proforma-resend-send"]').trigger("click");
 		await flush();
 		expect(toastShow).toHaveBeenCalledWith(expect.objectContaining({ color: "warning" }));
 	});

@@ -8,6 +8,8 @@
  * "order saved, pro forma not sent" and offer a retry rather than surface an exception.
  */
 
+import { isValidOptionalEmail } from "../utils/emailValidation";
+
 declare const frappe: any;
 
 export const PAYMENT_TYPE_ON_ACCOUNT = "On Account";
@@ -21,6 +23,12 @@ export type ProformaResult = {
 	emailSent: boolean;
 	attachmentOk: boolean;
 	error: string;
+	/** Another request is creating this order's link right now; try again shortly. */
+	inProgress: boolean;
+	/** The address the pro forma was meant for (what was typed, else the customer's default). */
+	recipient: string;
+	/** The customer's own address (Invoice Email, address emails, customer email), to prefill the field. */
+	recipientDefault: string;
 };
 
 export type ProformaOutcome = {
@@ -45,6 +53,9 @@ export function normaliseProformaResponse(raw: any): ProformaResult {
 			emailSent: false,
 			attachmentOk: true,
 			error: text(raw?._error_message) || "",
+			inProgress: false,
+			recipient: "",
+			recipientDefault: "",
 		};
 	}
 	return {
@@ -53,7 +64,15 @@ export function normaliseProformaResponse(raw: any): ProformaResult {
 		emailSent: Boolean(message.email_sent),
 		attachmentOk: message.attachment_ok === undefined ? true : Boolean(message.attachment_ok),
 		error: stripHtml(text(message.error)),
+		inProgress: Boolean(message.in_progress),
+		recipient: text(message.recipient),
+		recipientDefault: text(message.recipient_default),
 	};
+}
+
+/** One plain address (or blank, meaning "the customer's own"): no list, no display name. */
+export function isValidProformaRecipient(value: unknown): boolean {
+	return isValidOptionalEmail(value) && !/[,;<>]/.test(String(value ?? ""));
 }
 
 /** Maps a result to what the operator is told. `email` is shown when known. */
@@ -110,11 +129,16 @@ export function describeProformaResult(
  */
 export async function sendProforma(
 	salesOrder: string,
-	{ resend = false }: { resend?: boolean } = {},
+	{ resend = false, recipient = "" }: { resend?: boolean; recipient?: string } = {},
 ): Promise<ProformaResult> {
 	const args: Record<string, any> = { sales_order: salesOrder };
 	if (resend) {
 		args.resend = 1;
+	}
+	// Blank means "the customer's own address", which the server resolves.
+	const typed = text(recipient);
+	if (typed) {
+		args.recipient = typed;
 	}
 	try {
 		const response: any = await new Promise((resolve, reject) => {
@@ -135,4 +159,9 @@ export async function sendProforma(
 	}
 }
 
-export default { sendProforma, describeProformaResult, normaliseProformaResponse };
+export default {
+	sendProforma,
+	describeProformaResult,
+	normaliseProformaResponse,
+	isValidProformaRecipient,
+};

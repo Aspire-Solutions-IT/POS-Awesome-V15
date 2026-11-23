@@ -4,9 +4,13 @@ All notable changes.
 
 Release 15.36.0 — November 23, 2026
 ### ✨ Features
-- The POS can submit orders as On Account or Pro Forma when the POS Profile allows it. Sales partners can choose Pro Forma; the pro forma PDF and its payment link are emailed to the customer's pro forma address. Staff can send and resend the pro forma link for any Pro Forma order, and the address shown in the payment link dialog is no longer used for a pro forma (the server picks the customer's pro forma address).
+- The POS can submit orders as On Account or Pro Forma when the POS Profile allows it. Sales partners can choose Pro Forma; the pro forma PDF and its payment link are emailed to the customer's pro forma address. Staff who are signed in as POS staff can send and resend the pro forma link for any Pro Forma order; other users cannot, even if they know the order.
+- The email a pro forma goes to can be changed: the order-placed screen and Resend Pro Forma show a "Send pro forma to" box filled with the customer's own pro forma address. The first send uses that address; Retry or Resend sends to whatever the box holds, and an invalid address is refused with a message. The payment link dialog for a pro forma order is filled in the same way.
+- Sales partners no longer see Place Order when On Account and/or Pro Forma are available; those buttons replace it. A partner whose POS Profile offers neither still gets Place Order. Staff are unchanged.
+- If the order-placed screen is replaced by the next order while a pro forma is still being sent, the slow answer no longer shows against the new order. If the payment link is already being created, the screen says so and Retry tries again.
+- Applying item changes with a payment link now only accepts a POST request.
 - If a pro forma PDF cannot be made, no email is sent and the cashier or partner is told; sending again sends the whole pro forma.
-_Total: 2 changes_
+_Total: 6 changes_
 
 Release 15.35.0 — November 19, 2026
 ### ✨ Features

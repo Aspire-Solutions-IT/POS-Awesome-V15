@@ -773,11 +773,46 @@ def _is_managed_sales_order_doc(doc, allow_proforma=False):
     # order (a partner's, so not RFS) where the caller says so: only to send or resend its
     # pro forma payment link.
     is_proforma = cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA
-    if cint(getattr(doc, "rfs_order", 0)) != 1 and not is_partner_user() and not (allow_proforma and is_proforma):
-        return False
+    if cint(getattr(doc, "rfs_order", 0)) != 1 and not is_partner_user():
+        # The staff exception needs staff: a Website User with no Sales Order permission
+        # must not reach a partner's checkout link or order details through it.
+        if not (allow_proforma and is_proforma and _is_pos_staff_for_order(doc)):
+            return False
     if cint(getattr(doc, "is_pos", 0)) != 1:
         return False
     return cstr(getattr(doc, "customer", "")).strip() not in MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS
+
+
+def _proforma_default_recipient(doc):
+    """Where a pro forma for this order goes unless the sender types another address (the
+    customer's Invoice Email, then address emails, then the customer's email), for the UI to
+    prefill. Blank for any other order."""
+    if cstr(getattr(doc, "posa_payment_type", "") or "").strip() != PAYMENT_TYPE_PROFORMA:
+        return ""
+    try:
+        from customer_due_dates.revolut.payment_link import resolve_proforma_recipient
+
+        return resolve_proforma_recipient(
+            doc.customer, doc.get("customer_address"), doc.get("shipping_address_name")
+        )
+    except Exception:
+        return ""
+
+
+def _is_pos_staff_for_order(doc):
+    """A signed-in desk (System) user who is POS staff for this order: allowed to read the
+    Sales Order, or assigned to a POS Profile. A Website User, however they got here, is not
+    staff, and neither is a Guest."""
+    user = frappe.session.user
+    if not user or user == "Guest":
+        return False
+    if user == "Administrator":
+        return True
+    if frappe.db.get_value("User", user, "user_type") != "System User":
+        return False
+    if frappe.has_permission("Sales Order", "read", doc):
+        return True
+    return bool(frappe.db.exists("POS Profile User", {"user": user}))
 
 
 def _validate_managed_sales_order_doc(doc, allow_proforma=False):
@@ -1357,6 +1392,7 @@ def _serialize_managed_sales_order(doc):
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "receipt_email": _managed_sales_order_receipt_email_state(doc),
+        "proforma_recipient": _proforma_default_recipient(doc),
         "revolut_payment_link": _get_managed_sales_order_revolut_link(doc),
         "items": items,
     }
@@ -2160,7 +2196,7 @@ def update_managed_sales_order_items(data):
     return _serialize_managed_sales_order(doc)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_managed_sales_order_items_with_payment(data):
     """Apply item changes and take the resulting balance in one transaction.
 
@@ -2881,11 +2917,10 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
 
     is_proforma = cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA
     if is_proforma:
-        # A pro forma order's email follows the pro forma policy (its recipient chain and
-        # the dev-site redirect, applied inside create_payment_link). The address the
-        # dialog submits is the receipt address it was prefilled with, so a browser-supplied
-        # address is ignored for a pro forma: the server resolves the recipient.
-        recipient = None
+        # A pro forma goes to the address the sender typed (checked: one valid address), else
+        # to the customer's own chain resolved on the server (Invoice Email, address emails,
+        # customer email). A development site still redirects it, whatever was typed.
+        recipient = validate_optional_email(email)
     else:
         # Same resolution the receipt resend uses, so the link defaults to wherever this
         # order's paperwork already goes rather than asking the till operator to know it.
@@ -2918,6 +2953,9 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
         "email_sent": result.get("email_sent"),
         "attachment_ok": result.get("attachment_ok", True),
         "email_error": result.get("email_error") or "",
+        "in_progress": bool(result.get("in_progress")),
+        "recipient": result.get("recipient") or "",
+        "recipient_default": result.get("recipient_default") or "",
     }
 
 
@@ -3882,7 +3920,7 @@ def _plain_error(exc):
 
 
 @frappe.whitelist(methods=["POST"])
-def send_proforma(sales_order, resend=0):
+def send_proforma(sales_order, resend=0, recipient=None):
     """Create the payment link for a submitted Proforma order and email the customer the
     pro forma PDF with that link.
 
@@ -3894,6 +3932,12 @@ def send_proforma(sales_order, resend=0):
     (an email that ended in an Error is sent again). A failure leaves the order submitted
     and On Hold and is returned (and logged) rather than raised, so the POS can say "order
     saved, pro forma not sent" and offer Retry.
+
+    ``recipient`` is an optional address the sender typed (one valid address, checked here
+    and again by the link code). Without it the customer's own address chain is used. Either
+    way the result carries ``recipient`` (who it was meant for) and ``recipient_default`` (the
+    chain's answer) so the UI can prefill them. On a development site the email always goes to
+    the developer address, whatever was typed.
     """
     sales_order_name = cstr(sales_order or "").strip()
     if not sales_order_name:
@@ -3913,16 +3957,16 @@ def send_proforma(sales_order, resend=0):
     if cstr(doc.get("posa_payment_type") or "").strip() != PAYMENT_TYPE_PROFORMA:
         frappe.throw(_("Sales Order {0} is not a pro forma order.").format(doc.name))
 
-    from customer_due_dates.revolut.payment_link import _create_payment_link, resolve_proforma_recipient
+    from customer_due_dates.revolut.payment_link import _create_payment_link
+
+    # Checked before anything is created, so a bad address leaves the order alone.
+    typed_recipient = validate_optional_email(recipient)
 
     try:
-        recipient = resolve_proforma_recipient(
-            doc.customer, doc.get("customer_address"), doc.get("shipping_address_name")
-        )
         result = _create_payment_link(
             "Sales Order",
             doc.name,
-            email_to=recipient or None,
+            email_to=typed_recipient or None,
             send_email=True,
             # Authorised above, as in create_managed_sales_order_payment_link.
             check_permission=False,
@@ -3958,6 +4002,9 @@ def send_proforma(sales_order, resend=0):
         "email_sent": email_sent,
         "attachment_ok": attachment_ok,
         "error": error,
+        "in_progress": bool(result.get("in_progress")),
+        "recipient": result.get("recipient") or "",
+        "recipient_default": result.get("recipient_default") or "",
     }
 
 

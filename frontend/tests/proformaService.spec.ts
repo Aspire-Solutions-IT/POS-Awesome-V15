@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	describeProformaResult,
+	isValidProformaRecipient,
 	normaliseProformaResponse,
 	sendProforma,
 } from "../src/posapp/services/proformaService";
@@ -13,9 +14,27 @@ describe("normaliseProformaResponse", () => {
 	it("reads the documented fields", () => {
 		expect(
 			normaliseProformaResponse({
-				message: { ok: true, link: "https://pay/x", email_sent: true, attachment_ok: true, error: "" },
+				message: {
+					ok: true,
+					link: "https://pay/x",
+					email_sent: true,
+					attachment_ok: true,
+					error: "",
+					in_progress: false,
+					recipient: "typed@x.example",
+					recipient_default: "invoice@x.example",
+				},
 			}),
-		).toEqual({ ok: true, link: "https://pay/x", emailSent: true, attachmentOk: true, error: "" });
+		).toEqual({
+			ok: true,
+			link: "https://pay/x",
+			emailSent: true,
+			attachmentOk: true,
+			error: "",
+			inProgress: false,
+			recipient: "typed@x.example",
+			recipientDefault: "invoice@x.example",
+		});
 	});
 
 	it("tolerates missing fields and a missing body", () => {
@@ -37,7 +56,16 @@ describe("normaliseProformaResponse", () => {
 });
 
 describe("describeProformaResult", () => {
-	const base = { ok: true, link: "l", emailSent: true, attachmentOk: true, error: "" };
+	const base = {
+		ok: true,
+		link: "l",
+		emailSent: true,
+		attachmentOk: true,
+		error: "",
+		inProgress: false,
+		recipient: "",
+		recipientDefault: "",
+	};
 
 	it("success names the recipient when known", () => {
 		const out = describeProformaResult(base, tr, "a@b.c");
@@ -90,5 +118,30 @@ describe("sendProforma", () => {
 	it("never throws: a failed request comes back as ok false", async () => {
 		vi.stubGlobal("frappe", { call: (opts: any) => opts.error({ message: "Network down" }) });
 		await expect(sendProforma("SO-1")).resolves.toMatchObject({ ok: false, error: "Network down" });
+	});
+
+	it("sends the typed recipient only when there is one", async () => {
+		const call = vi.fn((opts: any) => opts.callback({ message: { ok: true } }));
+		vi.stubGlobal("frappe", { call });
+
+		await sendProforma("SO-1", { resend: true, recipient: "  typed@x.example " });
+		expect(call.mock.calls[0][0].args).toMatchObject({ resend: 1, recipient: "typed@x.example" });
+
+		await sendProforma("SO-1", { resend: true, recipient: "   " });
+		expect(call.mock.calls[1][0].args.recipient).toBeUndefined();
+	});
+});
+
+describe("isValidProformaRecipient", () => {
+	it("accepts blank (the customer's own address) and one plain address", () => {
+		expect(isValidProformaRecipient("")).toBe(true);
+		expect(isValidProformaRecipient(null)).toBe(true);
+		expect(isValidProformaRecipient(" a@b.example ")).toBe(true);
+	});
+
+	it("rejects lists, names and anything that is not an address", () => {
+		for (const bad of ["a@b.example, c@d.example", "a@b.example;c@d.example", "Name <a@b.example>", "nope"]) {
+			expect(isValidProformaRecipient(bad)).toBe(false);
+		}
 	});
 });
