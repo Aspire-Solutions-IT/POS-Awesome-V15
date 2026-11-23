@@ -43,6 +43,7 @@ import {
 	getCachedDeliveryCharges,
 	saveDeliveryChargesCache,
 } from "../../../../offline/index";
+import { hasLegacyChargeRows, markUnverifiedCachedCharges } from "./shipComplete";
 import format from "../../../format";
 import { bus } from "../../../bus";
 
@@ -406,7 +407,7 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 			charges.find((charge) => Number(charge.is_default) === 1) || null;
 	};
 
-	const fetch_delivery_charges = async (customer: string) => {
+	const fetch_delivery_charges = async (customer: string, retriedStaleCache = false): Promise<void> => {
 		if (!pos_profile.value) return;
 		try {
 			const r = await frappe.call({
@@ -430,9 +431,17 @@ export function useInvoiceItems(invoiceType: Ref<string>) {
 				pos_profile.value.name,
 				customer,
 			);
-			delivery_charges.value = Array.isArray(cachedCharges)
-				? cachedCharges
-				: [];
+			// A cache row written before ship_complete existed cannot say whether the charge
+			// ships complete. Refresh it from the server once if we are online (the failure may
+			// have been transient); otherwise mark it so the POS never offers a split on it.
+			if (
+				!retriedStaleCache &&
+				hasLegacyChargeRows(cachedCharges) &&
+				(typeof navigator === "undefined" || navigator.onLine !== false)
+			) {
+				return fetch_delivery_charges(customer, true);
+			}
+			delivery_charges.value = markUnverifiedCachedCharges(cachedCharges);
 			select_default_delivery_charge(delivery_charges.value);
 		}
 	};

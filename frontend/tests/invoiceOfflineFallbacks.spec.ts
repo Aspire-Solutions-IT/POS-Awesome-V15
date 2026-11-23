@@ -55,9 +55,46 @@ describe("invoice offline fallbacks", () => {
 
 		await invoiceItems.fetch_delivery_charges("CUST-1");
 
+		// A cached row without ship_complete is legacy: refetched once, then kept as unverified
+		// so the POS cannot offer a split delivery on it.
+		expect((window as any).frappe.call).toHaveBeenCalledTimes(2);
 		expect(invoiceItems.delivery_charges.value).toEqual([
-			{ name: "DEL-1", rate: 250 },
+			{ name: "DEL-1", rate: 250, ship_complete_unverified: true },
 		]);
+	});
+
+	it("refreshes a legacy cached charge row from the server when it is back online", async () => {
+		const offlineCache = await import("../src/offline/cache");
+		const { useUIStore } = await import("../src/posapp/stores/uiStore");
+		useUIStore().setPosProfile({ name: "POS-1", company: "Test Company", currency: "PKR" } as any);
+		offlineCache.saveDeliveryChargesCache("POS-1", "CUST-1", [{ name: "DEL-1", rate: 250 }]);
+		(window as any).frappe.call = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("blip"))
+			.mockResolvedValueOnce({ message: [{ name: "DEL-1", rate: 250, ship_complete: 1 }] });
+
+		const { useInvoiceItems } = await import("../src/posapp/composables/pos/invoice/useInvoiceItems");
+		const invoiceItems = useInvoiceItems(ref("Invoice"));
+		await invoiceItems.fetch_delivery_charges("CUST-1");
+
+		expect(invoiceItems.delivery_charges.value).toEqual([
+			{ name: "DEL-1", rate: 250, ship_complete: 1 },
+		]);
+	});
+
+	it("uses a current cached charge row as it is, with no refetch", async () => {
+		const offlineCache = await import("../src/offline/cache");
+		const { useUIStore } = await import("../src/posapp/stores/uiStore");
+		useUIStore().setPosProfile({ name: "POS-1", company: "Test Company", currency: "PKR" } as any);
+		offlineCache.saveDeliveryChargesCache("POS-1", "CUST-1", [{ name: "DEL-1", rate: 250, ship_complete: 0 }]);
+		(window as any).frappe.call = vi.fn().mockRejectedValue(new Error("offline"));
+
+		const { useInvoiceItems } = await import("../src/posapp/composables/pos/invoice/useInvoiceItems");
+		const invoiceItems = useInvoiceItems(ref("Invoice"));
+		await invoiceItems.fetch_delivery_charges("CUST-1");
+
+		expect((window as any).frappe.call).toHaveBeenCalledTimes(1);
+		expect(invoiceItems.delivery_charges.value).toEqual([{ name: "DEL-1", rate: 250, ship_complete: 0 }]);
 	});
 
 	it("uses cached customer addresses when address lookup fails", async () => {

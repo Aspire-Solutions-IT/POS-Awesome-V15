@@ -3384,8 +3384,11 @@ class TestShipCompleteSubmit(TestCase):
     _order = TestPaymentTypeSubmit._order
     _submit = TestPaymentTypeSubmit._submit
 
-    def _run(self, order, *, ship_complete, partner=False):
-        with patch.object(
+    def _run(self, order, *, ship_complete, partner=False, availability=None):
+        fake = SimpleNamespace(validated_partner_charge=availability or MagicMock(return_value=None))
+        with patch.dict(
+            sys.modules, {"posawesome.posawesome.api.charge_pricing": fake}
+        ), patch.object(
             sales_orders, "_charge_is_ship_complete", return_value=ship_complete
         ) as probe, patch.object(
             sales_orders.frappe, "get_cached_value", return_value=0, create=True
@@ -3416,6 +3419,19 @@ class TestShipCompleteSubmit(TestCase):
         self.assertIsInstance(result, RuntimeError)
         self.assertIn("ships complete", str(result))
         self.assertEqual(calls["payloads"], [])
+
+    def test_an_unavailable_charge_gets_the_availability_denial_not_the_ship_complete_error(self):
+        order = self._order(
+            posa_delivery_charges=self.CHARGE,
+            posa_split_delivery=1,
+            posa_split_groups=[{"group_id": "g1", "row_ids": ["1"]}],
+        )
+        denial = RuntimeError("Delivery charge is not available here.")
+        availability = MagicMock(side_effect=denial)
+        result, calls, _probe = self._run(order, ship_complete=True, partner=True, availability=availability)
+        self.assertIs(result, denial)
+        self.assertEqual(calls["payloads"], [])
+        availability.assert_called_once_with(self.CHARGE, order.get("customer"))
 
     def test_a_non_container_charge_is_left_alone(self):
         order = self._order(

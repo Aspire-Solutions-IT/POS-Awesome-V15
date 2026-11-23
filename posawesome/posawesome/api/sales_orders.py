@@ -3468,6 +3468,11 @@ def _enforce_ship_complete(order):
     if not _charge_is_ship_complete(order.get("posa_delivery_charges")):
         return
     if cint(order.get("posa_split_delivery")):
+        # A charge this customer or POS profile cannot use gets the availability denial, not
+        # the ship-complete message (which would confirm what the charge is).
+        from posawesome.posawesome.api import charge_pricing
+
+        charge_pricing.validated_partner_charge(order.get("posa_delivery_charges"), order.get("customer"))
         frappe.throw(_("This order ships complete, so it cannot be split into delivery groups."))
     order["posa_split_delivery"] = 0
     order["must_be_fully_allocated"] = 1

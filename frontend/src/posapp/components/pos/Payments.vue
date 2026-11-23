@@ -502,6 +502,7 @@ import PaymentSelectionFields from "./payments/PaymentSelectionFields.vue";
 import PaymentDialogs from "./payments/PaymentDialogs.vue";
 import MissingOrderAddressDialog from "./payments/MissingOrderAddressDialog.vue";
 import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYellowTicketPhotoGate";
+import { canSplitDelivery, isShipCompleteCharge } from "../../composables/pos/invoice/shipComplete";
 
 const props = defineProps({
 	dialogMode: {
@@ -664,8 +665,13 @@ const paymentDeliveryChargeText = computed(() => {
 	const title = selectedRow?.title || selectedName;
 	return title ? `${title} (${amount})` : amount;
 });
+// The grouping step follows the same rule as the toggle (showSplitDeliveryOption), so a saved
+// posa_split_delivery on a ship-complete draft can never open it.
 const isSplitDeliveryEnabled = computed(
-	() => Boolean(invoice_doc.value?.posa_split_delivery) && invoiceType.value === "Order",
+	() =>
+		Boolean(invoice_doc.value?.posa_split_delivery) &&
+		invoiceType.value === "Order" &&
+		showSplitDeliveryOption.value,
 );
 const wizardStepCount = computed(() => (isSplitDeliveryEnabled.value ? 3 : 2));
 const wizardStepTitle = computed(() => {
@@ -712,13 +718,24 @@ const isShipCompleteSelected = computed(() => {
 	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
 		(row) => String(row?.name || "").trim() === selectedName,
 	);
-	const flag = selectedRow?.ship_complete;
-	return flag === 1 || flag === "1" || flag === true;
+	return isShipCompleteCharge(selectedRow);
 });
 
-// Collect-from-store orders can still be split; customer collections and ship-complete orders can't.
-const showSplitDeliveryOption = computed(
-	() => !isCollectionDeliveryChargeSelected() && !isShipCompleteSelected.value,
+const selectedChargeRow = computed(() => {
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	return (
+		(Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+			(row) => String(row?.name || "").trim() === selectedName,
+		) || null
+	);
+});
+
+// Collect-from-store orders can still be split; customer collections and ship-complete orders can't,
+// nor can a charge whose cached row cannot say whether it ships complete.
+const showSplitDeliveryOption = computed(() =>
+	canSplitDelivery(selectedChargeRow.value, isCollectionDeliveryChargeSelected()),
 );
 
 const availableFulfillmentAddresses = computed(() =>
@@ -3386,11 +3403,16 @@ watch(
 	{ immediate: true },
 );
 
+// Also runs when a different draft is loaded: two drafts on the same ship-complete charge never
+// flip showSplitDeliveryOption, yet the second can arrive with posa_split_delivery already saved.
 watch(
-	showSplitDeliveryOption,
-	(enabled) => {
+	[showSplitDeliveryOption, () => invoice_doc.value],
+	([enabled]) => {
 		if (!enabled && invoice_doc.value) {
 			invoice_doc.value.posa_split_delivery = 0;
+			if (Array.isArray(invoice_doc.value.posa_split_groups) && invoice_doc.value.posa_split_groups.length) {
+				invoice_doc.value.posa_split_groups = [];
+			}
 		}
 	},
 	{ immediate: true },
