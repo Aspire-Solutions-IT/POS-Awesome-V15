@@ -70,6 +70,14 @@
 			</v-col>
 			<v-col
 				cols="12"
+				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && shipComplete"
+			>
+				<div class="ship-complete-note text-caption text-medium-emphasis" data-test="ship-complete-note">
+					{{ $frappe._("This order ships complete: no partial deliveries") }}
+				</div>
+			</v-col>
+			<v-col
+				cols="12"
 				v-if="
 					posProfile.posa_allow_sales_order &&
 					invoiceType === 'Order' &&
@@ -234,6 +242,10 @@ defineProps({
 	showSplitDelivery: {
 		type: Boolean,
 		default: true,
+	},
+	shipComplete: {
+		type: Boolean,
+		default: false,
 	},
 	showPreferredDeliveryDate: {
 		type: Boolean,

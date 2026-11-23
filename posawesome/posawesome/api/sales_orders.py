@@ -3440,6 +3440,40 @@ def _normalize_split_groups(payload):
     return groups
 
 
+def _charge_is_ship_complete(charge_name):
+    """True when the delivery charge's Order Type ships complete (container order types).
+
+    Read from the database, never from the payload, so a forged ``ship_complete`` cannot matter.
+    A site without the columns (cdd not migrated) has no ship-complete orders.
+    """
+    charge_name = cstr(charge_name).strip()
+    if not charge_name:
+        return False
+    if not frappe.db.has_column("Delivery Charges", "order_type") or not frappe.db.has_column(
+        "Order Type", "ship_complete"
+    ):
+        return False
+    order_type = frappe.db.get_value("Delivery Charges", charge_name, "order_type")
+    if not order_type:
+        return False
+    return bool(cint(frappe.db.get_value("Order Type", order_type, "ship_complete")))
+
+
+def _enforce_ship_complete(order):
+    """A ship-complete order is never split-delivered or part-delivered, whoever places it.
+
+    The POS hides the toggle for these charges, so a split request here is a stale or forged
+    payload and is refused. The order is always saved fully allocated, whatever the payload says.
+    """
+    if not _charge_is_ship_complete(order.get("posa_delivery_charges")):
+        return
+    if cint(order.get("posa_split_delivery")):
+        frappe.throw(_("This order ships complete, so it cannot be split into delivery groups."))
+    order["posa_split_delivery"] = 0
+    order["must_be_fully_allocated"] = 1
+    order.pop("posa_split_groups", None)
+
+
 def _is_split_group_submit(payload):
     return bool(
         cint((payload or {}).get("posa_split_delivery"))
@@ -4095,6 +4129,7 @@ def _submit_sales_order(order, data=None):
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
     _force_peterborough_store_collection(order)
+    _enforce_ship_complete(order)
     is_split_group_submit = _is_split_group_submit(order)
     if payment_type == PAYMENT_TYPE_PROFORMA and is_split_group_submit:
         frappe.throw(_("Pro forma orders cannot be split into delivery groups."))

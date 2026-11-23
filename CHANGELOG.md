@@ -10,7 +10,8 @@ Release 15.36.0 — November 23, 2026
 - If the order-placed screen is replaced by the next order while a pro forma is still being sent, the slow answer no longer shows against the new order. If the payment link is already being created, the screen says so and Retry tries again.
 - Applying item changes with a payment link now only accepts a POST request.
 - If a pro forma PDF cannot be made, no email is sent and the cashier or partner is told; sending again sends the whole pro forma.
-_Total: 6 changes_
+- An order on a ship-complete delivery charge (the container order types: DDP, FOB, Cabinet and Snugg Container) is never split into delivery groups, for partners and staff alike. The fulfilment step shows "This order ships complete: no partial deliveries" and hides Split Delivery, and the server saves the order fully allocated and refuses a split request, whatever the browser sends. This needs customer_due_dates 2.41.0.
+_Total: 7 changes_
 
 Release 15.35.0 — November 19, 2026
 ### ✨ Features

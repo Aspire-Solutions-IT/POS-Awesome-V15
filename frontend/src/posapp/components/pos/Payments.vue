@@ -36,6 +36,13 @@
 					<span class="payment-context__item">
 						<span class="payment-context__label">{{ __("Delivery Charge") }}:</span>
 						<span class="payment-context__value">{{ paymentDeliveryChargeText }}</span>
+						<span
+							v-if="isShipCompleteSelected && invoiceType === 'Order'"
+							class="payment-context__value"
+							data-test="ship-complete-summary"
+						>
+							- {{ __("This order ships complete: no partial deliveries") }}
+						</span>
 					</span>
 				</div>
 				<div
@@ -149,6 +156,7 @@
 							:show-address-action="showAddressAction"
 							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
 							:show-split-delivery="showSplitDeliveryOption"
+							:ship-complete="isShipCompleteSelected"
 							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
 							:show-collection-date="showCollectionDate"
 							:collection-date="collection_date"
@@ -692,8 +700,26 @@ const showDeliverySchedulingFields = computed(
 	() => !isCollectionDeliveryChargeSelected() && !shouldUseStoreCollectionFlow.value,
 );
 
-// Collect-from-store orders can still be split; only customer collections can't.
-const showSplitDeliveryOption = computed(() => !isCollectionDeliveryChargeSelected());
+// A ship-complete charge (container order types) means the whole order goes out together.
+// Missing or unrecognised means 0, so a POS talking to an older server behaves as before.
+const isShipCompleteSelected = computed(() => {
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	if (!selectedName) {
+		return false;
+	}
+	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+		(row) => String(row?.name || "").trim() === selectedName,
+	);
+	const flag = selectedRow?.ship_complete;
+	return flag === 1 || flag === "1" || flag === true;
+});
+
+// Collect-from-store orders can still be split; customer collections and ship-complete orders can't.
+const showSplitDeliveryOption = computed(
+	() => !isCollectionDeliveryChargeSelected() && !isShipCompleteSelected.value,
+);
 
 const availableFulfillmentAddresses = computed(() =>
 	shouldUseStoreCollectionFlow.value ? storeCollectionAddresses.value : addresses.value,

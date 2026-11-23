@@ -3376,6 +3376,73 @@ class TestPaymentTypeSubmit(TestCase):
         self.assertNotIn("posa_payment_type", seen)
 
 
+class TestShipCompleteSubmit(TestCase):
+    """AP-16 D3.5: a ship-complete charge (container order types) is never split-delivered."""
+
+    PROFILE = TestPaymentTypeSubmit.PROFILE
+    CHARGE = "DDP Container Delivery"
+    _order = TestPaymentTypeSubmit._order
+    _submit = TestPaymentTypeSubmit._submit
+
+    def _run(self, order, *, ship_complete, partner=False):
+        with patch.object(
+            sales_orders, "_charge_is_ship_complete", return_value=ship_complete
+        ) as probe, patch.object(
+            sales_orders.frappe, "get_cached_value", return_value=0, create=True
+        ):
+            result, calls = self._submit(order, partner=partner)
+        return result, calls, probe
+
+    def test_ship_complete_charge_forces_full_allocation_for_staff_and_partners(self):
+        for partner in (False, True):
+            with self.subTest(partner=partner):
+                order = self._order(
+                    posa_delivery_charges=self.CHARGE, must_be_fully_allocated=0, posa_split_delivery=0
+                )
+                result, calls, probe = self._run(order, ship_complete=True, partner=partner)
+                self.assertNotIsInstance(result, Exception)
+                payload = calls["payloads"][0]
+                self.assertEqual(payload["must_be_fully_allocated"], 1)
+                self.assertEqual(payload["posa_split_delivery"], 0)
+                probe.assert_called_with(self.CHARGE)
+
+    def test_a_forged_split_request_on_a_ship_complete_charge_is_refused(self):
+        order = self._order(
+            posa_delivery_charges=self.CHARGE,
+            posa_split_delivery=1,
+            posa_split_groups=[{"group_id": "g1", "row_ids": ["1"]}],
+        )
+        result, calls, _probe = self._run(order, ship_complete=True)
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("ships complete", str(result))
+        self.assertEqual(calls["payloads"], [])
+
+    def test_a_non_container_charge_is_left_alone(self):
+        order = self._order(
+            posa_delivery_charges="Stockist Delivery", must_be_fully_allocated=0, posa_split_delivery=0
+        )
+        result, calls, _probe = self._run(order, ship_complete=False)
+        self.assertNotIsInstance(result, Exception)
+        self.assertEqual(calls["payloads"][0]["must_be_fully_allocated"], 0)
+
+    def test_the_flag_is_read_from_the_database_not_the_payload(self):
+        order = self._order(posa_delivery_charges="Stockist Delivery", ship_complete=1, must_be_fully_allocated=0)
+        result, calls, _probe = self._run(order, ship_complete=False)
+        self.assertNotIsInstance(result, Exception)
+        self.assertEqual(calls["payloads"][0]["must_be_fully_allocated"], 0)
+
+    def test_charge_lookup_follows_charge_to_order_type(self):
+        values = {("Delivery Charges", "A", "order_type"): "DDP", ("Order Type", "DDP", "ship_complete"): 1}
+        with patch.object(
+            sales_orders.frappe.db, "get_value", side_effect=lambda dt, name, field=None, *a, **k: values.get((dt, name, field))
+        ):
+            self.assertTrue(sales_orders._charge_is_ship_complete("A"))
+            self.assertFalse(sales_orders._charge_is_ship_complete("B"))
+            self.assertFalse(sales_orders._charge_is_ship_complete(""))
+        with patch.object(sales_orders.frappe.db, "has_column", return_value=False):
+            self.assertFalse(sales_orders._charge_is_ship_complete("A"))
+
+
 class _ProformaOrder:
     def __init__(self, **values):
         self.name = "SO-PF-0001"
