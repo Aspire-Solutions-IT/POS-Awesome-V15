@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { resolvePaymentTypeOptions } from "../src/posapp/utils/paymentTypeOptions";
+import {
+	partnerPaymentNote,
+	resolvePaymentTypeOptions,
+	type PaymentTypeOptions,
+} from "../src/posapp/utils/paymentTypeOptions";
 
 const base = {
 	isPartner: false,
@@ -67,5 +71,42 @@ describe("resolvePaymentTypeOptions", () => {
 			showOnAccount: false,
 			showProforma: false,
 		});
+	});
+});
+
+describe("partnerPaymentNote", () => {
+	const t = (text: string) => text;
+	const opts = (o: Partial<PaymentTypeOptions>): PaymentTypeOptions => ({
+		showSubmitWithoutPayment: false,
+		showOnAccount: false,
+		showProforma: false,
+		...o,
+	});
+
+	it("keeps the Place Order text when only Place Order is available", () => {
+		expect(partnerPaymentNote(opts({ showSubmitWithoutPayment: true }), t)).toEqual({
+			title: "Place Order",
+			lines: ["No payment is taken here. Agile will invoice this order."],
+		});
+	});
+
+	it("explains Pro Forma and On Account separately", () => {
+		const note = partnerPaymentNote(opts({ showProforma: true, showOnAccount: true }), t);
+		expect(note.title).toBe("How would you like to place this order?");
+		expect(note.lines).toHaveLength(2);
+		expect(note.lines[0]).toMatch(/^Pro Forma: .*payment link.*held until it is paid/);
+		expect(note.lines[1]).toMatch(/^On Account: no payment is taken now/);
+	});
+
+	it("explains Pro Forma alone without claiming no payment is taken", () => {
+		const note = partnerPaymentNote(opts({ showProforma: true }), t);
+		expect(note.lines).toHaveLength(1);
+		expect(note.lines[0]).toMatch(/^Pro Forma:/);
+	});
+
+	it("adds the Place Order line when it is still shown alongside", () => {
+		const note = partnerPaymentNote(opts({ showOnAccount: true, showSubmitWithoutPayment: true }), t);
+		expect(note.lines).toHaveLength(2);
+		expect(note.lines[1]).toBe("No payment is taken here. Agile will invoice this order.");
 	});
 });

@@ -36,3 +36,40 @@ export function resolvePaymentTypeOptions({
 	const showSubmitWithoutPayment = isPartner ? !showOnAccount && !showProforma : orderTypesAllowed;
 	return { showSubmitWithoutPayment, showOnAccount, showProforma };
 }
+
+export type PartnerPaymentNote = {
+	title: string;
+	/** One explanation per available way to place the order. */
+	lines: string[];
+};
+
+/**
+ * Heading and explanation shown in the Sales Partner payment step. `__` is the translate
+ * function, taken as an argument so the literals stay extractable and the helper stays pure.
+ */
+export function partnerPaymentNote(
+	{ showSubmitWithoutPayment, showOnAccount, showProforma }: PaymentTypeOptions,
+	__: (...args: [string]) => string,
+): PartnerPaymentNote {
+	if (!showOnAccount && !showProforma) {
+		return {
+			title: __("Place Order"),
+			lines: [__("No payment is taken here. Agile will invoice this order.")],
+		};
+	}
+	const lines: string[] = [];
+	if (showProforma) {
+		lines.push(
+			__(
+				"Pro Forma: a pro forma invoice with a payment link is emailed to the customer. The order is held until it is paid.",
+			),
+		);
+	}
+	if (showOnAccount) {
+		lines.push(__("On Account: no payment is taken now. Agile will invoice this order."));
+	}
+	if (showSubmitWithoutPayment) {
+		lines.push(__("No payment is taken here. Agile will invoice this order."));
+	}
+	return { title: __("How would you like to place this order?"), lines };
+}

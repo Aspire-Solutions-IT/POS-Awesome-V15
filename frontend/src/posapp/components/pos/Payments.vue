@@ -49,15 +49,15 @@
 				>
 					<section v-if="showPaymentStep && isPartner" class="payment-section payment-section--partner-order">
 						<div class="payment-section__header">
-							<h3 class="payment-section__title">{{ __("Place Order") }}</h3>
+							<h3 class="payment-section__title">{{ partnerNote.title }}</h3>
 						</div>
 						<div class="partner-order-note">
 							<div class="partner-order-note__total">
 								{{ __("Order total") }}:
 								<strong>{{ formatCurrency(invoice_doc.rounded_total || invoice_doc.grand_total || 0, invoice_doc.currency) }}</strong>
 							</div>
-							<div class="partner-order-note__text">
-								{{ __("No payment is taken here. Agile will invoice this order.") }}
+							<div v-for="line in partnerNote.lines" :key="line" class="partner-order-note__text">
+								{{ line }}
 							</div>
 						</div>
 					</section>
@@ -468,7 +468,7 @@ import { resolvePaymentPrintFormatDoctypes } from "../../utils/paymentPrintDocty
 import { resolvePaymentPrintFormat } from "../../utils/paymentPrintFormat";
 import { parseBooleanSetting } from "../../utils/stock";
 import { isPartnerMode } from "../../utils/partnerMode";
-import { resolvePaymentTypeOptions } from "../../utils/paymentTypeOptions";
+import { partnerPaymentNote, resolvePaymentTypeOptions } from "../../utils/paymentTypeOptions";
 import {
 	buildSuggestedSplitGroups,
 	hasCompleteSupplyTypes,
@@ -1145,6 +1145,7 @@ const paymentTypeOptions = computed(() =>
 const showSubmitWithoutPayment = computed(() => paymentTypeOptions.value.showSubmitWithoutPayment);
 const showOnAccount = computed(() => paymentTypeOptions.value.showOnAccount);
 const showProforma = computed(() => paymentTypeOptions.value.showProforma);
+const partnerNote = computed(() => partnerPaymentNote(paymentTypeOptions.value, __));
 
 const getWriteOffLimit = (profile) => {
 	if (!profile) return null;
