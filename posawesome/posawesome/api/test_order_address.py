@@ -220,6 +220,16 @@ def _load():
     charge_pricing.assert_available = lambda name: None
     charge_pricing.server_profile_context = lambda user=None: (STATE["profile"], "Co")
 
+    def assert_profile_resolved(name):
+        # Same rule as the real charge_pricing.assert_profile_resolved (tested in test_delivery_eta).
+        profile, _company = charge_pricing.server_profile_context()
+        if not profile and frappe.db.exists(
+            "Delivery Charges POS Profile", {"parent": name, "parenttype": "Delivery Charges"}
+        ):
+            raise FakePermissionError("not available")
+
+    charge_pricing.assert_profile_resolved = assert_profile_resolved
+
     gate = types.ModuleType(f"{PKG}.partner_gate")
     gate.customer_scope_partners = lambda user=None: STATE["partners"]
     gate.is_customer_in_scope = lambda customer, partners: (

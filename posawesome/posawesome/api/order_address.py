@@ -235,21 +235,10 @@ def _assert_staff(customer) -> None:
 
 
 def _assert_partner_profile(charge_name) -> None:
-    """A profile-restricted charge needs the partner to have a resolved POS Profile.
-
-    The offer rules accept a charge's profile row from *any* profile when no profile is
-    given, so without this a partner with no profile could use a charge restricted to others.
-    """
+    """See ``charge_pricing.assert_profile_resolved`` (kept under its old name for callers)."""
     from . import charge_pricing
 
-    profile, _company = charge_pricing.server_profile_context()
-    if not profile and frappe.db.exists(
-        "Delivery Charges POS Profile", {"parent": charge_name, "parenttype": "Delivery Charges"}
-    ):
-        frappe.throw(
-            _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
-            frappe.PermissionError,
-        )
+    charge_pricing.assert_profile_resolved(charge_name)
 
 
 def _address_title(customer: str) -> str:

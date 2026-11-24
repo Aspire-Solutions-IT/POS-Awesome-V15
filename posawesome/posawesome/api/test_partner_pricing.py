@@ -88,6 +88,7 @@ def _install():
         exists=lambda doctype, name=None: (doctype, name) in STATE["values"],
     )
     frappe.bold = lambda text: text
+    frappe.has_permission = lambda doctype, ptype=None, doc=None: True
     frappe.form_dict = _dict()
 
     utils = types.ModuleType("frappe.utils")
@@ -799,6 +800,10 @@ class TestFixedEtaWeeksOnRows(Base):
                     "order_type": "OT-DDP", "price_list": "DDP 40ft",
                     "price_list_overrides_customer": 1, "available_to": "Agile only",
                 },
+                ("Delivery Charges", "DDP staff"): {
+                    "order_type": "OT-DDP", "price_list": None,
+                    "price_list_overrides_customer": 0, "available_to": "Both",
+                },
                 ("Delivery Charges", "Free delivery"): {
                     "order_type": "OT-PLAIN", "price_list": None,
                     "price_list_overrides_customer": 0, "available_to": "Agile only",
@@ -810,7 +815,7 @@ class TestFixedEtaWeeksOnRows(Base):
                 ("Price List", "DDP 40ft"): {"enabled": 1, "selling": 1, "currency": "GBP"},
             }
         )
-        STATE["offered"] = ["DDP 40ft", "Free delivery", "No type"]
+        STATE["offered"] = ["DDP 40ft", "DDP staff", "Free delivery", "No type"]
         self.lead_week_calls = []
 
         def lead_weeks_for_items(codes):
@@ -839,11 +844,11 @@ class TestFixedEtaWeeksOnRows(Base):
         return agg.build_details(self.ITEMS)
 
     def test_fixed_charge_adds_weeks_in_one_batched_call(self):
-        for partner, customer in ((True, "CUST-A"), (False, "CUST-B")):
+        for partner, customer, charge in ((True, "CUST-A", "DDP 40ft"), (False, "CUST-B", "DDP staff")):
             with self.subTest(partner=partner):
                 STATE["partner"] = partner
                 self.lead_week_calls.clear()
-                rows = self._rows(customer, "DDP 40ft")
+                rows = self._rows(customer, charge)
                 self.assertEqual([r["fixed_eta_weeks"] for r in rows], [12, 16, 12])
                 self.assertEqual(len(self.lead_week_calls), 1, "one batched query for the page, no N+1")
                 self.assertNotIn("TPL", self.lead_week_calls[0])
@@ -855,6 +860,31 @@ class TestFixedEtaWeeksOnRows(Base):
                 self.assertTrue(rows)
                 self.assertTrue(all("fixed_eta_weeks" not in r for r in rows))
         self.assertEqual(self.lead_week_calls, [])
+
+    def test_staff_get_weeks_only_from_a_validated_charge(self):
+        STATE["partner"] = False
+        # "DDP 40ft" is Agile only: the raw charge has a fixed ETA but staff may not use it.
+        self.assertTrue(all("fixed_eta_weeks" not in r for r in self._rows("CUST-B", "DDP 40ft")))
+        # Not offered by the POS offer rules (company / profile / address charges): no weeks.
+        STATE["offered"] = ["Free delivery"]
+        self.assertTrue(all("fixed_eta_weeks" not in r for r in self._rows("CUST-B", "DDP staff")))
+        self.assertEqual(self.lead_week_calls, [])
+
+    def test_missing_lead_weeks_helper_leaves_ordinary_rows(self):
+        # An older customer_due_dates that has the rule but not lead_weeks_for_items.
+        module = types.ModuleType("customer_due_dates.selling.fixed_eta")
+        module.uses_fixed_eta = lambda order_type: order_type == "OT-DDP"
+        logged = []
+        self.addCleanup(setattr, FETCHERS.frappe, "log_error", getattr(FETCHERS.frappe, "log_error", None))
+        FETCHERS.frappe.log_error = lambda **kw: logged.append(kw)
+        FETCHERS._LOGGED_MISSING_LEAD_WEEKS.clear()
+        STATE["partner"] = True
+        with unittest.mock.patch.dict(sys.modules, {"customer_due_dates.selling.fixed_eta": module}):
+            first = self._rows("CUST-A", "DDP 40ft")
+            second = self._rows("CUST-A", "DDP 40ft")
+        self.assertEqual([r["item_code"] for r in first], ["SOFA", "TABLE", "SOFA"])
+        self.assertTrue(all("fixed_eta_weeks" not in r for r in first + second))
+        self.assertEqual(len(logged), 1, "logged once")
 
     def test_old_customer_due_dates_without_the_rule_adds_nothing(self):
         with unittest.mock.patch.dict(sys.modules, {"customer_due_dates.selling.fixed_eta": None}):

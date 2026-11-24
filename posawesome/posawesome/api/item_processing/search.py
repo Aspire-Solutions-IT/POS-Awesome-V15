@@ -442,8 +442,13 @@ def _run_item_query(
     price_list: Optional[str],
     customer: Optional[str],
     plan: SearchPlan,
+    delivery_charge: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Execute the search described by ``plan`` and return shaped rows."""
+    """Execute the search described by ``plan`` and return shaped rows.
+
+    ``delivery_charge`` is passed to the details lookup explicitly (not read from the request there),
+    so the rows always match the charge the caller (and the cache key) used.
+    """
 
     result: List[Dict[str, Any]] = []
     page_start = plan.initial_page_start
@@ -485,6 +490,7 @@ def _run_item_query(
             frappe.as_json(items_data),
             price_list=price_list,
             customer=customer,
+            delivery_charge=delivery_charge or "",
         )
         detail_map = {d["item_code"]: d for d in details}
         template_attributes_map, variant_attributes_map = _build_attribute_maps(items_data, plan)
@@ -531,6 +537,7 @@ def _execute_item_search(
     include_description: bool,
     include_image: bool,
     item_groups: Optional[Sequence[str]],
+    delivery_charge: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Orchestrate the helpers responsible for executing the search query."""
 
@@ -552,7 +559,7 @@ def _execute_item_search(
         item_groups,
     )
 
-    return _run_item_query(pos_profile, price_list, customer, plan)
+    return _run_item_query(pos_profile, price_list, customer, plan, delivery_charge)
 
 
 def _normalize_profile_context(pos_profile) -> ProfileContext:
@@ -616,6 +623,9 @@ def get_items(
     started_at = time.perf_counter()
     profile_ctx = _normalize_profile_context(pos_profile)
     groups_ctx = _prepare_item_groups(profile_ctx.profile_name, item_groups)
+    # The charge decides the price list and the rows' ``fixed_eta_weeks``, so it is read once here,
+    # part of the cache key, and passed down explicitly.
+    delivery_charge = frappe.form_dict.get("delivery_charge") or None
 
     @redis_cache(ttl=profile_ctx.cache_ttl or 300)
     def __get_items(
@@ -632,6 +642,7 @@ def get_items(
         include_description,
         include_image,
         item_groups_tuple,
+        delivery_charge,
     ):
         return _execute_item_search(
             profile_ctx.pos_profile_json,
@@ -646,6 +657,7 @@ def get_items(
             include_description,
             include_image,
             list(item_groups_tuple),
+            delivery_charge,
         )
 
     # The cache key has no user or mode in it, so partner rows (price list only, no cost
@@ -665,6 +677,7 @@ def get_items(
             include_description,
             include_image,
             groups_ctx.groups_tuple,
+            delivery_charge,
         )
         log_perf_event(
             "get_items",
@@ -690,6 +703,7 @@ def get_items(
         include_description,
         include_image,
         groups_ctx.groups,
+        delivery_charge,
     )
     log_perf_event(
         "get_items",
@@ -766,6 +780,7 @@ def search_items(
         price_list,
         customer,
         plan,
+        frappe.form_dict.get("delivery_charge") or None,
     )
     log_perf_event(
         "search_items",
@@ -841,6 +856,7 @@ def search_items_by_code(
         price_list,
         customer,
         plan,
+        frappe.form_dict.get("delivery_charge") or None,
     )
     log_perf_event(
         "search_items_by_code",

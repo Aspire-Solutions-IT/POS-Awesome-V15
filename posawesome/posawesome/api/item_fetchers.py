@@ -713,6 +713,22 @@ def merge_item_row(
     return row
 
 
+_LOGGED_MISSING_LEAD_WEEKS = []
+
+
+def _log_missing_lead_weeks() -> None:
+    if _LOGGED_MISSING_LEAD_WEEKS:
+        return
+    _LOGGED_MISSING_LEAD_WEEKS.append(True)
+    try:
+        frappe.log_error(
+            title="Fixed ETA unavailable",
+            message="customer_due_dates has no lead_weeks_for_items; item rows carry no fixed_eta_weeks.",
+        )
+    except Exception:
+        pass
+
+
 class ItemDetailAggregator:
     """Aggregate item lookup data and build detail rows."""
 
@@ -736,8 +752,6 @@ class ItemDetailAggregator:
             delivery_charge = frappe.form_dict.get("delivery_charge")
         self.delivery_charge = delivery_charge or None
         charge = charge_pricing.get_charge(self.delivery_charge)
-        # A fixed lead-time ETA charge (AP-9) puts ``fixed_eta_weeks`` on each row (display only).
-        self.fixed_eta = self._charge_has_fixed_eta(charge)
         # Partners are priced from their customer's own price list only, never a
         # price list or customer the client asks for.
         self.partner_mode = partner_pricing.is_partner_user()
@@ -748,6 +762,8 @@ class ItemDetailAggregator:
         elif charge and charge.locked:
             price_list = charge.price_list
         self.price_list = price_list or pos_profile.get("selling_price_list")
+        # A fixed lead-time ETA charge (AP-9) puts ``fixed_eta_weeks`` on each row (display only).
+        self.fixed_eta = self._charge_has_fixed_eta(self.delivery_charge, customer)
         if self.partner_mode:
             self.fallback_price_list = context.fallback
         else:
@@ -764,7 +780,19 @@ class ItemDetailAggregator:
         self.exchange_rate = self._compute_exchange_rate()
 
     @staticmethod
-    def _charge_has_fixed_eta(charge) -> bool:
+    def _charge_has_fixed_eta(charge_name, customer=None) -> bool:
+        """True when the charge, validated as ``get_fixed_eta`` validates it, has a fixed ETA.
+
+        A charge the user could not use (disabled, not offered here, no profile) simply shows no weeks.
+        """
+        from posawesome.posawesome.api import charge_pricing
+
+        if not charge_name:
+            return False
+        try:
+            charge = charge_pricing.validated_charge_for_eta(charge_name, customer)
+        except frappe.PermissionError:
+            return False
         if not charge or not charge.get("order_type"):
             return False
         try:
@@ -969,11 +997,14 @@ class ItemDetailAggregator:
         ]
         lookup_data = self._prepare_lookup(item_codes)
 
-        lead_weeks = {}
+        lead_weeks = None
         if self.fixed_eta:
-            from customer_due_dates.selling.fixed_eta import lead_weeks_for_items
-
-            lead_weeks = lead_weeks_for_items(item_codes)  # one query for the whole page
+            try:
+                from customer_due_dates.selling.fixed_eta import lead_weeks_for_items
+            except ImportError:  # customer_due_dates is older than the per-item lead weeks
+                _log_missing_lead_weeks()
+            else:
+                lead_weeks = lead_weeks_for_items(item_codes)  # one query for the whole page
 
         result = []
         for item in items_data:
@@ -990,7 +1021,7 @@ class ItemDetailAggregator:
             # A partner can only order what is priced on their customer's list.
             if self.partner_mode and flt(row.get("price_list_rate")) <= 0:
                 continue
-            if self.fixed_eta:
+            if lead_weeks is not None:
                 row["fixed_eta_weeks"] = lead_weeks.get(row.get("item_code"))
             result.append(row)
         return result

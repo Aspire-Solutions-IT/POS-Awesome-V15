@@ -69,7 +69,13 @@ STATE = {}
 class Base(unittest.TestCase):
     def setUp(self):
         STATE.clear()
-        STATE.update(partner=False, offered={"FIXED-DDP", "AGILE-FIXED", "DHD", "NO-TYPE"}, item_queries=0)
+        STATE.update(
+            partner=False,
+            offered={"FIXED-DDP", "AGILE-FIXED", "TFW-FIXED", "DHD", "NO-TYPE"},
+            restricted=set(),  # charges with a Delivery Charges POS Profile row
+            customer_readable=True,
+            item_queries=0,
+        )
 
         for name, exc in (("ValidationError", FakeValidationError), ("PermissionError", FakePermissionError)):
             self._patch(FRAPPE, name, exc, create=True)
@@ -87,7 +93,8 @@ class Base(unittest.TestCase):
             FRAPPE, "get_attr", lambda path: lambda user: {"is_partner": True, "partners": ["SP-A"]}, create=True
         )
         self._patch(FRAPPE.db, "get_value", self._get_value)
-        self._patch(FRAPPE.db, "exists", lambda doctype, name=None: doctype == "Delivery Charges" and name in CHARGES)
+        self._patch(FRAPPE.db, "exists", self._exists)
+        self._patch(FRAPPE, "has_permission", lambda doctype, ptype=None, doc=None: STATE["customer_readable"], create=True)
         self._patch(FRAPPE_UTILS, "getdate", _parse_date)
         self._patch(FRAPPE_UTILS, "nowdate", lambda: "2026-11-24")
 
@@ -99,7 +106,12 @@ class Base(unittest.TestCase):
         dc_mod.get_applicable_delivery_charges = lambda company, profile, customer, *a, **k: [
             _dict(name=n) for n in STATE["offered"]
         ]
+        kit_tree = types.ModuleType("customer_due_dates.kit_items.server.kit_tree")
+        kit_tree._load_components = lambda codes: {}
         modules = {
+            "customer_due_dates.kit_items": types.ModuleType("customer_due_dates.kit_items"),
+            "customer_due_dates.kit_items.server": types.ModuleType("customer_due_dates.kit_items.server"),
+            "customer_due_dates.kit_items.server.kit_tree": kit_tree,
             # Other test files swap sys.modules["frappe"] at import; load against this one.
             "frappe": FRAPPE,
             "frappe.utils": FRAPPE_UTILS,
@@ -111,7 +123,7 @@ class Base(unittest.TestCase):
             ),
             "posawesome.posawesome.doctype.delivery_charges.delivery_charges": dc_mod,
         }
-        for name in ("customer_due_dates.selling", "posawesome.posawesome.doctype", "posawesome.posawesome.doctype.delivery_charges"):
+        for name in ("customer_due_dates.kit_items", "customer_due_dates.kit_items.server", "customer_due_dates.selling", "posawesome.posawesome.doctype", "posawesome.posawesome.doctype.delivery_charges"):
             modules[name].__path__ = []
         # Fresh package shells: `from . import x` reads attributes of the package object, which
         # other test files leave behind pointing at their own copies of these modules.
@@ -146,7 +158,15 @@ class Base(unittest.TestCase):
     def _throw(message, exc=Exception, **kwargs):
         raise exc(message)
 
+    @staticmethod
+    def _exists(doctype, name=None):
+        if doctype == "Delivery Charges POS Profile":
+            return name["parent"] in STATE["restricted"]
+        return doctype == "Delivery Charges" and name in CHARGES
+
     def _get_all(self, doctype, filters=None, fields=None, **kwargs):
+        if "is_kit_set" in (filters or {}):
+            return []  # no kit sets in the stub catalogue
         STATE["item_queries"] += 1
         return [_dict(name=c, agiletfw_express=EXPRESS.get(c, 0)) for c in filters["name"][1]]
 
@@ -188,7 +208,7 @@ class TestStaffPath(Base):
 
     def test_items_may_be_json_and_date_defaults_to_today(self):
         result = self.call(delivery_charge="TFW-FIXED", items=json.dumps([{"item_code": "TABLE", "qty": 1}]))
-        self.assertEqual(result["lines"], {1: "2027-03-16"})
+        self.assertEqual(result["lines"], {"#1": "2027-03-16"})
 
     def test_kit_parts_are_quoted_together(self):
         items = [{"item_code": c, "qty": 1, "key": c, "kit_group_id": "K1"} for c in ("PART-1", "PART-2", "PART-3")]
@@ -213,10 +233,46 @@ class TestStaffPath(Base):
             with self.subTest(charge=charge), self.assertRaises(FakePermissionError):
                 self.call(delivery_charge=charge)
 
+    def test_staff_charge_must_be_offered_like_the_pos_dropdown(self):
+        # Enabled and Available To are fine, but the POS offer rules (company, profile, the
+        # customer's address charges) do not offer it: refused, as the dropdown would not show it.
+        STATE["offered"] = {"FIXED-DDP"}
+        with self.assertRaises(FakePermissionError):
+            self.call(delivery_charge="TFW-FIXED")
+
+    def test_staff_profile_restricted_charge_needs_a_resolved_profile(self):
+        STATE["restricted"] = {"TFW-FIXED"}
+        self._patch(self.charge_pricing, "server_profile_context", lambda user=None: (None, "Co"))
+        with self.assertRaises(FakePermissionError):
+            self.call(delivery_charge="TFW-FIXED")
+        STATE["restricted"] = set()  # unrestricted: fine with no profile
+        self.assertTrue(self.call(delivery_charge="TFW-FIXED")["applies"])
+        STATE["restricted"] = {"TFW-FIXED"}
+        self._patch(self.charge_pricing, "server_profile_context", lambda user=None: ("POS", "Co"))
+        self.assertTrue(self.call(delivery_charge="TFW-FIXED")["applies"])
+
+    def test_staff_customer_must_be_readable(self):
+        STATE["customer_readable"] = False
+        with self.assertRaises(FakePermissionError):
+            self.call(delivery_charge="TFW-FIXED", customer="CUST-A")
+        self.assertTrue(self.call(delivery_charge="TFW-FIXED")["applies"])  # no customer: nothing to read
+
     def test_one_batched_item_query(self):
         items = [{"item_code": c, "qty": 1} for c in ("SOFA", "TABLE", "PART-1", "PART-2", "SOFA")]
         self.call(delivery_charge="TFW-FIXED", items=items)
         self.assertEqual(STATE["item_queries"], 1)
+
+
+class TestOldCustomerDueDates(Base):
+    def test_endpoint_without_eta_for_lines_returns_not_applicable_and_logs_once(self):
+        empty = {"applies": False, "lines": {}, "overall_eta": None, "weeks": {}}
+        logged = []
+        self._patch(FRAPPE, "log_error", lambda *a, **k: logged.append(k), create=True)
+        old = types.ModuleType("customer_due_dates.selling.fixed_eta")  # no eta_for_lines
+        with patch.dict(sys.modules, {"customer_due_dates.selling.fixed_eta": old}):
+            self.assertEqual(self.call(delivery_charge="TFW-FIXED"), empty)
+            self.assertEqual(self.call(delivery_charge="TFW-FIXED"), empty)
+        self.assertEqual(len(logged), 1)
 
 
 class TestPartnerPath(Base):
@@ -246,6 +302,16 @@ class TestPartnerPath(Base):
         STATE["offered"] = set()
         with self.assertRaises(FakePermissionError):
             self.call(delivery_charge="AGILE-FIXED")
+
+    def test_partner_with_no_resolved_profile_cannot_use_a_profile_restricted_charge(self):
+        # The offer rules accept another profile's row when none is given (the fake offers it).
+        STATE["restricted"] = {"AGILE-FIXED"}
+        self._patch(self.charge_pricing, "server_profile_context", lambda user=None: (None, "Co"))
+        for customer in ("CUST-A", None):
+            with self.subTest(customer=customer), self.assertRaises(FakePermissionError):
+                self.call(customer=customer, delivery_charge="AGILE-FIXED")
+        STATE["restricted"] = set()
+        self.assertTrue(self.call(customer="CUST-A", delivery_charge="AGILE-FIXED")["applies"])
 
     def test_no_charge_for_a_partner_is_not_applicable(self):
         self.assertFalse(self.call(customer="CUST-A", delivery_charge=None)["applies"])
@@ -292,6 +358,32 @@ class TestValidation(Base):
             with self.subTest(kw=kw), self.assertRaises(FakeValidationError):
                 self.call(**{"delivery_charge": "TFW-FIXED", **kw})
 
+    def test_out_of_range_dates_are_refused(self):
+        for value in ("1999-12-31", "2100-01-02", "0001-01-01", "9999-12-31"):
+            with self.subTest(value=value), self.assertRaises(FakeValidationError):
+                self.call(delivery_charge="TFW-FIXED", transaction_date=value)
+        for value in ("2000-01-01", "2100-01-01"):
+            self.assertTrue(self.call(delivery_charge="TFW-FIXED", transaction_date=value)["applies"])
+
+    def test_a_date_that_parses_to_none_is_refused(self):
+        self._patch(FRAPPE_UTILS, "getdate", lambda value: None)
+        with self.assertRaises(FakeValidationError):
+            self.call(delivery_charge="TFW-FIXED", transaction_date="0000-00-00")
+
+    def test_duplicate_keys_are_refused_as_text(self):
+        for items in (
+            [{"item_code": "SOFA", "key": 1}, {"item_code": "SOFA", "key": "1"}],
+            [{"item_code": "SOFA", "key": "a"}, {"item_code": "TABLE", "key": "a"}],
+            [{"item_code": "SOFA", "key": "#2"}, {"item_code": "TABLE"}],
+        ):
+            with self.subTest(items=items), self.assertRaises(FakeValidationError):
+                self.call(delivery_charge="TFW-FIXED", items=items)
+
+    def test_numeric_and_positional_keys_do_not_collide(self):
+        items = [{"item_code": "SOFA", "key": 2}, {"item_code": "TABLE"}]
+        result = self.call(delivery_charge="TFW-FIXED", items=items)
+        self.assertEqual(set(result["lines"]), {"2", "#2"})
+
     def test_validation_runs_before_the_no_charge_shortcut(self):
         with self.assertRaises(FakeValidationError):
             self.call(delivery_charge=None, items="not json")
@@ -311,8 +403,8 @@ class TestConsistencyWithPreview(Base):
     line's ``quoted_date`` from ``compute_for_doc``; ``eta_for_lines`` uses the same
     ``compute_for_rows``. They are equal when the order's ``transaction_date`` is the date given
     to get_fixed_eta and the order's charge is the one given. The preview's header
-    ``latest_quoted_date`` is a roll-up of line dates that cdd's snapshot does elsewhere; here the
-    stub allocator sets it from the lines the same way (max), which is that roll-up.
+    ``latest_quoted_date`` is a roll-up of line dates that cdd's snapshot does elsewhere (and adds 14
+    days to); only the per-line dates and the overall ETA (the latest line) are compared here.
     """
 
     ITEMS = [
@@ -395,7 +487,10 @@ class TestConsistencyWithPreview(Base):
         eta = self._eta("TFW-FIXED", "2026-11-24")
         self.assertTrue(eta["applies"])
         self.assertEqual({l["posa_row_id"]: l["quoted_date"] for l in preview["lines"]}, eta["lines"])
-        self.assertEqual(preview["latest_quoted_date"], eta["overall_eta"])
+        # The preview's latest_quoted_date is the stub's max line date. The real header snapshot
+        # adds 14 days to it (date_change_logs), so it is not compared; the overall ETA is the
+        # latest line date.
+        self.assertEqual(max(l["quoted_date"] for l in preview["lines"]), eta["overall_eta"])
         # Not vacuous: express, non-express and a kit that is not wholly express all appear.
         self.assertEqual(sorted(set(eta["weeks"].values())), [12, 16])
 

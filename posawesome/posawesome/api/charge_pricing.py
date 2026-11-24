@@ -98,10 +98,77 @@ def validated_partner_charge(charge_name, customer):
             frappe.PermissionError,
         )
 
+    assert_offered(charge_name, customer)
+    return charge
+
+
+def validated_charge_for_eta(charge_name, customer=None):
+    """The charge for a display-only lookup (the fixed-ETA basket and grid), or an error.
+
+    Partner and staff both get the POS offer rules (``assert_offered``) with the profile guard.
+    Staff also need to be allowed to read the ``customer`` if one is given. Without a customer
+    the address-charge restriction is not evaluated (it needs the customer's addresses).
+    Returns ``None`` before the charge columns exist.
+    """
+    if not charge_name:
+        return None
+    if _is_partner_mode():
+        charge = validated_partner_charge(charge_name, customer)
+        if charge is not None:
+            assert_profile_resolved(charge_name)
+        return charge
+
+    charge = get_charge(charge_name)
+    if charge is None:
+        if frappe.db.exists("Delivery Charges", charge_name):
+            return None  # customer_due_dates has not been migrated yet
+        frappe.throw(
+            _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
+            frappe.PermissionError,
+        )
+    if frappe.db.get_value("Delivery Charges", charge_name, "disabled"):
+        frappe.throw(
+            _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
+            frappe.PermissionError,
+        )
+    if customer and not frappe.has_permission("Customer", "read", customer):
+        frappe.throw(_("Not permitted"), frappe.PermissionError)
+    assert_available(charge_name)
+    assert_offered(charge_name, customer or None, require_profile=True)
+    return charge
+
+
+def assert_profile_resolved(charge_name) -> None:
+    """A profile-restricted charge needs the user to have a resolved POS Profile.
+
+    The offer rules accept a charge's profile row from *any* profile when no profile is
+    given, so without this a user with no profile could use a charge restricted to others.
+    """
+    profile, _company = server_profile_context()
+    if not profile and frappe.db.exists(
+        "Delivery Charges POS Profile", {"parent": charge_name, "parenttype": "Delivery Charges"}
+    ):
+        frappe.throw(
+            _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
+            frappe.PermissionError,
+        )
+
+
+def assert_offered(charge_name, customer=None, require_profile=False) -> None:
+    """The charge must be in the POS charge dropdown for the server-side profile and company.
+
+    Same rules as ``get_applicable_delivery_charges``: enabled, this company, this POS profile,
+    available to this kind of user and, when a ``customer`` is given, restricted to the charges
+    on that customer's addresses. With no ``customer`` the address restriction is not evaluated.
+    ``require_profile`` also refuses a profile-restricted charge when the server resolves no POS
+    profile (see ``assert_profile_resolved``).
+    """
     from posawesome.posawesome.doctype.delivery_charges.delivery_charges import (
         get_applicable_delivery_charges,
     )
 
+    if require_profile:
+        assert_profile_resolved(charge_name)
     profile, company = server_profile_context()
     offered = get_applicable_delivery_charges(company, profile, customer) or []
     if charge_name not in {c.get("name") for c in offered}:
@@ -109,7 +176,6 @@ def validated_partner_charge(charge_name, customer):
             _("Delivery charge {0} is not available here.").format(frappe.bold(charge_name)),
             frappe.PermissionError,
         )
-    return charge
 
 
 def fallback_for(price_list, charge_name=None) -> str | None:

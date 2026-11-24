@@ -22,7 +22,7 @@ def _resolve_display_item_name(item) -> str:
     return custom_name or frappe.utils.cstr(item.get("item_name")).strip()
 
 @frappe.whitelist()
-def get_items_details(pos_profile, items_data, price_list=None, customer=None):
+def get_items_details(pos_profile, items_data, price_list=None, customer=None, delivery_charge=None):
     """Bulk fetch item details for a list of items."""
 
     started_at = time.perf_counter()
@@ -40,7 +40,9 @@ def get_items_details(pos_profile, items_data, price_list=None, customer=None):
         )
         return []
 
-    aggregator = ItemDetailAggregator(pos_profile, price_list=price_list, customer=customer)
+    aggregator = ItemDetailAggregator(
+        pos_profile, price_list=price_list, customer=customer, delivery_charge=delivery_charge
+    )
     result = aggregator.build_details(items_data)
     log_perf_event(
         "get_items_details",
