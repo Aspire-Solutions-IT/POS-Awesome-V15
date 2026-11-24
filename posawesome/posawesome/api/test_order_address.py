@@ -26,6 +26,10 @@ class FakeDoesNotExistError(Exception):
     pass
 
 
+class FakeDuplicateEntryError(Exception):
+    pass
+
+
 class _dict(dict):
     __getattr__ = dict.get
 
@@ -38,6 +42,15 @@ def _reset():
     STATE.clear()
     STATE.update(
         partners=["SP-A"],  # None = staff
+        user="staff@example.com",
+        user_types={"staff@example.com": "System User", "web@example.com": "Website User"},
+        can_create_address=True,
+        can_read_customer=True,
+        profile="PROFILE-1",  # resolved POS Profile of the caller
+        restricted={"DHD-CHARGE"},  # charges with Delivery Charges POS Profile rows
+        lookups=[],
+        disabled_charges=set(),
+        duplicate_once=False,
         customers={"CUST-A": "SP-A", "CUST-B": "SP-B"},
         charges={"DHD-CHARGE": "DHD", "DDP": "DDP"},
         offered={"DHD-CHARGE", "DDP"},  # what a partner is offered
@@ -54,8 +67,22 @@ class FakeDoc:
         self.flags = types.SimpleNamespace()
 
     def insert(self, ignore_permissions=False):
-        assert ignore_permissions
-        self.name = f"ADDR-{len(STATE['inserted']) + 1}-Shipping"
+        STATE["insert_ignore"] = ignore_permissions
+        if STATE["duplicate_once"]:
+            STATE["duplicate_once"] = False
+            # the concurrent request's address is now there
+            STATE["addresses"].append(
+                {
+                    "name": "ADDR-RACE-Shipping",
+                    "customer": self.data["links"][0]["link_name"],
+                    "address_line1": self.data["address_line1"],
+                    "pincode": self.data["pincode"],
+                    "address_type": "Shipping",
+                    "disabled": 0,
+                }
+            )
+            raise FakeDuplicateEntryError("dup")
+        self.name = f"{self.data['address_title']}-Shipping"
         STATE["inserted"].append(self.data)
         STATE["addresses"].append(
             {
@@ -63,6 +90,8 @@ class FakeDoc:
                 "customer": self.data["links"][0]["link_name"],
                 "address_line1": self.data["address_line1"],
                 "pincode": self.data["pincode"],
+                "address_type": "Shipping",
+                "disabled": 0,
             }
         )
         return self
@@ -73,6 +102,16 @@ def _load():
     frappe.ValidationError = FakeValidationError
     frappe.PermissionError = FakePermissionError
     frappe.DoesNotExistError = FakeDoesNotExistError
+    frappe.DuplicateEntryError = FakeDuplicateEntryError
+    frappe.generate_hash = lambda length=10: "h" * length
+
+    class Session:
+        user = property(lambda self: STATE["user"])
+
+    frappe.session = Session()
+    frappe.has_permission = lambda doctype, ptype="read", doc=None: (
+        STATE["can_create_address"] if doctype == "Address" else STATE["can_read_customer"]
+    )
     frappe._ = lambda text: text
     frappe.bold = lambda text: text
 
@@ -87,19 +126,31 @@ def _load():
     frappe.parse_json = json.loads
 
     def exists(doctype, name):
+        if doctype == "Delivery Charges POS Profile":
+            return name["parent"] in STATE["restricted"]
         if doctype == "Customer":
             return name in STATE["customers"]
         if doctype == "Country":
             return name in STATE["countries"]
         return False
 
-    def get_value(doctype, name, field):
+    def get_value(doctype, name, field, for_update=False):
+        if doctype == "User":
+            return STATE["user_types"].get(name)
+        if doctype == "Customer":
+            return name if name in STATE["customers"] else None
         assert doctype == "Delivery Charges"
-        return 0
+        return 1 if name in STATE["disabled_charges"] else 0
 
     def sql(query, params, as_dict=False):
+        STATE["lookups"].append(params[0])
+        assert "FOR UPDATE" in query and "'Shipping'" in query and "parenttype = 'Address'" in query
         customer = params[0]
-        return [_dict(a) for a in STATE["addresses"] if a["customer"] == customer]
+        return [
+            _dict(a)
+            for a in STATE["addresses"]
+            if a["customer"] == customer and a.get("address_type", "Shipping") == "Shipping" and not a.get("disabled")
+        ]
 
     frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value, sql=sql)
     frappe.get_doc = FakeDoc
@@ -124,6 +175,7 @@ def _load():
     charge_pricing.get_charge = get_charge
     charge_pricing.validated_partner_charge = validated_partner_charge
     charge_pricing.assert_available = lambda name: None
+    charge_pricing.server_profile_context = lambda user=None: (STATE["profile"], "Co")
 
     gate = types.ModuleType(f"{PKG}.partner_gate")
     gate.customer_scope_partners = lambda user=None: STATE["partners"]
@@ -182,12 +234,15 @@ class TestCreateOrderAddress(unittest.TestCase):
 
     def test_create_path(self):
         result = create(address={**GOOD, "email": "a@b.co", "phone": "01733 000000", "county": "Cambs"})
-        self.assertEqual(result, {"name": "ADDR-1-Shipping", "created": True})
+        self.assertEqual(result, {"name": "CUST-A-hhhhhhhhhh-Shipping", "created": True})
         data = STATE["inserted"][0]
+        self.assertTrue(STATE["insert_ignore"])  # scoped partner
         self.assertEqual(data["address_type"], "Shipping")
         self.assertEqual(data["links"], [{"link_doctype": "Customer", "link_name": "CUST-A"}])
         self.assertEqual(data["address_line1"], "10 High Street")  # stripped and collapsed
         self.assertEqual(data["pincode"], "pe1 1aa")
+        self.assertNotIn("High", data["address_title"])  # opaque: street text never drives the name
+        self.assertLessEqual(len(data["address_title"]) + len("-Shipping"), 140)
         self.assertEqual(data["email_id"], "a@b.co")
         self.assertEqual(data["county"], "Cambs")
 
@@ -279,6 +334,99 @@ class TestCreateOrderAddress(unittest.TestCase):
         STATE["partners"] = None
         with self.assertRaises(FakeDoesNotExistError):
             create("CUST-Z")
+
+    # --- staff authorisation -------------------------------------------------------------
+    def test_staff_uses_normal_permissions(self):
+        STATE["partners"] = None
+        self.assertTrue(create("CUST-B")["created"])
+        self.assertFalse(STATE["insert_ignore"])
+
+    def test_unrelated_user_denied_before_any_lookup(self):
+        STATE["partners"] = None
+        for user in ("web@example.com", "Guest", "nobody@example.com"):
+            STATE["user"] = user
+            with self.subTest(user=user), self.assertRaises(FakePermissionError):
+                create()
+        self.assertEqual(STATE["lookups"], [])
+        self.assertEqual(STATE["inserted"], [])
+
+    def test_staff_without_address_create_or_customer_read_denied(self):
+        STATE["partners"] = None
+        for key in ("can_create_address", "can_read_customer"):
+            STATE[key] = False
+            with self.subTest(key=key), self.assertRaises(FakePermissionError):
+                create()
+            STATE[key] = True
+        self.assertEqual(STATE["lookups"], [])
+
+    def test_out_of_scope_partner_denied_before_any_lookup(self):
+        with self.assertRaises(FakePermissionError):
+            create("CUST-B")
+        self.assertEqual(STATE["lookups"], [])
+
+    # --- charge / profile -----------------------------------------------------------------
+    def test_profile_restricted_charge_without_profile_denied_for_partner(self):
+        STATE["profile"] = None
+        with self.assertRaises(FakePermissionError):
+            create()
+        self.assertEqual(STATE["inserted"], [])
+        STATE["profile"] = "PROFILE-1"
+        self.assertTrue(create()["created"])
+
+    def test_unrestricted_charge_without_profile_ok_for_partner(self):
+        STATE["profile"] = None
+        STATE["restricted"].clear()
+        self.assertTrue(create()["created"])
+
+    def test_disabled_charge_denied_for_staff(self):
+        STATE["partners"] = None
+        STATE["disabled_charges"].add("DHD-CHARGE")
+        with self.assertRaises(FakePermissionError):
+            create()
+
+    # --- dedupe ---------------------------------------------------------------------------
+    def test_billing_and_disabled_addresses_are_not_reused(self):
+        STATE["addresses"] += [
+            {"name": "B", "customer": "CUST-A", "address_line1": "10 High Street", "pincode": "PE1 1AA",
+             "address_type": "Billing", "disabled": 0},
+            {"name": "D", "customer": "CUST-A", "address_line1": "10 High Street", "pincode": "PE1 1AA",
+             "address_type": "Shipping", "disabled": 1},
+        ]
+        result = create()
+        self.assertTrue(result["created"])
+        self.assertNotIn(result["name"], ("B", "D"))
+
+    def test_duplicate_entry_returns_the_concurrent_address(self):
+        STATE["duplicate_once"] = True
+        self.assertEqual(create(), {"name": "ADDR-RACE-Shipping", "created": False})
+
+    # --- plain text only ------------------------------------------------------------------
+    def test_markup_and_json_rejected_in_every_field(self):
+        payloads = (
+            '<img src=x onerror=alert(1)>',
+            "<script>alert(1)</script>",
+            "10 High St >",
+            "&lt;b&gt;",
+            "&#60;b",
+            '{"a": 1}',
+            "[1, 2]",
+        )
+        for field in ("address_line1", "address_line2", "city", "county", "postcode", "phone"):
+            for payload in payloads:
+                with self.subTest(field=field, payload=payload), self.assertRaises(FakeValidationError):
+                    create(address={**GOOD, field: payload})
+        with self.assertRaises(FakeValidationError):
+            create(address={**GOOD, "country": "<b>United Kingdom</b>"})
+        self.assertEqual(STATE["inserted"], [])
+
+    def test_plain_punctuation_is_kept_and_control_chars_stripped(self):
+        result = create(address={**GOOD, "address_line1": "Flat 2\x00\x07, O'Brien & Sons (rear) {yard}"})
+        self.assertTrue(result["created"])
+        self.assertEqual(STATE["inserted"][0]["address_line1"], "Flat 2, O'Brien & Sons (rear) {yard}")
+
+    def test_title_is_opaque_even_for_hostile_street_text(self):
+        create(address={**GOOD, "address_line1": "Evil Street"})
+        self.assertNotIn("Evil", STATE["inserted"][0]["address_title"])
 
 
 if __name__ == "__main__":
