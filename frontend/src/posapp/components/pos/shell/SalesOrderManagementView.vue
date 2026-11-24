@@ -395,6 +395,17 @@
 								</div>
 							</div>
 
+							<v-alert
+								v-if="warrantyLock?.is_locked"
+								type="warning"
+								variant="tonal"
+								density="compact"
+								border="start"
+								data-test="stainguard-header-lock"
+							>
+								{{ warrantyLock.reason }}
+							</v-alert>
+
 							<v-tabs v-model="detailTab" color="primary" class="detail-tabs">
 								<v-tab value="details">{{ __("Details") }}</v-tab>
 								<v-tab value="address">{{ __("Address") }}</v-tab>
@@ -445,6 +456,7 @@
 										v-model="form.customer_ref"
 										:label="__('Customer Ref')"
 										density="compact"
+										:disabled="!canEditHeader"
 										hide-details
 										class="pos-themed-input"
 									/>
@@ -465,6 +477,7 @@
 										format="dd-MM-yyyy"
 										:enable-time-picker="false"
 										auto-apply
+										:disabled="!canEditHeader"
 										class="sleek-field pos-themed-input"
 										:placeholder="__('Preferred Delivery Date')"
 										@update:model-value="
@@ -523,6 +536,7 @@
 										:label="__('Notes')"
 										rows="4"
 										auto-grow
+										:disabled="!canEditHeader"
 										hide-details
 										class="pos-themed-input"
 									/>
@@ -547,7 +561,7 @@
 									</v-btn>
 								</div>
 								<v-alert
-									v-if="orderLevelLock?.is_locked"
+									v-if="orderLevelLock?.is_locked && !warrantyLock?.is_locked"
 									type="warning"
 									variant="tonal"
 									density="compact"
@@ -1456,6 +1470,8 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	payments?: ManagedSalesOrderPayment[] | null;
 	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
 	order_level_lock?: ManagedSalesOrderOrderLevelLock | null;
+	/** The delivered-warranty lock alone: it also closes the header fields. */
+	warranty_lock?: ManagedSalesOrderOrderLevelLock | null;
 	surplus?: ManagedSalesOrderSurplus | null;
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
@@ -1729,8 +1745,15 @@ const resetForm = (order: ManagedSalesOrderDetail | null) => {
 	detailTab.value = "details";
 };
 
+const warrantyLock = computed(() => selectedOrder.value?.warranty_lock || null);
+
+// Once Staingard has the warranty delivered nothing on the order may change, header
+// fields included (the server refuses them too); before that the header stays editable
+// whatever else locks the items.
+const canEditHeader = computed(() => Boolean(selectedOrder.value) && !warrantyLock.value?.is_locked);
+
 const isHeaderDirty = computed(() => {
-	if (!selectedOrder.value) return false;
+	if (!selectedOrder.value || !canEditHeader.value) return false;
 	return (
 		form.customer_ref !== String(selectedOrder.value.customer_ref || "") ||
 		form.prefered_earliest_delivery_date !==

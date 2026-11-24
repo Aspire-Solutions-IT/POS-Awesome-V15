@@ -1220,6 +1220,86 @@ describe("SalesOrderManagementView", () => {
 			expect(wrapper.text()).not.toContain("Payment Required");
 		});
 
+		describe("header fields", () => {
+			const lockReason =
+				"This order is covered by Stainguard warranty SGR-1 (delivery date 2026-11-20), so it can no longer be edited in POS. Please contact Customer Services.";
+			const lockedDetail = {
+				...coverDetail,
+				order_level_lock: { is_locked: true, reason: lockReason },
+				warranty_lock: { is_locked: true, reason: lockReason },
+			};
+			const refInput = (wrapper: any) => wrapper.find("input[aria-label='Customer Ref']");
+			const notesInput = (wrapper: any) => wrapper.find("textarea[aria-label='Notes']");
+			const dateInput = (wrapper: any) => wrapper.find("input[type='date']");
+			const headerSaves = () =>
+				(api.call as any).mock.calls.filter(
+					(call: any[]) => call[0] === "posawesome.posawesome.api.sales_orders.update_managed_sales_order",
+				);
+
+			it("disables the header fields up front, and says why once, when the warranty is delivered", async () => {
+				const wrapper = await mountCoverOrder(lockedDetail);
+
+				expect(refInput(wrapper).attributes("disabled")).toBeDefined();
+				expect(notesInput(wrapper).attributes("disabled")).toBeDefined();
+				expect(dateInput(wrapper).attributes("disabled")).toBeDefined();
+				const notice = wrapper.find("[data-test='stainguard-header-lock']");
+				expect(notice.text()).toContain("delivery date 2026-11-20");
+				// The items section does not repeat the same message.
+				expect(wrapper.text().split("delivery date 2026-11-20").length - 1).toBe(1);
+				expect(findSaveButton(wrapper)!.attributes("disabled")).toBeDefined();
+			});
+
+			it("never sends a header save for a delivered order, even if the form was changed", async () => {
+				const wrapper = await mountCoverOrder(lockedDetail);
+
+				// What a browser extension or a stale tab could still do to the inputs
+				// (setValue refuses a disabled one, so the event is dispatched by hand).
+				const input = refInput(wrapper).element as HTMLInputElement;
+				input.value = "CHANGED";
+				input.dispatchEvent(new Event("input"));
+				await flushPromises();
+				const save = findSaveButton(wrapper)!;
+				expect(save.attributes("disabled")).toBeDefined();
+				// Even a click that reached the handler finds nothing to save.
+				(save.element as HTMLButtonElement).removeAttribute("disabled");
+				await save.trigger("click");
+				await flushPromises();
+
+				expect(headerSaves()).toHaveLength(0);
+			});
+
+			it("keeps the header editable before the warranty is delivered", async () => {
+				const open = { ...coverDetail, warranty_lock: { is_locked: false, reason: null } };
+				const wrapper = await mountCoverOrder(open, (method) => {
+					if (method.endsWith("update_managed_sales_order")) return open;
+					return undefined;
+				});
+
+				expect(refInput(wrapper).attributes("disabled")).toBeUndefined();
+				expect(notesInput(wrapper).attributes("disabled")).toBeUndefined();
+				expect(dateInput(wrapper).attributes("disabled")).toBeUndefined();
+				expect(wrapper.find("[data-test='stainguard-header-lock']").exists()).toBe(false);
+
+				await refInput(wrapper).setValue("NEW-REF");
+				await findSaveButton(wrapper)!.trigger("click");
+				await flushPromises();
+
+				expect(headerSaves()).toHaveLength(1);
+				expect(headerSaves()[0][1].data).toEqual(expect.objectContaining({ name: "SO-1", customer_ref: "NEW-REF" }));
+			});
+
+			it("does not close the header for the other order-level locks", async () => {
+				const wrapper = await mountCoverOrder({
+					...coverDetail,
+					order_level_lock: { is_locked: true, reason: "This Sales Order has been fully picked and can no longer be edited." },
+					warranty_lock: { is_locked: false, reason: null },
+				});
+
+				expect(refInput(wrapper).attributes("disabled")).toBeUndefined();
+				expect(wrapper.text()).toContain("fully picked");
+			});
+		});
+
 		it("shows the server's message when a cover is picked as a new item", async () => {
 			selectorItem.current = { item_code: "STG-B", stock_uom: "Nos" };
 			const wrapper = await mountCoverOrder(coverDetail, (method) => {

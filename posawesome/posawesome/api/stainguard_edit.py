@@ -15,12 +15,18 @@ the warranty and the order in step:
    preview and the payment taken include it. cdd's Update Items path makes the swap itself
    when it has the warranty guard (customer_due_dates.staingard.order_guard) and the
    warranty is registered, and rejects a payload that already carries one; otherwise POS
-   applies the swap to the rows it sends. An edit that leaves no band covering the new value
-   is refused.
+   applies the swap to the rows it sends - on the order that holds the cover, which may be
+   another order of the split (see sales_orders._apply_managed_sales_order_items). An edit that leaves no band
+   covering the new value is refused.
 
 cdd is optional here: its guard is used for rule 1 when it is installed, and the same rule
 is mirrored from the order's own stored warranty payload when it is not, so POS never
 hard-fails on a bench whose cdd predates the guard.
+
+A stored warranty payload that cannot be parsed counts as locked, with its own message.
+cdd's guard raises a bare JSON error on it (its _stored_payload is a plain parse), so POS
+catches that, falls back to the same local rule and locks the order: POS and Desk agree
+that the order is not editable, POS just says why.
 """
 
 import json
@@ -57,13 +63,19 @@ def order_cover_codes(doc) -> set:
 # --------------------------------------------------------------------------
 
 
+# What marks cdd's guard as one that swaps the cover itself: vet_update_items and
+# follow_band are its Update Items entry points; prepare_update_items is what they were
+# before they were split in two.
+CDD_GUARD_ENTRY_POINTS = ("vet_update_items", "prepare_update_items")
+
+
 def _cdd_order_guard():
     """cdd's Staingard order guard, or None when the installed cdd does not have it."""
     try:
         from customer_due_dates.staingard import order_guard
     except ImportError:
         return None
-    return order_guard if hasattr(order_guard, "prepare_update_items") else None
+    return order_guard if any(hasattr(order_guard, name) for name in CDD_GUARD_ENTRY_POINTS) else None
 
 
 def _find_offer(amount):
@@ -109,13 +121,16 @@ def warranty_context(doc):
         try:
             context = guard._warranty_context(doc)
         except Exception:
-            frappe.log_error(title="POS Staingard warranty check (cdd) failed; using the local rule")
-        else:
-            if not context:
-                return None
-            return SimpleNamespace(
-                owner=context["owner"], group=list(context["group"]), delivery=context["delivery"]
-            )
+            # Expected for a stored payload that is not JSON (cdd parses it without a
+            # fallback): the local rule locks that order, so it is not worth an Error Log
+            # row on every load. Anything else is.
+            fallback = _mirrored_warranty_context(doc)
+            if not (fallback and _payload_unreadable(fallback.owner)):
+                frappe.log_error(title="POS Staingard warranty check (cdd) failed; using the local rule")
+            return fallback
+        if not context:
+            return None
+        return SimpleNamespace(owner=context["owner"], group=list(context["group"]), delivery=context["delivery"])
     return _mirrored_warranty_context(doc)
 
 
@@ -132,19 +147,32 @@ def _mirrored_warranty_context(doc):
     return SimpleNamespace(owner=owner, group=group, delivery=_mirrored_delivery_state(owner, group))
 
 
+def _stored_payload(owner):
+    """The warranty payload last stored on `owner`: (payload dict or None, readable)."""
+    raw = getattr(owner, "staingard_warranty_payload", None)
+    if not raw:
+        return None, True
+    try:
+        stored = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None, False
+    return (stored if isinstance(stored, dict) else None), True
+
+
+def _payload_unreadable(owner) -> bool:
+    return not _stored_payload(owner)[1]
+
+
 def _mirrored_delivery_state(owner, group):
     """What says the warranty has been delivered, None while it has not (cdd's
     _delivery_state): the delivery date in the payload last stored on the owner; no stored
     payload at all, which only happened for warranties registered after delivery; or every
-    item of the split delivered, the date being on its way."""
-    raw = getattr(owner, "staingard_warranty_payload", None)
-    stored = None
-    if raw:
-        try:
-            stored = json.loads(raw) if isinstance(raw, str) else raw
-        except ValueError:
-            stored = None
-    if not isinstance(stored, dict):
+    item of the split delivered, the date being on its way. A stored payload that cannot be
+    parsed locks the order too: nothing says the warranty has not been delivered."""
+    stored, readable = _stored_payload(owner)
+    if not readable:
+        return _("its stored warranty record could not be read")
+    if stored is None:
         return _("the warranty was registered after delivery")
     if stored.get("delivery_date"):
         return _("delivery date {0}").format(stored["delivery_date"])
@@ -256,6 +284,23 @@ def _cover_price(owner, item_code) -> float:
     return flt(rate)
 
 
+def _unchanged_row(row) -> dict:
+    """An Update Items payload row that leaves a Sales Order row exactly as it is."""
+    delivery_date = getattr(row, "delivery_date", None)
+    return {
+        "docname": row.name,
+        "item_code": row.item_code,
+        "warehouse": getattr(row, "warehouse", None),
+        "delivery_date": str(delivery_date) if delivery_date else None,
+        "uom": getattr(row, "uom", None),
+        "description": getattr(row, "description", None),
+        "bom_no": getattr(row, "bom_no", None),
+        "qty": flt(row.qty),
+        "rate": flt(row.rate),
+        "conversion_factor": flt(getattr(row, "conversion_factor", 0) or 1),
+    }
+
+
 def plan_cover_swap(doc, normalized_items):
     """Work out whether the edit moves the order into another cover band.
 
@@ -263,9 +308,17 @@ def plan_cover_swap(doc, normalized_items):
     cover line is on this order), `apply_items` (the rows to hand to the update: the same
     as the projection, except that cdd makes the swap itself when its guard is installed
     and the warranty is registered, and rejects a payload that already has it), and `swap`
-    (None, or a description of the swap for the cashier). Refuses the edit when no band
-    covers the new value."""
-    plan = SimpleNamespace(project_items=normalized_items, apply_items=normalized_items, swap=None)
+    (None, or a description of the swap for the cashier). When the cover is on another order
+    of the split `owner_items` holds the rows that order will have after the swap (to price
+    it on) and `apply_on_owner` says whether POS has to make the swap there itself: it does
+    unless cdd's guard does. Refuses the edit when no band covers the new value."""
+    plan = SimpleNamespace(
+        project_items=normalized_items,
+        apply_items=normalized_items,
+        swap=None,
+        owner_items=None,
+        apply_on_owner=False,
+    )
 
     group = split_group(doc)
     covers = cover_item_codes(row.item_code for order in group for row in order.items)
@@ -296,14 +349,6 @@ def plan_cover_swap(doc, normalized_items):
 
     delegated = _cdd_order_guard() is not None and warranty_context(doc) is not None
     same_order = owner.name == doc.name
-    if not same_order and not delegated:
-        frappe.throw(
-            _(
-                "After this change the order would be worth {0}, which needs a different Stainguard cover, but the cover is "
-                "on {1}. {2}"
-            ).format(frappe.format_value(after, {"fieldtype": "Currency"}), owner.name, _customer_services()),
-            title=_("Stainguard cover"),
-        )
 
     premium = _cover_price(owner, offer["item_code"])
     plan.swap = {
@@ -317,10 +362,6 @@ def plan_cover_swap(doc, normalized_items):
         # What the old line is worth: the order's total moves by the difference.
         "old_rate": flt(getattr(line, "rate", 0)),
     }
-    if not same_order:
-        # The cover sits on another order of the split. cdd swaps it there, so this order's
-        # own total (and what is taken for it) does not change: the other order's does.
-        return plan
 
     stock_uom, description = (
         frappe.db.get_value("Item", offer["item_code"], ["stock_uom", "description"]) or (None, None)
@@ -338,22 +379,52 @@ def plan_cover_swap(doc, normalized_items):
         "rate": premium,
         "delivery_date": str(delivery_date) if delivery_date else None,
     }
+
+    if not same_order:
+        # The cover sits on another order of the split, so this order's own rows and total do
+        # not change: the other order's do. cdd swaps the line there when its guard is
+        # installed; otherwise POS does, the way cdd would (old cover row out, the new one in
+        # at its price) - see sales_orders._apply_managed_sales_order_items.
+        plan.owner_items = [_unchanged_row(row) for row in owner.items if row.name != line.name] + [new_row]
+        plan.apply_on_owner = not delegated
+        return plan
+
     plan.project_items = [row for row in normalized_items if row.get("docname") != line.name] + [new_row]
     plan.apply_items = normalized_items if delegated else plan.project_items
     return plan
 
 
 def verify_swap(swap):
-    """After the update: the cover line must now be the item the cashier was told about.
-    Raises, rolling the whole edit (and any payment taken with it) back, when it is not -
-    the premium charged would otherwise be for a cover the order does not hold."""
+    """After the update: the order holding the cover must now hold exactly the cover the
+    cashier was told about, at the premium quoted. Raises, rolling the whole edit (and any
+    payment taken with it) back, when it does not - the premium charged would otherwise be
+    for a cover the order does not hold, or at another price."""
     if not swap:
         return
-    held = frappe.get_all("Sales Order Item", filters={"parent": swap["order"]}, pluck="item_code")
-    if swap["to_item"] not in held:
+    rows = frappe.get_all(
+        "Sales Order Item", filters={"parent": swap["order"]}, fields=["item_code", "qty", "rate"]
+    )
+    held = [row for row in rows if row.get("item_code") == swap["to_item"]]
+    if not held or (swap["from_item"] != swap["to_item"] and any(
+        row.get("item_code") == swap["from_item"] for row in rows
+    )):
         frappe.throw(
             _("The Stainguard cover could not be changed to {0}, so the change was not saved. {1}").format(
                 swap["to_item"], _customer_services()
+            ),
+            title=_("Stainguard cover"),
+        )
+
+    saved = held[0]
+    if len(held) != 1 or abs(flt(saved.get("rate")) - flt(swap["rate"])) > 0.005 or flt(saved.get("qty")) != 1:
+        frappe.throw(
+            _(
+                "The Stainguard cover {0} was saved at {1} instead of the {2} quoted, so the change was not saved. {3}"
+            ).format(
+                swap["to_item"],
+                flt(saved.get("rate")),
+                flt(swap["rate"]),
+                _customer_services(),
             ),
             title=_("Stainguard cover"),
         )
