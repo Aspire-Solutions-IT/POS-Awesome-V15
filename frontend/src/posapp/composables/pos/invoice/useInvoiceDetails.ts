@@ -160,12 +160,30 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		return normalized as Address;
 	};
 
-	const get_addresses = () => {
+	// Each list request owns a sequence number; a save or a newer request supersedes older ones,
+	// so a late response cannot overwrite the list or clear a newer shipping selection.
+	let addressRequestSeq = 0;
+	const invalidateAddressRequests = () => {
+		addressRequestSeq += 1;
+	};
+
+	/**
+	 * Loads the customer's addresses. `options.select` names an address (just saved) to select once
+	 * the list holds it; resolves true when it was selected. Superseded responses are ignored.
+	 */
+	const get_addresses = (options: { select?: string; isStillWanted?: () => boolean } = {}): Promise<boolean> => {
 		const doc = unref(invoiceDoc);
+		const seq = ++addressRequestSeq;
 		if (!doc || !doc.customer) {
 			addresses.value = [];
-			return;
+			return Promise.resolve(false);
 		}
+		const requestedCustomer = doc.customer;
+		const stale = () =>
+			seq !== addressRequestSeq ||
+			unref(invoiceDoc)?.customer !== requestedCustomer ||
+			(options.isStillWanted ? !options.isStillWanted() : false);
+		const selectName = String(options.select || "").trim();
 
 		const applyCachedAddresses = () => {
 			const cachedAddresses = getCachedCustomerAddresses(doc.customer);
@@ -180,41 +198,51 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		};
 
 		if (isOffline() && applyCachedAddresses()) {
-			return;
+			return Promise.resolve(false);
 		}
 
-		frappe.call({
-			method: "posawesome.posawesome.api.customers.get_customer_addresses",
-			args: { customer: doc.customer },
-			async: true,
-			callback: function (r: any) {
-				if (!r.exc) {
-					const records = Array.isArray(r.message) ? r.message : [];
-					const normalized = records
-						.map((row) => normalizeAddress(row))
-						.filter((row): row is Address => row !== null);
-					addresses.value = normalized;
-					saveCustomerAddressesCache(doc.customer, normalized);
-
-					if (
-						doc.shipping_address_name &&
-						!normalized.some(
-							(row) => row.name === doc.shipping_address_name,
-						)
-					) {
-						doc.shipping_address_name = null;
+		return new Promise<boolean>((resolve) => {
+			frappe.call({
+				method: "posawesome.posawesome.api.customers.get_customer_addresses",
+				args: { customer: doc.customer },
+				async: true,
+				callback: function (r: any) {
+					if (stale()) {
+						resolve(false);
+						return;
 					}
-				} else {
-					if (!applyCachedAddresses()) {
+					if (!r.exc) {
+						const records = Array.isArray(r.message) ? r.message : [];
+						const normalized = records
+							.map((row) => normalizeAddress(row))
+							.filter((row): row is Address => row !== null);
+						addresses.value = normalized;
+						saveCustomerAddressesCache(doc.customer, normalized);
+
+						if (selectName && normalized.some((row) => row.name === selectName)) {
+							doc.shipping_address_name = selectName;
+							doc.customer_address = selectName;
+							resolve(true);
+							return;
+						}
+						if (
+							doc.shipping_address_name &&
+							!normalized.some((row) => row.name === doc.shipping_address_name)
+						) {
+							doc.shipping_address_name = null;
+						}
+					} else if (!applyCachedAddresses()) {
 						addresses.value = [];
 					}
-				}
-			},
-			error: function () {
-				if (!applyCachedAddresses()) {
-					addresses.value = [];
-				}
-			},
+					resolve(false);
+				},
+				error: function () {
+					if (!stale() && !applyCachedAddresses()) {
+						addresses.value = [];
+					}
+					resolve(false);
+				},
+			});
 		});
 	};
 
@@ -491,6 +519,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		return_valid_upto_date,
 
 		get_addresses,
+		invalidateAddressRequests,
 		new_address,
 		addressFilter,
 		normalizeAddress,

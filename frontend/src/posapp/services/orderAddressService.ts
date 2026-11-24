@@ -6,8 +6,6 @@
  * Partners and staff both use it, and only for a DHD delivery charge.
  */
 
-import api from "./api";
-
 const CREATE_ORDER_ADDRESS_METHOD = "posawesome.posawesome.api.order_address.create_order_address";
 
 export const DHD_ORDER_TYPE_NAME = "DHD";
@@ -63,23 +61,68 @@ export function orderAddressErrorMessage(error: any, fallback = "Could not save 
 	for (const candidate of [error?._error_message, error?.message, error?.exception]) {
 		if (typeof candidate === "string" && candidate.trim()) {
 			// "frappe.exceptions.ValidationError: text" -> "text"
-			return stripHtml(candidate.replace(/^[\w.]+Error:\s*/, ""));
+			return stripHtml(candidate.replace(/^[\w.]+(Error|Exception):\s*/, ""));
 		}
+	}
+	if (error?.status === 403) {
+		return "You do not have permission to save this address.";
 	}
 	return fallback;
 }
 
-/** Saves the address (POST) and returns its name. Rejects with the raw call error. */
+/**
+ * Turns a failed HTTP response (status + parsed JSON body, possibly empty) into the error the
+ * form shows. Frappe puts the readable reason in `_server_messages`; a 403 may have no body.
+ */
+export function orderAddressErrorFromResponse(status: number, body: any): Record<string, unknown> {
+	const data = body && typeof body === "object" ? body : {};
+	const error: Record<string, unknown> = { ...data, status };
+	error.message = orderAddressErrorMessage({ ...data, status }, "");
+	return error;
+}
+
+const csrfToken = (): string => String((window as any).frappe?.csrf_token || "");
+
+/**
+ * Saves the address (POST) and returns its name. Rejects with the parsed error.
+ *
+ * Uses fetch rather than frappe.call: frappe.call opens its own error modal (duplicating the
+ * inline message) and its 403 handler calls the error callback with no response body.
+ */
 export async function createOrderAddress(request: OrderAddressRequest): Promise<OrderAddressResult> {
-	const result = await api.call<OrderAddressResult>(
-		CREATE_ORDER_ADDRESS_METHOD,
-		{
-			customer: request.customer,
-			delivery_charge: request.deliveryCharge,
-			address: request.address,
-		},
-		{ type: "POST" },
-	);
+	const body = new URLSearchParams();
+	body.append("customer", request.customer);
+	body.append("delivery_charge", request.deliveryCharge);
+	body.append("address", JSON.stringify(request.address));
+	const headers: Record<string, string> = {
+		"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+		Accept: "application/json",
+	};
+	const csrf = csrfToken();
+	if (csrf) {
+		headers["X-Frappe-CSRF-Token"] = csrf;
+	}
+	let response: Response;
+	try {
+		response = await fetch(`/api/method/${CREATE_ORDER_ADDRESS_METHOD}`, {
+			method: "POST",
+			credentials: "include",
+			headers,
+			body: body.toString(),
+		});
+	} catch {
+		throw { message: "Could not reach the server. Check the connection and try again." };
+	}
+	let data: any = null;
+	try {
+		data = await response.json();
+	} catch {
+		// non-JSON error page
+	}
+	if (!response.ok || data?.exc) {
+		throw orderAddressErrorFromResponse(response.status, data);
+	}
+	const result = data?.message;
 	if (!result || typeof result.name !== "string" || !result.name) {
 		throw { message: "The server did not return an address." };
 	}

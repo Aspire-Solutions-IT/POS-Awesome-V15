@@ -28,7 +28,7 @@ describe("ship-complete rule", () => {
 	it("treats a cached row with no ship_complete as stale and never offers a split on it", () => {
 		const cached = [{ name: "Legacy" }, { name: "Current", ship_complete: 0 }];
 		expect(hasLegacyChargeRows(cached)).toBe(true);
-		expect(hasLegacyChargeRows([{ name: "Current", ship_complete: 0 }])).toBe(false);
+		expect(hasLegacyChargeRows([{ name: "Current", ship_complete: 0, order_type_name: "" }])).toBe(false);
 		const marked = markUnverifiedCachedCharges(cached);
 		expect(canSplitDelivery(marked[0], false)).toBe(false);
 		expect(canSplitDelivery(marked[1], false)).toBe(true);

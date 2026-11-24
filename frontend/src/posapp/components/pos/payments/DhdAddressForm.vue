@@ -89,7 +89,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import {
 	DEFAULT_ADDRESS_COUNTRY,
 	createOrderAddress,
@@ -108,7 +108,16 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-	(e: "saved", payload: { name: string; created: boolean; address: OrderAddressInput }): void;
+	(
+		e: "saved",
+		payload: {
+			name: string;
+			created: boolean;
+			address: OrderAddressInput;
+			customer: string;
+			deliveryCharge: string;
+		},
+	): void;
 }>();
 
 const blank = (): OrderAddressInput => ({
@@ -147,10 +156,16 @@ const canSave = computed(() => {
 	return Boolean(v.address_line1 && v.city && v.pincode && v.country) && Boolean(props.customer);
 });
 
+// Each Save owns a token. A reset (customer/charge change), an edit or an unmount invalidates the
+// token, so a response that arrives afterwards is thrown away instead of being applied.
+let requestToken = 0;
+
 // A saved address belongs to one customer and one charge; editing the fields makes it a new one.
 watch(
 	() => [props.customer, props.deliveryCharge],
 	() => {
+		requestToken += 1;
+		saving.value = false;
 		Object.assign(form, blank());
 		savedName.value = "";
 		errorMessage.value = "";
@@ -158,6 +173,9 @@ watch(
 );
 watch(form, () => {
 	savedName.value = "";
+});
+onBeforeUnmount(() => {
+	requestToken += 1;
 });
 
 const save = async () => {
@@ -169,20 +187,33 @@ const save = async () => {
 		errorMessage.value = __("Enter a valid email address.");
 		return;
 	}
+	const customer = props.customer;
+	const deliveryCharge = props.deliveryCharge;
+	const token = ++requestToken;
+	const snapshot = JSON.stringify(address);
+	// Still the same Save, for the same checkout, with the same typed address.
+	const isCurrent = () =>
+		token === requestToken &&
+		props.customer === customer &&
+		props.deliveryCharge === deliveryCharge &&
+		JSON.stringify(trimmed()) === snapshot;
 	saving.value = true;
 	errorMessage.value = "";
 	try {
-		const result: OrderAddressResult = await createOrderAddress({
-			customer: props.customer,
-			deliveryCharge: props.deliveryCharge,
-			address,
-		});
-		emit("saved", { ...result, address });
+		const result: OrderAddressResult = await createOrderAddress({ customer, deliveryCharge, address });
+		if (!isCurrent()) {
+			return;
+		}
+		emit("saved", { ...result, address, customer, deliveryCharge });
 		savedName.value = result.name;
 	} catch (error) {
-		errorMessage.value = orderAddressErrorMessage(error, __("Could not save the address."));
+		if (isCurrent()) {
+			errorMessage.value = orderAddressErrorMessage(error, __("Could not save the address."));
+		}
 	} finally {
-		saving.value = false;
+		if (token === requestToken) {
+			saving.value = false;
+		}
 	}
 };
 </script>

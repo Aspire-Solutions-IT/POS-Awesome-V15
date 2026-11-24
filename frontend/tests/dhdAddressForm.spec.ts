@@ -4,14 +4,24 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const call = vi.fn();
-vi.mock("../src/posapp/services/api", () => ({ default: { call: (...args: unknown[]) => call(...args) } }));
+// The service talks to the server with fetch (no frappe.call error modal), so fetch is the seam.
+const fetchMock = vi.fn();
+const call = fetchMock;
+const respond = (status: number, body: unknown) => ({
+	ok: status >= 200 && status < 300,
+	status,
+	json: async () => {
+		if (body === undefined) throw new SyntaxError("no body");
+		return body;
+	},
+});
 
 import DhdAddressForm from "../src/posapp/components/pos/payments/DhdAddressForm.vue";
 import PaymentAdditionalInfo from "../src/posapp/components/pos/payments/PaymentAdditionalInfo.vue";
 import {
 	canShowAddAddressAction,
 	isDhdCharge,
+	orderAddressErrorFromResponse,
 	orderAddressErrorMessage,
 } from "../src/posapp/services/orderAddressService";
 
@@ -64,8 +74,10 @@ const GOOD = {
 
 describe("DhdAddressForm", () => {
 	beforeEach(() => {
-		call.mockReset();
+		fetchMock.mockReset();
+		vi.stubGlobal("fetch", fetchMock);
 		(globalThis as any).window.__ = (text: string) => text;
+		(globalThis as any).window.frappe = { csrf_token: "tok123" };
 	});
 
 	const mountForm = () => {
@@ -88,7 +100,7 @@ describe("DhdAddressForm", () => {
 	});
 
 	it("does not call the server while typing, only on Save, with a POST", async () => {
-		call.mockResolvedValue({ name: "CUST-1-Shipping-ab12", created: true });
+		call.mockResolvedValue(respond(200, { message: { name: "CUST-1-Shipping-ab12", created: true } }));
 		const { wrapper, onSaved } = mountForm();
 		await fill(wrapper, { ...GOOD, "dhd-county": " West Yorks ", "dhd-phone": "0113" });
 		expect(call).not.toHaveBeenCalled();
@@ -97,34 +109,44 @@ describe("DhdAddressForm", () => {
 		await flushPromises();
 
 		expect(call).toHaveBeenCalledTimes(1);
-		expect(call).toHaveBeenCalledWith(
-			"posawesome.posawesome.api.order_address.create_order_address",
-			{
-				customer: "CUST-1",
-				delivery_charge: "Home Delivery",
-				address: {
-					address_line1: "1 High St",
-					address_line2: "",
-					city: "Leeds",
-					county: "West Yorks",
-					pincode: "LS1 1AA",
-					country: "United Kingdom",
-					phone: "0113",
-					email_id: "",
-				},
-			},
-			{ type: "POST" },
-		);
+		const [url, init] = call.mock.calls[0];
+		expect(url).toBe("/api/method/posawesome.posawesome.api.order_address.create_order_address");
+		expect(init.method).toBe("POST");
+		expect(init.headers["X-Frappe-CSRF-Token"]).toBe("tok123");
+		const sent = new URLSearchParams(init.body);
+		expect(sent.get("customer")).toBe("CUST-1");
+		expect(sent.get("delivery_charge")).toBe("Home Delivery");
+		expect(JSON.parse(sent.get("address") as string)).toEqual({
+			address_line1: "1 High St",
+			address_line2: "",
+			city: "Leeds",
+			county: "West Yorks",
+			pincode: "LS1 1AA",
+			country: "United Kingdom",
+			phone: "0113",
+			email_id: "",
+		});
 		expect(onSaved).toHaveBeenCalledTimes(1);
-		expect(onSaved.mock.calls[0][0]).toMatchObject({ name: "CUST-1-Shipping-ab12", created: true });
+		expect(onSaved.mock.calls[0][0]).toMatchObject({
+			name: "CUST-1-Shipping-ab12",
+			created: true,
+			customer: "CUST-1",
+			deliveryCharge: "Home Delivery",
+		});
 		expect(wrapper.find("[data-test='dhd-saved']").text()).toContain("Saved address");
 		expect(wrapper.find("[data-test='dhd-error']").exists()).toBe(false);
 	});
 
-	it("shows the server's plain-text rejection inline and saves nothing", async () => {
-		call.mockRejectedValue({
-			_server_messages: JSON.stringify([JSON.stringify({ message: "Address must be plain text." })]),
-		});
+	it("shows a 417 validation message from _server_messages inline, saves nothing", async () => {
+		call.mockResolvedValue(
+			respond(417, {
+				exc_type: "ValidationError",
+				exception: "frappe.exceptions.ValidationError: Address must be plain text.",
+				_server_messages: JSON.stringify([
+					JSON.stringify({ message: "Address must be <b>plain</b> text.", title: "Message" }),
+				]),
+			}),
+		);
 		const { wrapper, onSaved } = mountForm();
 		await fill(wrapper, GOOD);
 		await wrapper.find("[data-test='dhd-save']").trigger("click");
@@ -133,6 +155,96 @@ describe("DhdAddressForm", () => {
 		expect(wrapper.find("[data-test='dhd-error']").text()).toBe("Address must be plain text.");
 		expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
 		expect(onSaved).not.toHaveBeenCalled();
+	});
+
+	it("shows a 403 PermissionError message, and a clear one when the 403 has no body", async () => {
+		call.mockResolvedValueOnce(
+			respond(403, {
+				exc_type: "PermissionError",
+				exception: "frappe.exceptions.PermissionError: You may not add addresses for this customer",
+			}),
+		);
+		const { wrapper } = mountForm();
+		await fill(wrapper, GOOD);
+		await wrapper.find("[data-test='dhd-save']").trigger("click");
+		await flushPromises();
+		expect(wrapper.find("[data-test='dhd-error']").text()).toBe(
+			"You may not add addresses for this customer",
+		);
+
+		call.mockResolvedValueOnce(respond(403, undefined));
+		await wrapper.find("[data-test='dhd-save']").trigger("click");
+		await flushPromises();
+		expect(wrapper.find("[data-test='dhd-error']").text()).toBe(
+			"You do not have permission to save this address.",
+		);
+	});
+
+	describe("a response that arrives after the checkout changed", () => {
+		const deferred = () => {
+			let resolve!: (value: unknown) => void;
+			const promise = new Promise((r) => (resolve = r));
+			return { promise, resolve };
+		};
+		const OK = respond(200, { message: { name: "OLD-ADDR", created: true } });
+
+		const startSave = async () => {
+			const d = deferred();
+			call.mockReturnValue(d.promise);
+			const { wrapper, onSaved } = mountForm();
+			await fill(wrapper, GOOD);
+			await wrapper.find("[data-test='dhd-save']").trigger("click");
+			return { wrapper, onSaved, d };
+		};
+
+		it("is discarded when the customer changes while pending", async () => {
+			const { wrapper, onSaved, d } = await startSave();
+			await wrapper.setProps({ customer: "CUST-2" });
+			d.resolve(OK);
+			await flushPromises();
+			expect(onSaved).not.toHaveBeenCalled();
+			expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
+		});
+
+		it("is discarded when the delivery charge changes while pending", async () => {
+			const { wrapper, onSaved, d } = await startSave();
+			await wrapper.setProps({ deliveryCharge: "Other Charge" });
+			d.resolve(OK);
+			await flushPromises();
+			expect(onSaved).not.toHaveBeenCalled();
+			expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
+		});
+
+		it("is discarded when the form is unmounted while pending", async () => {
+			const { wrapper, onSaved, d } = await startSave();
+			wrapper.unmount();
+			d.resolve(OK);
+			await flushPromises();
+			expect(onSaved).not.toHaveBeenCalled();
+		});
+
+		it("is discarded when the typed address is edited while pending", async () => {
+			const { wrapper, onSaved, d } = await startSave();
+			await wrapper.find("[data-test='dhd-city']").setValue("York");
+			d.resolve(OK);
+			await flushPromises();
+			expect(onSaved).not.toHaveBeenCalled();
+		});
+
+		it("does not show a stale error either, and a later save still works", async () => {
+			const { wrapper, onSaved, d } = await startSave();
+			await wrapper.setProps({ customer: "CUST-2" });
+			d.resolve(respond(417, { exception: "frappe.exceptions.ValidationError: nope" }));
+			await flushPromises();
+			expect(wrapper.find("[data-test='dhd-error']").exists()).toBe(false);
+
+			call.mockResolvedValue(respond(200, { message: { name: "NEW-ADDR", created: true } }));
+			await fill(wrapper, GOOD);
+			await wrapper.find("[data-test='dhd-save']").trigger("click");
+			await flushPromises();
+			expect(onSaved).toHaveBeenCalledTimes(1);
+			expect(onSaved.mock.calls[0][0]).toMatchObject({ name: "NEW-ADDR", customer: "CUST-2" });
+		});
 	});
 
 	it("refuses an invalid email without calling the server", async () => {
@@ -147,6 +259,8 @@ describe("DhdAddressForm", () => {
 
 describe("PaymentAdditionalInfo DHD form", () => {
 	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal("fetch", fetchMock);
 		(globalThis as any).window.__ = (text: string) => text;
 		(globalThis as any).window.frappe = { _: (text: string) => text };
 	});
@@ -171,7 +285,7 @@ describe("PaymentAdditionalInfo DHD form", () => {
 	});
 
 	it("re-emits the saved address to its parent", async () => {
-		call.mockResolvedValue({ name: "ADDR-1", created: false });
+		call.mockResolvedValue(respond(200, { message: { name: "ADDR-1", created: false } }));
 		const onSaved = vi.fn();
 		const wrapper = mountInfo({ showDhdAddressForm: true, onDhdAddressSaved: onSaved });
 		await fill(wrapper, GOOD);
@@ -194,6 +308,15 @@ describe("order address helpers", () => {
 		expect(canShowAddAddressAction(true, false)).toBe(false);
 		expect(canShowAddAddressAction(false, true)).toBe(false);
 		expect(canShowAddAddressAction(false, false)).toBe(true);
+	});
+
+	it("parses a real error response body, keeping the status", () => {
+		const error = orderAddressErrorFromResponse(417, {
+			_server_messages: JSON.stringify([JSON.stringify({ message: "Postcode is not valid." })]),
+		});
+		expect(error.status).toBe(417);
+		expect(error.message).toBe("Postcode is not valid.");
+		expect(orderAddressErrorFromResponse(500, null).message).toBe("");
 	});
 
 	it("reads errors from server messages, plain messages, or falls back", () => {

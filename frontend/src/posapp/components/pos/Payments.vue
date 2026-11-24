@@ -505,7 +505,7 @@ import PaymentSelectionFields from "./payments/PaymentSelectionFields.vue";
 import PaymentDialogs from "./payments/PaymentDialogs.vue";
 import MissingOrderAddressDialog from "./payments/MissingOrderAddressDialog.vue";
 import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYellowTicketPhotoGate";
-import { canSplitDelivery, isShipCompleteCharge } from "../../composables/pos/invoice/shipComplete";
+import { canSplitDelivery, isOrderTypeUnverified, isShipCompleteCharge } from "../../composables/pos/invoice/shipComplete";
 import { canShowAddAddressAction, isDhdCharge } from "../../services/orderAddressService";
 
 const props = defineProps({
@@ -739,6 +739,10 @@ const selectedChargeRow = computed(() => {
 // A DHD (direct home delivery) charge takes a typed delivery address, saved on the customer.
 // The server names the Order Type on each offered charge; a cached row without it never matches.
 const isDhdChargeSelected = computed(() => isDhdCharge(selectedChargeRow.value));
+
+// A cached charge row with no order type name could be a DHD charge: it cannot be submitted until
+// the charge details are reloaded from the server.
+const isChargeOrderTypeUnverified = computed(() => isOrderTypeUnverified(selectedChargeRow.value));
 
 // Collect-from-store orders can still be split; customer collections and ship-complete orders can't,
 // nor can a charge whose cached row cannot say whether it ships complete.
@@ -1530,6 +1534,7 @@ const {
 	custom_days_value,
 	return_valid_upto_date,
 	get_addresses,
+	invalidateAddressRequests,
 	new_address,
 	addressFilter,
 	normalizeAddress,
@@ -2719,8 +2724,30 @@ const ensureStoreCollectionAddressLinked = async (addressName) => {
 	return String(response?.message?.address_name || normalizedName).trim();
 };
 
-const handleDhdAddressSaved = (saved) => {
+const handleDhdAddressSaved = async (saved) => {
 	if (!invoice_doc.value || !saved?.name) {
+		return;
+	}
+	// The response may belong to a checkout that has since changed: apply it only if the customer
+	// and the (DHD) charge it was saved for are still the ones selected.
+	const isStillCurrent = () =>
+		String(saved.customer || "") === String(invoice_doc.value?.customer || "") &&
+		String(saved.deliveryCharge || "") ===
+			String(invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "").trim() &&
+		isDhdChargeSelected.value;
+	if (!isStillCurrent()) {
+		return;
+	}
+	// Any list request already in flight predates this address and must not clear the selection.
+	invalidateAddressRequests();
+	selectedStoreCollectionAddressName.value = null;
+	// Use the persisted row: reload the list and select the saved address by name.
+	const selected = await get_addresses({ select: saved.name, isStillWanted: isStillCurrent });
+	if (selected) {
+		return;
+	}
+	// The list could not be reloaded (offline or failed): fall back to what was typed, if still current.
+	if (!isStillCurrent() || String(invoice_doc.value?.shipping_address_name || "").trim()) {
 		return;
 	}
 	const typed = saved.address || {};
@@ -2735,12 +2762,10 @@ const handleDhdAddressSaved = (saved) => {
 		phone: typed.phone,
 		email_id: typed.email_id,
 	});
-	// The address list is what "address picked" is checked against, so the new one joins it.
 	const existing = (Array.isArray(addresses.value) ? addresses.value : []).filter(
 		(addr) => addr.name !== saved.name,
 	);
 	addresses.value = [...existing, entry || { name: saved.name, address_line1: typed.address_line1 }];
-	selectedStoreCollectionAddressName.value = null;
 	invoice_doc.value.shipping_address_name = saved.name;
 	invoice_doc.value.customer_address = saved.name;
 };
@@ -2789,6 +2814,16 @@ const openMissingOrderAddressEntry = () => {
 };
 
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	// A charge whose order type is unknown (legacy cache, offline) may be a DHD charge.
+	if (invoiceType.value === "Order" && isChargeOrderTypeUnverified.value) {
+		fulfillmentValidationVisible.value = true;
+		toastStore.show({
+			title: __("Delivery charge details could not be verified; reconnect and reselect the charge."),
+			color: "error",
+		});
+		return;
+	}
+
 	// A DHD order is delivered to a typed address: save one (or pick one) before submitting.
 	if (
 		invoiceType.value === "Order" &&

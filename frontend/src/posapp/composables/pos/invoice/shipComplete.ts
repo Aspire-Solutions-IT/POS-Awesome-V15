@@ -8,6 +8,7 @@ export type DeliveryChargeRow = {
 	name?: string;
 	ship_complete?: unknown;
 	ship_complete_unverified?: boolean;
+	order_type_unverified?: boolean;
 	[key: string]: unknown;
 };
 
@@ -20,14 +21,36 @@ export const isShipCompleteCharge = (row?: DeliveryChargeRow | null): boolean =>
 export const isLegacyChargeRow = (row?: DeliveryChargeRow | null): boolean =>
 	Boolean(row) && (row as DeliveryChargeRow).ship_complete === undefined;
 
-export const hasLegacyChargeRows = (rows: unknown): boolean =>
-	Array.isArray(rows) && rows.some((row) => isLegacyChargeRow(row as DeliveryChargeRow));
+/** A charge row with no `order_type_name` key cannot say whether it is a DHD charge (legacy cache). */
+export const lacksOrderTypeName = (row?: DeliveryChargeRow | null): boolean =>
+	Boolean(row) && (row as DeliveryChargeRow).order_type_name === undefined;
 
-/** Cached rows with no `ship_complete` are marked unverified: they must not offer a split. */
-export const markUnverifiedCachedCharges = (rows: unknown): DeliveryChargeRow[] =>
-	(Array.isArray(rows) ? rows : []).map((row: DeliveryChargeRow) =>
-		isLegacyChargeRow(row) ? { ...row, ship_complete_unverified: true } : row,
+export const hasLegacyChargeRows = (rows: unknown): boolean =>
+	Array.isArray(rows) &&
+	rows.some(
+		(row) => isLegacyChargeRow(row as DeliveryChargeRow) || lacksOrderTypeName(row as DeliveryChargeRow),
 	);
+
+/**
+ * Cached rows with no `ship_complete` are marked unverified: they must not offer a split.
+ * Cached rows with no `order_type_name` are marked too: they cannot be told apart from a DHD
+ * charge, so submitting an order on one is blocked until the charge is reloaded.
+ */
+export const markUnverifiedCachedCharges = (rows: unknown): DeliveryChargeRow[] =>
+	(Array.isArray(rows) ? rows : []).map((row: DeliveryChargeRow) => {
+		let marked = row;
+		if (isLegacyChargeRow(row)) {
+			marked = { ...marked, ship_complete_unverified: true };
+		}
+		if (lacksOrderTypeName(row)) {
+			marked = { ...marked, order_type_unverified: true };
+		}
+		return marked;
+	});
+
+/** True when the selected charge's DHD status could not be verified (see markUnverifiedCachedCharges). */
+export const isOrderTypeUnverified = (row?: DeliveryChargeRow | null): boolean =>
+	Boolean(row?.order_type_unverified);
 
 /** Whether the split-delivery option (and the grouping step) may be offered for this charge. */
 export const canSplitDelivery = (

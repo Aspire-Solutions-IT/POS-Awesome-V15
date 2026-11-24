@@ -59,7 +59,7 @@ describe("invoice offline fallbacks", () => {
 		// so the POS cannot offer a split delivery on it.
 		expect((window as any).frappe.call).toHaveBeenCalledTimes(2);
 		expect(invoiceItems.delivery_charges.value).toEqual([
-			{ name: "DEL-1", rate: 250, ship_complete_unverified: true },
+			{ name: "DEL-1", rate: 250, ship_complete_unverified: true, order_type_unverified: true },
 		]);
 	});
 
@@ -86,7 +86,7 @@ describe("invoice offline fallbacks", () => {
 		const offlineCache = await import("../src/offline/cache");
 		const { useUIStore } = await import("../src/posapp/stores/uiStore");
 		useUIStore().setPosProfile({ name: "POS-1", company: "Test Company", currency: "PKR" } as any);
-		offlineCache.saveDeliveryChargesCache("POS-1", "CUST-1", [{ name: "DEL-1", rate: 250, ship_complete: 0 }]);
+		offlineCache.saveDeliveryChargesCache("POS-1", "CUST-1", [{ name: "DEL-1", rate: 250, ship_complete: 0, order_type_name: "" }]);
 		(window as any).frappe.call = vi.fn().mockRejectedValue(new Error("offline"));
 
 		const { useInvoiceItems } = await import("../src/posapp/composables/pos/invoice/useInvoiceItems");
@@ -94,7 +94,7 @@ describe("invoice offline fallbacks", () => {
 		await invoiceItems.fetch_delivery_charges("CUST-1");
 
 		expect((window as any).frappe.call).toHaveBeenCalledTimes(1);
-		expect(invoiceItems.delivery_charges.value).toEqual([{ name: "DEL-1", rate: 250, ship_complete: 0 }]);
+		expect(invoiceItems.delivery_charges.value).toEqual([{ name: "DEL-1", rate: 250, ship_complete: 0, order_type_name: "" }]);
 	});
 
 	it("uses cached customer addresses when address lookup fails", async () => {
