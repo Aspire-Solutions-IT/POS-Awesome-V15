@@ -229,6 +229,28 @@ class TestCustomerArguments(unittest.TestCase):
         with self.assertRaises(FakePermissionError):
             call(f"{API}items.get_items", {"customer": "CUST-B"})
 
+    def test_get_fixed_eta_uses_the_optional_customer_rule(self):
+        method = f"{API}delivery_eta.get_fixed_eta"
+        self.assertEqual(GATE.POS_METHODS[method], GATE.OPTIONAL_CUSTOMER)
+        call(method)
+        call(method, {"customer": ""})
+        call(method, {"customer": "CUST-A", "delivery_charge": "DDP", "items": "[]"})
+        for form in ({"customer": "CUST-B"}, {"customer": "CUST-NONE"}, {"customer": ["CUST-A"]}):
+            with self.subTest(form=form), self.assertRaises(FakePermissionError):
+                call(method, form)
+        with self.assertRaises(FakePermissionError):
+            call(method, {"customer": "CUST-A"}, scope=NO_PARTNER_SCOPE)
+
+    def test_get_fixed_eta_is_not_reachable_by_other_paths(self):
+        # Only the whitelisted method path is allowed for the endpoint; the document routes
+        # and another module's name are not.
+        method = f"{API}delivery_eta.get_fixed_eta"
+        for other in (f"{API}sales_orders.get_fixed_eta", f"{API}delivery_eta.get_fixed_eta_all"):
+            with self.subTest(method=other), self.assertRaises(FakePermissionError):
+                call(other, {"customer": "CUST-A"})
+        with self.assertRaises(FakePermissionError):
+            call(method, {"customer": "CUST-A"}, path="/api/v2/document/Customer/CUST-A")
+
     def test_non_string_customer_is_denied(self):
         with self.assertRaises(FakePermissionError):
             call(f"{API}customers.get_customer_info", {"customer": ["CUST-A"]})

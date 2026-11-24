@@ -112,6 +112,8 @@ POS_METHODS: dict[str, dict] = {
     # No offers or pricing rules: a partner pays the price list rate, so the POS must never
     # show a promotional discount that the server would strip on save.
     **_methods("offers.", {"get_applicable_delivery_charges": OPTIONAL_CUSTOMER}),
+    # Read-only fixed lead-time ETA for a basket (a display; the order's own dates are set on save).
+    **_methods("delivery_eta.", {"get_fixed_eta": OPTIONAL_CUSTOMER}),
     **_methods("print_formats.", {"get_print_formats": {}}),
     **_methods("bundles.", {"get_bundle_components": {}}),
     **_methods("kit_due_tree.", {"get_kit_due_tree": {}}),

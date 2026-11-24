@@ -3,6 +3,7 @@ import pathlib
 import sys
 import types
 import unittest
+import unittest.mock
 
 API_DIR = pathlib.Path(__file__).resolve().parent
 
@@ -785,6 +786,80 @@ class TestAggregator(Base):
     def test_staff_keep_their_requested_price_list(self):
         STATE["partner"] = False
         self.assertEqual(self._aggregator("CUST-B", price_list="Standard Selling").price_list, "Standard Selling")
+
+
+class TestFixedEtaWeeksOnRows(Base):
+    """AP-9: item-grid rows carry ``fixed_eta_weeks`` only on a fixed lead-time charge."""
+
+    def setUp(self):
+        super().setUp()
+        STATE["values"].update(
+            {
+                ("Delivery Charges", "DDP 40ft"): {
+                    "order_type": "OT-DDP", "price_list": "DDP 40ft",
+                    "price_list_overrides_customer": 1, "available_to": "Agile only",
+                },
+                ("Delivery Charges", "Free delivery"): {
+                    "order_type": "OT-PLAIN", "price_list": None,
+                    "price_list_overrides_customer": 0, "available_to": "Agile only",
+                },
+                ("Delivery Charges", "No type"): {
+                    "order_type": None, "price_list": None,
+                    "price_list_overrides_customer": 0, "available_to": "Agile only",
+                },
+                ("Price List", "DDP 40ft"): {"enabled": 1, "selling": 1, "currency": "GBP"},
+            }
+        )
+        STATE["offered"] = ["DDP 40ft", "Free delivery", "No type"]
+        self.lead_week_calls = []
+
+        def lead_weeks_for_items(codes):
+            self.lead_week_calls.append(list(codes))
+            return {code: 12 if code == "SOFA" else 16 for code in codes}
+
+        module = types.ModuleType("customer_due_dates.selling.fixed_eta")
+        module.uses_fixed_eta = lambda order_type: order_type == "OT-DDP"
+        module.lead_weeks_for_items = lead_weeks_for_items
+        patcher = unittest.mock.patch.dict(sys.modules, {"customer_due_dates.selling.fixed_eta": module})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        lookup = FETCHERS.ItemLookupData({}, {}, {}, {}, {}, {}, {}, {})
+        self._saved_prepare = FETCHERS.ItemDetailAggregator._prepare_lookup
+        self._saved_merge = FETCHERS.merge_item_row
+        FETCHERS.ItemDetailAggregator._prepare_lookup = lambda agg, codes: lookup
+        FETCHERS.merge_item_row = lambda item, *a, **k: {"item_code": item["item_code"], "price_list_rate": 1}
+        self.addCleanup(setattr, FETCHERS.ItemDetailAggregator, "_prepare_lookup", self._saved_prepare)
+        self.addCleanup(setattr, FETCHERS, "merge_item_row", self._saved_merge)
+
+    ITEMS = [{"item_code": "SOFA"}, {"item_code": "TABLE"}, {"item_code": "SOFA"}, {"item_code": "TPL", "has_variants": 1}]
+
+    def _rows(self, customer, charge):
+        profile = {"name": "POS", "currency": "GBP", "company": None, "selling_price_list": "Standard Selling"}
+        agg = FETCHERS.ItemDetailAggregator(profile, customer=customer, delivery_charge=charge)
+        return agg.build_details(self.ITEMS)
+
+    def test_fixed_charge_adds_weeks_in_one_batched_call(self):
+        for partner, customer in ((True, "CUST-A"), (False, "CUST-B")):
+            with self.subTest(partner=partner):
+                STATE["partner"] = partner
+                self.lead_week_calls.clear()
+                rows = self._rows(customer, "DDP 40ft")
+                self.assertEqual([r["fixed_eta_weeks"] for r in rows], [12, 16, 12])
+                self.assertEqual(len(self.lead_week_calls), 1, "one batched query for the page, no N+1")
+                self.assertNotIn("TPL", self.lead_week_calls[0])
+
+    def test_other_charges_leave_rows_unchanged(self):
+        for charge in (None, "", "Free delivery", "No type"):
+            with self.subTest(charge=charge):
+                rows = self._rows("CUST-A", charge)
+                self.assertTrue(rows)
+                self.assertTrue(all("fixed_eta_weeks" not in r for r in rows))
+        self.assertEqual(self.lead_week_calls, [])
+
+    def test_old_customer_due_dates_without_the_rule_adds_nothing(self):
+        with unittest.mock.patch.dict(sys.modules, {"customer_due_dates.selling.fixed_eta": None}):
+            rows = self._rows("CUST-A", "DDP 40ft")
+        self.assertTrue(all("fixed_eta_weeks" not in r for r in rows))
 
 
 if __name__ == "__main__":

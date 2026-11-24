@@ -736,6 +736,8 @@ class ItemDetailAggregator:
             delivery_charge = frappe.form_dict.get("delivery_charge")
         self.delivery_charge = delivery_charge or None
         charge = charge_pricing.get_charge(self.delivery_charge)
+        # A fixed lead-time ETA charge (AP-9) puts ``fixed_eta_weeks`` on each row (display only).
+        self.fixed_eta = self._charge_has_fixed_eta(charge)
         # Partners are priced from their customer's own price list only, never a
         # price list or customer the client asks for.
         self.partner_mode = partner_pricing.is_partner_user()
@@ -760,6 +762,16 @@ class ItemDetailAggregator:
         )
         self.price_list_currency = self._determine_price_list_currency()
         self.exchange_rate = self._compute_exchange_rate()
+
+    @staticmethod
+    def _charge_has_fixed_eta(charge) -> bool:
+        if not charge or not charge.get("order_type"):
+            return False
+        try:
+            from customer_due_dates.selling.fixed_eta import uses_fixed_eta
+        except ImportError:  # customer_due_dates is older than the fixed ETA
+            return False
+        return bool(uses_fixed_eta(charge.order_type))
 
     def _with_fallback_prices(self, price_rows, item_codes, use_cache):
         """Add prices from the fallback list for the items the main list does not price."""
@@ -957,6 +969,12 @@ class ItemDetailAggregator:
         ]
         lookup_data = self._prepare_lookup(item_codes)
 
+        lead_weeks = {}
+        if self.fixed_eta:
+            from customer_due_dates.selling.fixed_eta import lead_weeks_for_items
+
+            lead_weeks = lead_weeks_for_items(item_codes)  # one query for the whole page
+
         result = []
         for item in items_data:
             if not item.get("item_code") or item.get("has_variants"):
@@ -972,6 +990,8 @@ class ItemDetailAggregator:
             # A partner can only order what is priced on their customer's list.
             if self.partner_mode and flt(row.get("price_list_rate")) <= 0:
                 continue
+            if self.fixed_eta:
+                row["fixed_eta_weeks"] = lead_weeks.get(row.get("item_code"))
             result.append(row)
         return result
 
