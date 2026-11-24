@@ -1,7 +1,7 @@
 <template>
 	<v-card flat :class="['cards mb-0 mt-3 pa-0', { compact }]">
 		<v-row align="start" no-gutters>
-			<v-col cols="12" sm="6">
+			<v-col v-if="!isPartner" cols="12" sm="6">
 				<v-btn
 					ref="submitButton"
 					block
@@ -31,7 +31,12 @@
 <!--					{{ __("Submit & Print") }}-->
 <!--				</v-btn>-->
 <!--			</v-col>-->
-			<v-col v-if="showSubmitWithoutPayment" cols="12" sm="6" class="payment-action-col payment-action-col--stacked">
+			<v-col
+				v-if="showSubmitWithoutPayment"
+				cols="12"
+				:sm="isPartner ? 12 : 6"
+				class="payment-action-col payment-action-col--stacked"
+			>
 				<v-btn
 					block
 					size="large"
@@ -42,14 +47,52 @@
 					:loading="loading"
 					:disabled="loading || validatePayment"
 				>
-					{{ __("Submit Without Payment") }}
+					{{ isPartner ? __("Place Order") : __("Submit Without Payment") }}
+				</v-btn>
+			</v-col>
+			<v-col
+				v-if="showOnAccount"
+				cols="12"
+				:sm="showProforma ? 6 : 12"
+				class="payment-action-col payment-action-col--stacked"
+			>
+				<v-btn
+					block
+					size="large"
+					color="info"
+					variant="flat"
+					class="payment-submit-on-account-btn payment-footer-btn"
+					@click="$emit('submit-on-account')"
+					:loading="loading"
+					:disabled="loading || validatePayment"
+				>
+					{{ __("On Account") }}
+				</v-btn>
+			</v-col>
+			<v-col
+				v-if="showProforma"
+				cols="12"
+				:sm="showOnAccount ? 6 : 12"
+				class="payment-action-col payment-action-col--stacked"
+			>
+				<v-btn
+					block
+					size="large"
+					color="secondary"
+					variant="flat"
+					class="payment-submit-proforma-btn payment-footer-btn"
+					@click="$emit('submit-proforma')"
+					:loading="loading"
+					:disabled="loading || validatePayment"
+				>
+					{{ __("Pro Forma") }}
 				</v-btn>
 			</v-col>
 			<v-col
 				cols="12"
 				sm="12"
 				:class="[
-					showSubmitWithoutPayment ? 'payment-action-col payment-action-col--stacked' : '',
+					showSubmitWithoutPayment || showOnAccount || showProforma ? 'payment-action-col payment-action-col--stacked' : '',
 				]"
 			>
 				<v-btn
@@ -58,11 +101,11 @@
 					color="error"
 					variant="flat"
 					:class="[
-						showSubmitWithoutPayment ? 'pa-1 payment-cancel-btn payment-footer-btn' : 'mt-2 pa-1 payment-cancel-btn payment-footer-btn',
+						showSubmitWithoutPayment || showOnAccount || showProforma ? 'pa-1 payment-cancel-btn payment-footer-btn' : 'mt-2 pa-1 payment-cancel-btn payment-footer-btn',
 					]"
 					@click="$emit('cancel')"
 				>
-					{{ __("Cancel Payment") }}
+					{{ isPartner ? __("Cancel") : __("Cancel Payment") }}
 				</v-btn>
 			</v-col>
 		</v-row>
@@ -70,17 +113,23 @@
 </template>
 
 <script setup>
+import { isPartnerMode } from "../../../utils/partnerMode";
+
 defineProps({
 	loading: Boolean,
 	validatePayment: Boolean,
 	highlightSubmit: Boolean,
 	compact: Boolean,
 	showSubmitWithoutPayment: Boolean,
+	showOnAccount: Boolean,
+	showProforma: Boolean,
 });
 
-defineEmits(["submit", "submit-and-print", "submit-without-payment", "cancel"]);
+defineEmits(["submit", "submit-and-print", "submit-without-payment", "submit-on-account", "submit-proforma", "cancel"]);
 
 const __ = window.__;
+// A Sales Partner only places orders, so there is one button to place it.
+const isPartner = isPartnerMode();
 </script>
 
 <style scoped>
@@ -113,6 +162,14 @@ const __ = window.__;
 
 .payment-submit-no-payment-btn {
 	background-color: rgb(var(--v-theme-warning)) !important;
+}
+
+.payment-submit-on-account-btn {
+	background-color: rgb(var(--v-theme-info)) !important;
+}
+
+.payment-submit-proforma-btn {
+	background-color: rgb(var(--v-theme-secondary)) !important;
 }
 
 .payment-cancel-btn {

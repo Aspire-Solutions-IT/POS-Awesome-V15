@@ -67,6 +67,7 @@
 					]"
 				>
 					<v-btn
+						v-if="!isPartner"
 						icon
 						size="small"
 						:class="[
@@ -87,6 +88,7 @@
 					</v-btn>
 
 					<v-btn
+						v-if="canLock"
 						icon
 						size="small"
 						class="lock-screen-btn mobile-btn pos-themed-button"
@@ -149,8 +151,8 @@
 						data-test="cashier-chip"
 						tabindex="0"
 						role="button"
-						@click="$emit('open-employee-switch')"
-						@keydown.enter="$emit('open-employee-switch')"
+						@click="!isPartner && $emit('open-employee-switch')"
+						@keydown.enter="!isPartner && $emit('open-employee-switch')"
 					>
 						<v-icon
 							:start="!isRtl"
@@ -182,6 +184,7 @@
 					]"
 				>
 					<v-btn
+						v-if="!isPartner"
 						icon
 						:class="[
 							'offline-invoices-btn pos-themed-button',
@@ -210,6 +213,7 @@
 					</v-btn>
 
 					<v-btn
+						v-if="canLock"
 						icon
 						class="lock-screen-btn pos-themed-button"
 						:aria-label="__('Lock Screen')"
@@ -267,6 +271,8 @@
 import { useRtl } from "../../composables/core/useRtl";
 import posLogo from "../pos/pos.png";
 import NavbarInfoGadgets from "./NavbarInfoGadgets.vue";
+import { isPartnerMode } from "../../utils/partnerMode";
+import { useEmployeeStore } from "../../stores/employeeStore";
 
 export default {
 	name: "NavbarAppBar",
@@ -275,7 +281,9 @@ export default {
 	},
 	setup() {
 		const { isRtl, rtlStyles, rtlClasses } = useRtl();
+		const employeeStore = useEmployeeStore();
 		return {
+			employeeStore,
 			isRtl,
 			rtlStyles,
 			rtlClasses,
@@ -356,6 +364,14 @@ export default {
 			return "User";
 		},
 
+		// A Sales Partner has no cashier PIN, offline queue or till to lock.
+		isPartner() {
+			return isPartnerMode();
+		},
+		// Staff always can; a partner only once they have a PIN to unlock with.
+		canLock() {
+			return this.employeeStore.canLockTerminal;
+		},
 		cashierChipLabel() {
 			return this.cashierName || this.displayName;
 		},

@@ -64,7 +64,7 @@
 						</div>
 					</div>
 
-					<div class="menu-section-block">
+					<div v-if="quickActionRows.length" class="menu-section-block">
 						<div class="menu-section-heading">
 							<div class="menu-section-title">{{ __("Quick Actions") }}</div>
 							<div class="menu-section-subtitle">
@@ -317,6 +317,7 @@ import { useUpdateStore } from "../../stores/updateStore";
 import { useEmployeeStore } from "../../stores/employeeStore";
 import { storeToRefs } from "pinia";
 import QzTrayDialog from "./QzTrayDialog.vue";
+import { isPartnerMode } from "../../utils/partnerMode";
 import ProcessNotesDialog from "./ProcessNotesDialog.vue";
 import {
 	loadProcessNotes,
@@ -418,6 +419,10 @@ export default {
 			return notesForPosScreen(this.processNotes, this.currentPosScreen);
 		},
 		quickActions() {
+			// Cashier, shift, printing and sync actions don't apply to a Sales Partner.
+			if (isPartnerMode()) {
+				return [];
+			}
 			const noteCount = this.screenProcessNotes.length;
 			const actions = [
 				{
@@ -485,6 +490,21 @@ export default {
 			return this.quickActions.map((action) => [action]);
 		},
 		settingsSections() {
+			const sections = this.allSettingsSections;
+			if (!isPartnerMode()) {
+				return sections;
+			}
+			// Partners keep language, theme, about and logout: no printer setup, customer
+			// display or update checks (the server refuses those calls for them).
+			const kept = new Set(["language", "theme", "about", "logout"]);
+			return sections
+				.map((section) => ({
+					...section,
+					actions: section.actions.filter((action) => kept.has(action.id)),
+				}))
+				.filter((section) => section.actions.length);
+		},
+		allSettingsSections() {
 			return [
 				{
 					id: "personal",

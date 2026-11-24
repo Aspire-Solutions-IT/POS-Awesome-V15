@@ -49,6 +49,12 @@ def _install_stubs():
 		"posawesome.posawesome.api.invoice_processing.utils"
 	] = invoice_utils_module
 
+	gate_module = types.ModuleType("posawesome.posawesome.api.partner_gate")
+	gate_module.STATE = {"scope": {"is_partner": False, "partners": []}, "allowed": set()}
+	gate_module.get_scope = lambda user=None: gate_module.STATE["scope"]
+	gate_module.allowed_price_lists = lambda partners: set(gate_module.STATE["allowed"])
+	sys.modules["posawesome.posawesome.api.partner_gate"] = gate_module
+
 	api_utils_module = types.ModuleType("posawesome.posawesome.api.utils")
 	api_utils_module.get_active_pos_profile = lambda user=None: {
 		"name": "POS-TEST",
@@ -123,3 +129,56 @@ class TestOfflineSyncBootstrap(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestOfflineSyncBootstrapPartnerScope(unittest.TestCase):
+	"""A partner is only told about the price lists they can price from."""
+
+	@classmethod
+	def setUpClass(cls):
+		_install_stubs()
+		cls.module = _load_module()
+		cls.gate = sys.modules["posawesome.posawesome.api.partner_gate"]
+
+	def tearDown(self):
+		self.gate.STATE.update(scope={"is_partner": False, "partners": []}, allowed=set())
+		sys.modules["frappe"].get_all = self._orig_get_all
+
+	def setUp(self):
+		self._orig_get_all = sys.modules["frappe"].get_all
+		self.seen_filters = []
+
+		def get_all(doctype, **kwargs):
+			self.seen_filters.append(kwargs.get("filters"))
+			names = (kwargs.get("filters") or {}).get("name")
+			rows = [
+				{"name": "Retail", "modified": "2026-04-09T10:03:00"},
+				{"name": "Wholesale", "modified": "2026-04-09T10:02:00"},
+			]
+			if names:
+				rows = [row for row in rows if row["name"] in names[1]]
+			return rows
+
+		sys.modules["frappe"].get_all = get_all
+
+	def _lists(self):
+		response = self.module.sync_bootstrap_config(pos_profile="POS-TEST")
+		return response["changes"][1]["data"]["price_lists"]
+
+	def test_staff_still_get_every_selling_list(self):
+		self.assertEqual(self._lists(), ["Retail", "Wholesale"])
+
+	def test_partner_gets_only_allowed_lists_and_not_the_profiles_own(self):
+		self.gate.STATE.update(scope={"is_partner": True, "partners": ["SP-A"]}, allowed={"Wholesale"})
+		self.assertEqual(self._lists(), ["Wholesale"])
+		self.assertEqual(self.seen_filters[0]["name"], ["in", ["Wholesale"]])
+
+	def test_partner_with_no_lists_gets_none_and_the_profile_list_is_not_appended(self):
+		self.gate.STATE.update(scope={"is_partner": True, "partners": ["SP-A"]}, allowed=set())
+		# get_selling_price_lists is itself scoped for a partner, so it has nothing either.
+		self.module.get_selling_price_lists = lambda: []
+		self.assertEqual(self._lists(), [])
+
+	def test_partner_gets_the_profile_list_when_it_is_one_of_theirs(self):
+		self.gate.STATE.update(scope={"is_partner": True, "partners": ["SP-A"]}, allowed={"Retail"})
+		self.assertEqual(self._lists(), ["Retail"])

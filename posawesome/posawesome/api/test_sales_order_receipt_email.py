@@ -74,9 +74,9 @@ def _install_stub_modules():
     payment_entry_module.create_payment_entry = lambda *args, **kwargs: None
 
     package_roots = {
-        "posawesome": Path(__file__).resolve().parents[3],
-        "posawesome.posawesome": Path(__file__).resolve().parents[2],
-        "posawesome.posawesome.api": Path(__file__).resolve().parents[1],
+        "posawesome": Path(__file__).resolve().parents[2],
+        "posawesome.posawesome": Path(__file__).resolve().parents[1],
+        "posawesome.posawesome.api": Path(__file__).resolve().parents[0],
     }
 
     for name, path in package_roots.items():
@@ -209,6 +209,44 @@ class TestSalesOrderReceiptEmail(TestCase):
         self.assertFalse(should_send)
         self.assertEqual(print_format, "")
         self.assertEqual(cc_emails, [])
+
+    def test_pro_forma_orders_get_no_receipt_the_pro_forma_email_replaces_it(self):
+        doc = SimpleNamespace(
+            name="SO-0003P", is_pos=1, pos_profile="POS-1", posa_payment_type="Proforma"
+        )
+
+        with patch.object(
+            sales_orders, "_get_receipt_email_settings", return_value=(1, "POS Receipt", ["cc@example.com"])
+        ):
+            self.assertEqual(sales_orders._should_auto_email_receipt(doc), (False, "", []))
+
+    def test_pro_forma_on_submit_and_revised_receipts_queue_nothing(self):
+        doc = SimpleNamespace(
+            name="SO-0003Q", is_pos=1, pos_profile="POS-1", posa_payment_type="Proforma", customer="C"
+        )
+
+        with patch.object(
+            sales_orders, "_get_receipt_email_settings", return_value=(1, "POS Receipt", [])
+        ), patch.object(sales_orders, "_resolve_customer_email", return_value="c@example.com"), patch.object(
+            sales_orders, "_apply_amendment_carryover_credit"
+        ), patch.object(sales_orders.frappe, "enqueue") as enqueue:
+            sales_orders.on_submit(doc, None)
+            sales_orders._queue_receipt_email(doc, revised=True)
+
+        enqueue.assert_not_called()
+
+    def test_other_payment_types_still_get_their_receipt(self):
+        for payment_type in ("", "Paid", "On Account"):
+            with self.subTest(payment_type=payment_type):
+                doc = SimpleNamespace(
+                    name="SO-0003R", is_pos=1, pos_profile="POS-1", posa_payment_type=payment_type
+                )
+                with patch.object(
+                    sales_orders, "_get_receipt_email_settings", return_value=(1, "POS Receipt", [])
+                ):
+                    self.assertEqual(
+                        sales_orders._should_auto_email_receipt(doc), (True, "POS Receipt", [])
+                    )
 
     def test_should_auto_email_receipt_logs_when_print_format_missing(self):
         doc = SimpleNamespace(name="SO-0004", is_pos=1, pos_profile="POS-1")

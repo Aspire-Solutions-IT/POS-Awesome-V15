@@ -70,6 +70,26 @@
 			</v-col>
 			<v-col
 				cols="12"
+				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && showDhdAddressForm"
+			>
+				<DhdAddressForm
+					:customer="invoiceDoc.customer || ''"
+					:delivery-charge="deliveryCharge"
+					@saving="$emit('dhd-address-saving', $event)"
+					@saved="$emit('dhd-address-saved', $event)"
+					@save-ended="$emit('dhd-address-save-ended', $event)"
+				/>
+			</v-col>
+			<v-col
+				cols="12"
+				v-if="posProfile.posa_allow_sales_order && invoiceType === 'Order' && shipComplete"
+			>
+				<div class="ship-complete-note text-caption text-medium-emphasis" data-test="ship-complete-note">
+					{{ $frappe._("This order ships complete: no partial deliveries") }}
+				</div>
+			</v-col>
+			<v-col
+				cols="12"
 				v-if="
 					posProfile.posa_allow_sales_order &&
 					invoiceType === 'Order' &&
@@ -185,6 +205,7 @@
 
 <script setup>
 import { inject } from "vue";
+import DhdAddressForm from "./DhdAddressForm.vue";
 
 defineProps({
 	invoiceDoc: {
@@ -231,9 +252,21 @@ defineProps({
 		type: Boolean,
 		default: false,
 	},
+	showDhdAddressForm: {
+		type: Boolean,
+		default: false,
+	},
+	deliveryCharge: {
+		type: String,
+		default: "",
+	},
 	showSplitDelivery: {
 		type: Boolean,
 		default: true,
+	},
+	shipComplete: {
+		type: Boolean,
+		default: false,
 	},
 	showPreferredDeliveryDate: {
 		type: Boolean,
@@ -317,6 +350,9 @@ defineEmits([
 	"update:splitDelivery",
 	"update:collectionDate",
 	"new-address",
+	"dhd-address-saved",
+	"dhd-address-saving",
+	"dhd-address-save-ended",
 ]);
 
 const $frappe = inject("frappe", window.frappe);

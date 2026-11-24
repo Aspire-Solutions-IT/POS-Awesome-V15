@@ -131,7 +131,30 @@
 			</template>
 			<template v-slot:item.next_due_date="{ item }">
 				<div class="due-date-cell">
-					<span>{{ formatDueDate(item.next_due_date) }}</span>
+					<span class="due-date-text">
+						{{ formatDueDate(item.next_due_date) }}
+						<v-tooltip
+							activator="parent"
+							location="top"
+							@update:model-value="(open) => open && loadDueIns(item)"
+						>
+							<div class="due-ins-tooltip">
+								<div class="due-ins-title">{{ __("Next due") }}</div>
+								<div v-if="dueInsLoading[item.item_code]">{{ __("Loading...") }}</div>
+								<div v-else-if="!(dueIns[item.item_code] || []).length">
+									{{ __("No upcoming due-ins") }}
+								</div>
+								<div
+									v-for="row in dueIns[item.item_code] || []"
+									:key="row.due_date"
+									class="due-ins-row"
+								>
+									<span>{{ formatDueDate(row.due_date) }}</span>
+									<span class="due-ins-qty">{{ formatActualQty(row.quantity_due_in) }}</span>
+								</div>
+							</div>
+						</v-tooltip>
+					</span>
 					<v-btn
 						v-if="isKit(item)"
 						icon="mdi-file-tree"
@@ -216,6 +239,27 @@ const __ = window.__ || ((text) => text);
 
 const isKit = (item) => Boolean(Number(item?.is_kit_item || 0) || Number(item?.is_kit_set || 0));
 
+// Next three PO due dates for the hover tooltip, loaded once per item on first hover.
+const dueIns = ref({});
+const dueInsLoading = ref({});
+
+const loadDueIns = async (item) => {
+	const code = item?.item_code;
+	if (!code || dueIns.value[code] || dueInsLoading.value[code]) return;
+	dueInsLoading.value = { ...dueInsLoading.value, [code]: true };
+	try {
+		const res = await window.frappe.call({
+			method: "posawesome.posawesome.api.item_due_ins.get_item_due_ins",
+			args: { item_code: code },
+		});
+		dueIns.value = { ...dueIns.value, [code]: res?.message || [] };
+	} catch (error) {
+		dueIns.value = { ...dueIns.value, [code]: [] };
+	} finally {
+		dueInsLoading.value = { ...dueInsLoading.value, [code]: false };
+	}
+};
+
 const kitTreeOpen = ref(false);
 const kitTreeItem = ref(null);
 
@@ -256,6 +300,19 @@ defineExpose({ scrollToIndex, getTableElement, tableRef });
 </script>
 
 <style scoped>
+.due-ins-title {
+	font-weight: 600;
+	margin-bottom: 2px;
+}
+.due-ins-row {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+}
+.due-ins-qty {
+	font-variant-numeric: tabular-nums;
+}
+
 .items-table-container {
 	height: 100%;
 	min-height: 0;

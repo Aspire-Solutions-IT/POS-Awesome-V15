@@ -41,6 +41,7 @@ from posawesome.posawesome.api.item_processing.price import (
     update_price_list_rate,
     get_price_for_uom
 )
+from posawesome.posawesome.api import partner_pricing
 from posawesome.posawesome.api.item_processing.search import (
     get_items,
     search_items,
@@ -55,19 +56,33 @@ from posawesome.posawesome.api.item_processing.search import (
 )
 
 
-def _collect_delta_item_codes(pos_profile, modified_after, price_list, limit):
-    """Collect changed item codes from Item Price and Bin updates."""
+def _collect_delta_item_codes(pos_profile, modified_after, price_lists, limit, partner_customer=None):
+    """Collect changed item codes from Item Price and Bin updates.
+
+    ``price_lists`` is every list the grid reads from (the primary and its fallback). For a
+    partner, ``partner_customer`` limits Item Price rows to the ones the grid would show:
+    selling, no supplier, and generic or that customer's own.
+    """
     changed_codes = set()
     timestamp = modified_after.isoformat()
 
-    if price_list:
+    if isinstance(price_lists, str):
+        price_lists = [price_lists]
+    price_lists = [name for name in price_lists or [] if name]
+
+    if price_lists:
+        price_filters = {
+            "price_list": ["in", price_lists],
+            "modified": [">", timestamp],
+        }
+        if partner_customer:
+            price_filters["selling"] = 1
+            price_filters["supplier"] = ["in", ["", None]]
+            price_filters["customer"] = ["in", ["", None, partner_customer]]
         price_codes = frappe.get_all(
             "Item Price",
-            filters={
-                "price_list": price_list,
-                "modified": [">", timestamp],
-            },
-            pluck="item_code",
+            filters=price_filters,
+                pluck="item_code",
             limit_page_length=limit,
         )
         changed_codes.update([code for code in price_codes if code])
@@ -116,6 +131,17 @@ def get_delta_items(
     resolved_limit = max(1, min(resolved_limit, 2000))
 
     effective_price_list = price_list or profile.get("selling_price_list")
+    delta_price_lists = [effective_price_list]
+    partner_customer = None
+    if partner_pricing.is_partner_user():
+        # The changed-price lookup below must not follow a list the client chose: it uses the
+        # lists the grid resolves for this customer and charge (primary and fallback).
+        partner_customer = partner_pricing.require_scoped_customer(customer)
+        context = partner_pricing.resolve_pricing_context(
+            partner_customer, frappe.form_dict.get("delivery_charge") or None
+        )
+        effective_price_list = context.price_list
+        delta_price_lists = [context.price_list, context.fallback]
     base_items = get_items(
         profile_json,
         price_list=effective_price_list,
@@ -138,8 +164,9 @@ def get_delta_items(
     delta_codes = _collect_delta_item_codes(
         profile,
         parsed_modified_after,
-        effective_price_list,
+        delta_price_lists,
         resolved_limit,
+        partner_customer,
     )
     extra_codes = [code for code in delta_codes if code not in existing_codes]
 
@@ -153,8 +180,11 @@ def get_delta_items(
         "is_sales_item": 1,
         "is_fixed_asset": 0,
     }
-    if _item_has_custom_exclude_from_pos():
-        filters["custom_exclude_from_pos"] = ["!=", 1]
+    from posawesome.posawesome.api.partner_pricing import exclusion_field
+
+    exclude_field = exclusion_field()
+    if exclude_field:
+        filters[exclude_field] = ["!=", 1]
 
     if allowed_groups:
         filters["item_group"] = ["in", allowed_groups]
@@ -217,6 +247,8 @@ def get_delta_items(
     for item in item_rows:
         item_code = item.get("item_code")
         detail = detail_map.get(item_code, {})
+        if partner_pricing.is_unpriced(item, detail):
+            continue
         merged = {}
         merged.update(item)
         merged.update(detail)

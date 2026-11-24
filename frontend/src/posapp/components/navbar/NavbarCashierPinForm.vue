@@ -149,6 +149,8 @@
 import { computed, reactive, ref, watch } from "vue";
 
 import { MAX_PIN_LENGTH, sanitizePinInput } from "../../utils/cashierPin";
+import { isPartnerMode } from "../../utils/partnerMode";
+import { useEmployeeStore } from "../../stores/employeeStore";
 
 defineOptions({
 	name: "NavbarCashierPinForm",
@@ -174,6 +176,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["back", "saved"]);
+const employeeStore = useEmployeeStore();
 
 const pinStatusLoading = ref(false);
 const pinSubmitting = ref(false);
@@ -251,6 +254,9 @@ async function loadPinStatus() {
 			},
 		});
 		pinStatus.value = response?.message || { has_pin: false };
+		if (isPartnerMode()) {
+			employeeStore.setPartnerHasPin(Boolean(pinStatus.value.has_pin));
+		}
 		pinMessage.value = pinStatus.value.has_pin
 			? __("Enter the current PIN, then choose a new one.")
 			: __("No cashier PIN is set yet. Create one now.");
@@ -300,6 +306,10 @@ async function saveCashierPin() {
 			},
 		});
 		pinStatus.value = response?.message || { has_pin: true };
+		if (isPartnerMode()) {
+			// Now they have a PIN to unlock with, the terminal lock can switch on.
+			employeeStore.setPartnerHasPin(true);
+		}
 		pinMessage.value = __("Cashier PIN saved successfully.");
 		pinMessageType.value = "success";
 		emit("saved", pinStatus.value);

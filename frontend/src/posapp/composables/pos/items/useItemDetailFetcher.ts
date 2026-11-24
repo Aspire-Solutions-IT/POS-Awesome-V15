@@ -1,4 +1,5 @@
 import { ref, reactive } from "vue";
+import { chargeRequestArgs } from "../../../utils/chargePricingContext";
 import {
 	getCachedItemDetails,
 	saveItemDetailsCache,
@@ -174,6 +175,7 @@ export function useItemDetailFetcher() {
 				pos_profile: JSON.stringify(ctx.pos_profile),
 				items_data: JSON.stringify(items),
 				price_list: effectivePriceList,
+				...chargeRequestArgs(),
 			},
 			freeze: false,
 			signal: abortController.value.signal,

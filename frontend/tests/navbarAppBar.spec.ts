@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import { mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 
 vi.mock("../src/posapp/composables/core/useRtl", () => ({
 	useRtl: () => ({
@@ -45,6 +46,8 @@ const ButtonStub = defineComponent({
 
 describe("NavbarAppBar", () => {
 	beforeEach(() => {
+		// The app bar reads the employee store (can this user lock the terminal?).
+		setActivePinia(createPinia());
 		vi.stubGlobal("frappe", {
 			session: {
 				user: "cashier@example.com",

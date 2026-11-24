@@ -39,7 +39,7 @@
 <!--				{{ __("Invoice Mgmt") }}-->
 <!--			</v-btn>-->
 <!--		</v-col>-->
-		<v-col cols="12" sm="6" v-if="pos_profile.posa_allow_return == 1">
+		<v-col cols="12" sm="6" v-if="!isPartner && pos_profile.posa_allow_return == 1">
 			<v-btn
 				block
 				color="secondary"
@@ -52,7 +52,7 @@
 				{{ __("Sales Return") }}
 			</v-btn>
 		</v-col>
-		<v-col cols="12" sm="6" v-if="pos_profile.posa_allow_print_draft_invoices">
+		<v-col cols="12" sm="6" v-if="!isPartner && pos_profile.posa_allow_print_draft_invoices">
 			<v-btn
 				block
 				color="primary"
@@ -111,12 +111,12 @@
 				color="success"
 				theme="dark"
 				size="large"
-				prepend-icon="mdi-credit-card"
+				:prepend-icon="isPartner ? 'mdi-send-check' : 'mdi-credit-card'"
 				@click="$emit('show-payment')"
 				class="summary-btn pay-btn"
 				:loading="paymentLoading"
 			>
-				{{ __("PAY") }}
+				{{ isPartner ? __("ORDER") : __("PAY") }}
 			</v-btn>
 		</v-col>
 	</v-row>
@@ -125,6 +125,7 @@
 <script setup>
 import { computed } from "vue";
 import { parseBooleanSetting } from "../../../utils/stock";
+import { isPartnerMode } from "../../../utils/partnerMode";
 
 const props = defineProps({
 	pos_profile: {
@@ -156,8 +157,10 @@ defineEmits([
 ]);
 
 const __ = window.__;
-const showCustomerDisplayButton = computed(() =>
-	parseBooleanSetting(props.pos_profile?.posa_enable_customer_display),
+// A Sales Partner only places orders: no returns, drafts printing or customer screen.
+const isPartner = isPartnerMode();
+const showCustomerDisplayButton = computed(
+	() => !isPartner && parseBooleanSetting(props.pos_profile?.posa_enable_customer_display),
 );
 // The estimate comes from Sales Order allocation, so only offer it when the cart submits as one.
 const showEstimateDeliveryButton = computed(() =>

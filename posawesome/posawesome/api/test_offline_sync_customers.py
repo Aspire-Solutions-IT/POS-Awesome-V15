@@ -14,6 +14,11 @@ class AttrDict(dict):
 		return dict(self)
 
 
+GET_ALL_CALLS = []
+PARTNERS = {"value": None}
+ROWS = {"value": None}
+
+
 def _install_stubs():
 	frappe_module = types.ModuleType("frappe")
 	frappe_module._ = lambda text: text
@@ -28,6 +33,9 @@ def _install_stubs():
 	)
 
 	def fake_get_all(doctype, **kwargs):
+		GET_ALL_CALLS.append((doctype, kwargs))
+		if doctype == "Customer" and ROWS["value"] is not None:
+			return ROWS["value"]
 		if doctype == "Customer":
 			return [
 				{
@@ -41,6 +49,10 @@ def _install_stubs():
 
 	frappe_module.get_all = fake_get_all
 	sys.modules["frappe"] = frappe_module
+
+	partner_gate_module = types.ModuleType("posawesome.posawesome.api.partner_gate")
+	partner_gate_module.customer_scope_partners = lambda user=None: PARTNERS["value"]
+	sys.modules["posawesome.posawesome.api.partner_gate"] = partner_gate_module
 
 	api_utils_module = types.ModuleType("posawesome.posawesome.api.utils")
 	api_utils_module.get_active_pos_profile = lambda user=None: {
@@ -129,6 +141,48 @@ class TestOfflineSyncCustomers(unittest.TestCase):
 		self.assertTrue(response["has_more"])
 		self.assertEqual(response["deleted"], [])
 		self.assertEqual(response["next_watermark"], "2026-04-09T10:05:00")
+
+	def tearDown(self):
+		PARTNERS["value"] = None
+		ROWS["value"] = None
+		GET_ALL_CALLS.clear()
+
+	def _deleted_filters(self):
+		self.module.sync_customers(pos_profile="POS-TEST", watermark="2026-04-09T09:59:00", limit=5)
+		return [kwargs["filters"] for doctype, kwargs in GET_ALL_CALLS if doctype == "Customer"][-1]
+
+	def test_deleted_customers_are_not_partner_scoped_for_normal_users(self):
+		self.assertNotIn("default_sales_partner", self._deleted_filters())
+
+	def test_deleted_customers_are_limited_to_the_partners_customers(self):
+		PARTNERS["value"] = ["SP-A"]
+		self.assertEqual(self._deleted_filters()["default_sales_partner"], ["in", ["SP-A"]])
+
+	NON_RFS_ROW = {
+		"name": "AGILE-CUST",
+		"modified": "2026-04-09T10:08:00",
+		"disabled": 0,
+		"customer_group": "Retail",
+		"rfs_customer": 0,
+	}
+
+	def test_non_rfs_customer_is_reported_deleted_for_staff(self):
+		ROWS["value"] = [self.NON_RFS_ROW]
+		response = self.module.sync_customers(pos_profile="POS-TEST", watermark="2026-04-09T09:59:00", limit=5)
+		self.assertEqual(response["deleted"], [{"key": "customer::AGILE-CUST"}])
+
+	def test_partners_non_rfs_customer_is_not_reported_deleted(self):
+		# Partner customers are Agile-side, deliberately not RFS.
+		PARTNERS["value"] = ["SP-A"]
+		ROWS["value"] = [self.NON_RFS_ROW]
+		response = self.module.sync_customers(pos_profile="POS-TEST", watermark="2026-04-09T09:59:00", limit=5)
+		self.assertEqual(response["deleted"], [])
+
+	def test_partners_disabled_customer_is_still_reported_deleted(self):
+		PARTNERS["value"] = ["SP-A"]
+		ROWS["value"] = [{**self.NON_RFS_ROW, "disabled": 1}]
+		response = self.module.sync_customers(pos_profile="POS-TEST", watermark="2026-04-09T09:59:00", limit=5)
+		self.assertEqual(response["deleted"], [{"key": "customer::AGILE-CUST"}])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from posawesome.posawesome.api.customers import (
 	get_customer_groups,
 	get_customer_names,
 )
+from posawesome.posawesome.api.partner_gate import customer_scope_partners
 from posawesome.posawesome.api.utils import get_active_pos_profile
 
 SYNC_SCHEMA_VERSION = "2026-04-09"
@@ -83,9 +84,17 @@ def _collect_deleted_customers(profile, watermark, limit):
 	if not watermark:
 		return []
 
+	filters = {"modified": [">", watermark]}
+	# A partner only learns about their own customers. One reassigned to another
+	# partner is not reported here, so it can linger in the offline fallback cache until
+	# the next full resync; every online call is still scope-checked.
+	partners = customer_scope_partners()
+	if partners is not None:
+		filters["default_sales_partner"] = ["in", partners]
+
 	rows = frappe.get_all(
 		"Customer",
-		filters={"modified": [">", watermark]},
+		filters=filters,
 		fields=["name", "modified", "disabled", "customer_group", "rfs_customer"],
 		order_by="name asc",
 		limit_page_length=limit,
@@ -101,7 +110,7 @@ def _collect_deleted_customers(profile, watermark, limit):
 		if row.get("name")
 		and (
 			row.get("disabled")
-			or not row.get("rfs_customer")
+			or (partners is None and not row.get("rfs_customer"))
 			or (allowed_groups and row.get("customer_group") not in allowed_groups)
 		)
 	]

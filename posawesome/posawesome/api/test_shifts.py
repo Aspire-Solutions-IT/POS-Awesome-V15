@@ -40,7 +40,7 @@ class _FakeDoc:
 	def as_dict(self):
 		return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
 
-	def get_password(self, fieldname):
+	def get_password(self, fieldname, raise_exception=True):
 		return self.__dict__.get(fieldname)
 
 
@@ -54,6 +54,8 @@ def _install_frappe_stub():
 	frappe_module.throw = _throw
 	frappe_module.whitelist = lambda *args, **kwargs: (lambda fn: fn)
 	frappe_module.session = types.SimpleNamespace(user="cashier@example.com")
+	# The partner gate asks whether any app scopes the user; none does by default.
+	frappe_module.get_hooks = lambda *args, **kwargs: []
 	frappe_module._dict = _AttrDict
 	frappe_module.local = types.SimpleNamespace(lang=None)
 	frappe_module.get_all = lambda *args, **kwargs: []
@@ -99,6 +101,10 @@ def _load_shifts_module():
 	utilities_stub = types.ModuleType(f"{PACKAGE}.utilities")
 	utilities_stub.get_version = lambda: 15
 	sys.modules[f"{PACKAGE}.utilities"] = utilities_stub
+
+	# partner_gate is reloaded with each stub so it reads this test's frappe, not the
+	# one left over from an earlier class.
+	_load_module("partner_gate", "partner_gate.py")
 
 	# employees is loaded for real so the supervisor gate is genuinely exercised.
 	_load_module("employees", "employees.py")
@@ -255,6 +261,82 @@ class TestCheckOpeningShift(ShiftsApiTestCase):
 	def test_returns_empty_when_no_shift_is_open(self):
 		self.shifts.frappe.db.get_all = lambda *args, **kwargs: []
 		self.assertEqual(self.shifts.check_opening_shift("cashier@example.com"), "")
+
+
+class TestPartnerOpeningShift(ShiftsApiTestCase):
+	"""A Sales Partner has no till: they get one quiet shift, no dialog, no default customer."""
+
+	def setUp(self):
+		super().setUp()
+		frappe = self.shifts.frappe
+		frappe.session.user = "partner@example.com"
+		frappe.get_hooks = lambda key, *a, **k: ["x.scope"] if key == "posa_user_scope" else []
+		frappe.get_attr = lambda path: lambda user: {"is_partner": True, "partners": ["SP-A"]}
+		frappe.db.sql = lambda *args, **kwargs: [PROFILES[1]]
+		frappe.get_all = lambda *args, **kwargs: [{"mode_of_payment": "Cash"}, {"mode_of_payment": "Card"}]
+		self.addCleanup(self._restore)
+
+	def _restore(self):
+		self.shifts.frappe.get_hooks = lambda *a, **k: []
+		self.shifts.frappe.session.user = "cashier@example.com"
+
+	def test_first_use_creates_a_quiet_shift_with_no_balances(self):
+		data = self.shifts.check_opening_shift("partner@example.com")
+
+		self.assertEqual(len(self.created_shifts), 1)
+		created = self.created_shifts[0]
+		self.assertEqual((created.pos_profile, created.company, created.user), ("POS-B", "Test Co", "partner@example.com"))
+		# A POS Opening Shift needs a balance row, so each payment method opens at zero.
+		self.assertEqual(
+			created.balance_details,
+			[{"mode_of_payment": "Cash", "amount": 0}, {"mode_of_payment": "Card", "amount": 0}],
+		)
+		self.assertEqual(data["pos_opening_shift"].name, "NEW-SHIFT")
+
+	def test_later_use_reuses_the_open_shift(self):
+		self.shifts.frappe.db.get_all = lambda *args, **kwargs: [{"name": "SHIFT-B", "pos_profile": "POS-B"}]
+		data = self.shifts.check_opening_shift("partner@example.com")
+		self.assertEqual(self.created_shifts, [])
+		self.assertEqual(data["pos_opening_shift"].name, "SHIFT-B")
+
+	def test_profile_default_customer_is_removed(self):
+		data = self.shifts.check_opening_shift("partner@example.com")
+		self.assertIsNone(data["pos_profile"].customer)
+
+	def test_profile_price_discount_and_payment_controls_are_locked(self):
+		profile = self.shifts.check_opening_shift("partner@example.com")["pos_profile"]
+		for flag in (
+			"posa_allow_user_to_edit_rate",
+			"posa_allow_price_list_rate_change",
+			"posa_enable_price_list_dropdown",
+			"posa_allow_return",
+			"posa_use_gift_cards",
+		):
+			self.assertEqual(profile.get(flag), 0, flag)
+		self.assertEqual(profile.get("posa_force_price_from_customer_price_list"), 1)
+		# Discounts are allowed, up to the partner cap; the price itself stays locked.
+		self.assertEqual(profile.get("posa_allow_user_to_edit_item_discount"), 1)
+		self.assertEqual(profile.get("posa_allow_user_to_edit_additional_discount"), 1)
+		self.assertEqual(profile.get("posa_max_discount_allowed"), 50)
+
+	def test_partner_must_be_assigned_to_a_pos_profile(self):
+		self.shifts.frappe.db.sql = lambda *args, **kwargs: []
+		with self.assertRaises(Exception) as ctx:
+			self.shifts.check_opening_shift("partner@example.com")
+		self.assertIn("not assigned to a POS Profile", str(ctx.exception))
+		self.assertEqual(self.created_shifts, [])
+
+	def test_the_user_argument_is_ignored_for_partners(self):
+		self.shifts.frappe.db.get_all = lambda *args, **kwargs: [{"name": "SHIFT-B", "pos_profile": "POS-B"}]
+		data = self.shifts.check_opening_shift("someone.else@example.com")
+		self.assertEqual(data["pos_opening_shift"].name, "SHIFT-B")
+
+
+class TestStaffOpeningShiftUnchanged(ShiftsApiTestCase):
+	def test_a_cashier_with_no_shift_still_gets_the_opening_dialog(self):
+		self.shifts.frappe.db.get_all = lambda *args, **kwargs: []
+		self.assertEqual(self.shifts.check_opening_shift("cashier@example.com"), "")
+		self.assertEqual(self.created_shifts, [])
 
 
 class TestGetSwitchablePosProfiles(ShiftsApiTestCase):

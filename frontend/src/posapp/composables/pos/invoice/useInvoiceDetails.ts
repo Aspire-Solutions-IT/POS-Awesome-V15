@@ -32,6 +32,8 @@ import {
 	setSalesPersonsStorage,
 } from "../../../../offline/index";
 
+export type AddressLoadResult = "applied" | "superseded" | "failed";
+
 declare const frappe: any;
 declare const __: (_str: string, _args?: any[]) => string;
 
@@ -160,12 +162,37 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		return normalized as Address;
 	};
 
-	const get_addresses = () => {
+	// Each list request owns a sequence number; a save or a newer request supersedes older ones,
+	// so a late response cannot overwrite the list or clear a newer shipping selection.
+	let addressRequestSeq = 0;
+	const invalidateAddressRequests = () => {
+		addressRequestSeq += 1;
+	};
+
+	/**
+	 * Loads the customer's addresses. `options.select` names an address (just saved) to select once
+	 * the list holds it. Resolves:
+	 *  - "applied": the list loaded (and, with `select`, that persisted row is now selected);
+	 *  - "superseded": a newer request, another customer/invoice or the caller's `isStillWanted`
+	 *    made this one obsolete. Nothing was applied and the caller must not fall back to anything;
+	 *  - "failed": the list could not be loaded, or (with `select`) it does not hold that row.
+	 */
+	const get_addresses = (
+		options: { select?: string; isStillWanted?: () => boolean } = {},
+	): Promise<AddressLoadResult> => {
 		const doc = unref(invoiceDoc);
+		const seq = ++addressRequestSeq;
 		if (!doc || !doc.customer) {
 			addresses.value = [];
-			return;
+			return Promise.resolve("superseded");
 		}
+		const requestedCustomer = doc.customer;
+		const stale = () =>
+			seq !== addressRequestSeq ||
+			unref(invoiceDoc) !== doc ||
+			unref(invoiceDoc)?.customer !== requestedCustomer ||
+			(options.isStillWanted ? !options.isStillWanted() : false);
+		const selectName = String(options.select || "").trim();
 
 		const applyCachedAddresses = () => {
 			const cachedAddresses = getCachedCustomerAddresses(doc.customer);
@@ -179,42 +206,64 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 			return true;
 		};
 
+		// A cached list cannot hold a row that was only just saved.
 		if (isOffline() && applyCachedAddresses()) {
-			return;
+			return Promise.resolve(selectName ? "failed" : "applied");
 		}
 
-		frappe.call({
-			method: "posawesome.posawesome.api.customers.get_customer_addresses",
-			args: { customer: doc.customer },
-			async: true,
-			callback: function (r: any) {
-				if (!r.exc) {
-					const records = Array.isArray(r.message) ? r.message : [];
-					const normalized = records
-						.map((row) => normalizeAddress(row))
-						.filter((row): row is Address => row !== null);
-					addresses.value = normalized;
-					saveCustomerAddressesCache(doc.customer, normalized);
-
-					if (
-						doc.shipping_address_name &&
-						!normalized.some(
-							(row) => row.name === doc.shipping_address_name,
-						)
-					) {
-						doc.shipping_address_name = null;
+		return new Promise<AddressLoadResult>((resolve) => {
+			frappe.call({
+				method: "posawesome.posawesome.api.customers.get_customer_addresses",
+				args: { customer: doc.customer },
+				async: true,
+				callback: function (r: any) {
+					if (stale()) {
+						resolve("superseded");
+						return;
 					}
-				} else {
+					if (!r.exc) {
+						const records = Array.isArray(r.message) ? r.message : [];
+						const normalized = records
+							.map((row) => normalizeAddress(row))
+							.filter((row): row is Address => row !== null);
+						addresses.value = normalized;
+						saveCustomerAddressesCache(doc.customer, normalized);
+
+						if (selectName) {
+							if (normalized.some((row) => row.name === selectName)) {
+								doc.shipping_address_name = selectName;
+								doc.customer_address = selectName;
+								resolve("applied");
+								return;
+							}
+							resolve("failed");
+							return;
+						}
+						if (
+							doc.shipping_address_name &&
+							!normalized.some((row) => row.name === doc.shipping_address_name)
+						) {
+							doc.shipping_address_name = null;
+						}
+						resolve("applied");
+						return;
+					}
 					if (!applyCachedAddresses()) {
 						addresses.value = [];
 					}
-				}
-			},
-			error: function () {
-				if (!applyCachedAddresses()) {
-					addresses.value = [];
-				}
-			},
+					resolve("failed");
+				},
+				error: function () {
+					if (stale()) {
+						resolve("superseded");
+						return;
+					}
+					if (!applyCachedAddresses()) {
+						addresses.value = [];
+					}
+					resolve("failed");
+				},
+			});
 		});
 	};
 
@@ -491,6 +540,7 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 		return_valid_upto_date,
 
 		get_addresses,
+		invalidateAddressRequests,
 		new_address,
 		addressFilter,
 		normalizeAddress,

@@ -143,10 +143,17 @@ def get_company_domain(company):
 
 @frappe.whitelist()
 def get_selling_price_lists():
-    """Return all selling price lists"""
+    """Return all selling price lists (a partner only gets the ones they can price from)"""
+    filters = {"selling": 1}
+    from posawesome.posawesome.api.partner_gate import allowed_price_lists, get_scope
+
+    scope = get_scope()
+    if scope["is_partner"]:
+        filters["name"] = ["in", sorted(allowed_price_lists(scope["partners"])) or ["__none__"]]
+
     return frappe.get_all(
         "Price List",
-        filters={"selling": 1},
+        filters=filters,
         fields=["name"],
         order_by="name",
     )

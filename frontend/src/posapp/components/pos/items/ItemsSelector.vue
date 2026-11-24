@@ -104,8 +104,8 @@
 								:format-number="memoizedFormatNumber"
 								:rate-precision="ratePrecision"
 								:is-negative="isNegative"
-								:no-items-title="__('No items found')"
-								:no-items-subtitle="__('Try adjusting your search or filters')"
+								:no-items-title="emptyTitle"
+								:no-items-subtitle="emptySubtitle"
 								:clear-search-label="__('Clear Search')"
 								@select-item="select_item"
 								@dragstart="onDragStart"
@@ -132,7 +132,7 @@
 								:is-negative="isNegative"
 								:item-class="getItemRowClass"
 								:row-props="getItemRowProps"
-								:no-data-text="__('No items found')"
+								:no-data-text="emptyTitle"
 								@row-click="click_item_row"
 								@list-scroll="onListScroll"
 							/>
@@ -237,6 +237,7 @@ import { useInvoiceStore } from "../../../stores/invoiceStore";
 import { useEmployeeStore } from "../../../stores/employeeStore";
 
 import { parseBooleanSetting } from "../../../utils/stock";
+import { isPartnerMode } from "../../../utils/partnerMode";
 import { openItemAdvancedSearch } from "../../../utils/itemAdvancedSearch";
 import itemService from "../../../services/itemService";
 import {
@@ -266,6 +267,18 @@ const uiStore = useUIStore();
 const invoiceStore = useInvoiceStore();
 const employeeStore = useEmployeeStore();
 const { selectedCustomer } = storeToRefs(customersStore);
+
+// A Sales Partner is priced from their customer's own price list, so the grid stays
+// empty until a customer is chosen.
+const partnerNeedsCustomer = computed(() => isPartnerMode() && !selectedCustomer.value);
+const emptyTitle = computed(() =>
+	partnerNeedsCustomer.value ? __("Select a customer first") : __("No items found"),
+);
+const emptySubtitle = computed(() =>
+	partnerNeedsCustomer.value
+		? __("Products and prices appear once you choose one of your customers")
+		: __("Try adjusting your search or filters"),
+);
 const {
 	posProfile: uiPosProfile,
 	searchFocusTrigger,

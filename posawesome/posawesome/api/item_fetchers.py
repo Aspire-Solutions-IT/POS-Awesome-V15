@@ -78,8 +78,14 @@ def _fetch_item_prices(
     item_codes: Tuple[str, ...],
     customer: str,
     today: str,
+    partner_rows: bool = False,
 ):
-    """Return raw Item Price rows honoring date, currency and customer filters."""
+    """Return raw Item Price rows honoring date, currency and customer filters.
+
+    ``partner_rows`` limits them to what a partner may be priced from: selling rows with
+    no supplier (see ``price_resolution.PARTNER_ROW_SQL``). It is an argument, not a user
+    check, because ``get_item_prices`` caches on its arguments.
+    """
 
     if not item_codes:
         return []
@@ -91,6 +97,8 @@ def _fetch_item_prices(
         "today": today,
         "customer": customer or "",
     }
+    from posawesome.posawesome.api.price_resolution import PARTNER_ROW_SQL
+
     query = """
         SELECT
             item_code,
@@ -115,9 +123,10 @@ def _fetch_item_prices(
                 AND (valid_from IS NULL OR valid_from <= %(today)s)
                 AND IFNULL(customer, '') IN ('', %(customer)s)
                 AND (valid_upto IS NULL OR valid_upto = '' OR valid_upto >= %(today)s)
+                {partner_filter}
         ) ip
         ORDER BY IFNULL(customer, '') ASC, valid_from ASC, valid_upto DESC
-    """
+    """.replace("{partner_filter}", f"AND {PARTNER_ROW_SQL}" if partner_rows else "")
 
     return frappe.db.sql(query, params, as_dict=True)
 
@@ -129,11 +138,14 @@ def get_item_prices(
     customer: Optional[str],
     today: Optional[str] = None,
     ttl: Optional[int] = None,
+    partner_rows: bool = False,
 ):
     """Fetch Item Price data with optional redis caching based on TTL."""
 
     cached = _cache_wrapper(_price_cache, ttl, _fetch_item_prices)
-    return cached(price_list, currency, tuple(item_codes), customer or "", today or nowdate())
+    return cached(
+        price_list, currency, tuple(item_codes), customer or "", today or nowdate(), bool(partner_rows)
+    )
 
 
 def _fetch_bin_qty(warehouse: str, item_codes: Tuple[str, ...]):
@@ -623,8 +635,13 @@ def merge_item_row(
     price_list_currency: Optional[str],
     exchange_rate: float,
     company_currency: Optional[str] = None,
+    partner_mode: bool = False,
 ) -> Dict[str, Any]:
-    """Merge lookup data into a POS item row for downstream consumption."""
+    """Merge lookup data into a POS item row for downstream consumption.
+
+    ``partner_mode`` prices from the price list alone (no TFW or on-sale override) and
+    removes cost fields, for the locked-down Sales Partner POS.
+    """
 
     item_code = item.get("item_code")
     if not item_code:
@@ -636,8 +653,8 @@ def merge_item_row(
         lookup_data.price_map.get(item_code, {}), item.get("uom"), meta.get("stock_uom")
     )
     price_currency = price_row.get("currency") if price_row else None
-    custom_tfw_price = _resolve_custom_tfw_price(meta)
-    pos_on_sale_price = _resolve_pos_on_sale_price(meta)
+    custom_tfw_price = 0 if partner_mode else _resolve_custom_tfw_price(meta)
+    pos_on_sale_price = 0 if partner_mode else _resolve_pos_on_sale_price(meta)
     effective_company_currency = company_currency or price_list_currency
 
     base_rate = custom_tfw_price if custom_tfw_price else (price_row.get("price_list_rate") if price_row else 0)
@@ -689,7 +706,27 @@ def merge_item_row(
         row["manufacturing_bom"] = bom_cost.get("bom")
     if not row.get("item_name") and meta.get("item_name"):
         row["item_name"] = meta.get("item_name")
+    if partner_mode:
+        from posawesome.posawesome.api import partner_pricing
+
+        partner_pricing.scrub_item_row(row)
     return row
+
+
+_LOGGED_MISSING_LEAD_WEEKS = []
+
+
+def _log_missing_lead_weeks() -> None:
+    if _LOGGED_MISSING_LEAD_WEEKS:
+        return
+    _LOGGED_MISSING_LEAD_WEEKS.append(True)
+    try:
+        frappe.log_error(
+            title="Fixed ETA unavailable",
+            message="customer_due_dates has no lead_weeks_for_items; item rows carry no fixed_eta_weeks.",
+        )
+    except Exception:
+        pass
 
 
 class ItemDetailAggregator:
@@ -700,10 +737,37 @@ class ItemDetailAggregator:
         pos_profile: Dict[str, Any],
         price_list: Optional[str] = None,
         customer: Optional[str] = None,
+        delivery_charge: Optional[str] = None,
     ) -> None:
+        from posawesome.posawesome.api import charge_pricing, partner_pricing
+
         self.pos_profile = pos_profile
         self.customer = customer
+        # Any items endpoint can be told which delivery charge the order has by adding
+        # ``delivery_charge`` to its arguments; the charge may fix the price list and gives
+        # the fallback for items the list does not price.
+        # An explicit "" means "this order has no charge" (the managed-order path), so the
+        # request's own ``delivery_charge`` is only a default for callers that pass nothing.
+        if delivery_charge is None:
+            delivery_charge = frappe.form_dict.get("delivery_charge")
+        self.delivery_charge = delivery_charge or None
+        charge = charge_pricing.get_charge(self.delivery_charge)
+        # Partners are priced from their customer's own price list only, never a
+        # price list or customer the client asks for.
+        self.partner_mode = partner_pricing.is_partner_user()
+        if self.partner_mode:
+            partner_pricing.require_scoped_customer(customer)
+            context = partner_pricing.resolve_pricing_context(customer, self.delivery_charge)
+            price_list = context.price_list
+        elif charge and charge.locked:
+            price_list = charge.price_list
         self.price_list = price_list or pos_profile.get("selling_price_list")
+        # A fixed lead-time ETA charge (AP-9) puts ``fixed_eta_weeks`` on each row (display only).
+        self.fixed_eta = self._charge_has_fixed_eta(self.delivery_charge, customer)
+        if self.partner_mode:
+            self.fallback_price_list = context.fallback
+        else:
+            self.fallback_price_list = charge_pricing.fallback_for(self.price_list, self.delivery_charge)
         self.cache_ttl = self._resolve_ttl()
         self.today = nowdate()
         self.warehouse = STOCK_SOURCE_WAREHOUSE
@@ -714,6 +778,55 @@ class ItemDetailAggregator:
         )
         self.price_list_currency = self._determine_price_list_currency()
         self.exchange_rate = self._compute_exchange_rate()
+
+    @staticmethod
+    def _charge_has_fixed_eta(charge_name, customer=None) -> bool:
+        """True when the charge, validated as ``get_fixed_eta`` validates it, has a fixed ETA.
+
+        A charge the user could not use (disabled, not offered here, no profile) simply shows no weeks.
+        """
+        from posawesome.posawesome.api import charge_pricing
+
+        if not charge_name:
+            return False
+        try:
+            charge = charge_pricing.validated_charge_for_eta(charge_name, customer)
+        except frappe.PermissionError:
+            return False
+        if not charge or not charge.get("order_type"):
+            return False
+        try:
+            from customer_due_dates.selling.fixed_eta import uses_fixed_eta
+        except ImportError:  # customer_due_dates is older than the fixed ETA
+            return False
+        return bool(uses_fixed_eta(charge.order_type))
+
+    def _with_fallback_prices(self, price_rows, item_codes, use_cache):
+        """Add prices from the fallback list for the items the main list does not price."""
+        if not self.fallback_price_list:
+            return price_rows
+
+        priced = {row.get("item_code") for row in price_rows}
+        missing = tuple(code for code in item_codes if code not in priced)
+        if not missing:
+            return price_rows
+
+        currency = frappe.db.get_value("Price List", self.fallback_price_list, "currency")
+        if use_cache:
+            extra = get_item_prices(
+                self.fallback_price_list,
+                currency,
+                missing,
+                self.customer,
+                today=self.today,
+                ttl=self.cache_ttl,
+                partner_rows=self.partner_mode,
+            )
+        else:
+            extra = _fetch_item_prices(
+                self.fallback_price_list, currency, missing, self.customer or "", self.today, self.partner_mode
+            )
+        return list(price_rows) + list(extra)
 
     def _resolve_ttl(self) -> Optional[int]:
         """Convert the POS profile cache duration to seconds."""
@@ -777,6 +890,7 @@ class ItemDetailAggregator:
                     self.customer,
                     today=self.today,
                     ttl=self.cache_ttl,
+                    partner_rows=self.partner_mode,
                 )
             else:
                 price_rows = _fetch_item_prices(
@@ -785,7 +899,10 @@ class ItemDetailAggregator:
                     item_codes_tuple,
                     self.customer or "",
                     self.today,
+                    self.partner_mode,
                 )
+
+        price_rows = self._with_fallback_prices(price_rows, item_codes_tuple, use_cache)
 
         # Stock, metadata, UOM and barcode data are reused both for batches and the
         # final merged item rows, so collect them up front.
@@ -880,19 +997,33 @@ class ItemDetailAggregator:
         ]
         lookup_data = self._prepare_lookup(item_codes)
 
+        lead_weeks = None
+        if self.fixed_eta:
+            try:
+                from customer_due_dates.selling.fixed_eta import lead_weeks_for_items
+            except ImportError:  # customer_due_dates is older than the per-item lead weeks
+                _log_missing_lead_weeks()
+            else:
+                lead_weeks = lead_weeks_for_items(item_codes)  # one query for the whole page
+
         result = []
         for item in items_data:
             if not item.get("item_code") or item.get("has_variants"):
                 continue
-            result.append(
-                merge_item_row(
-                    item,
-                    lookup_data,
-                    self.price_list_currency or self.pos_profile.get("currency"),
-                    self.exchange_rate,
-                    self.company_currency,
-                )
+            row = merge_item_row(
+                item,
+                lookup_data,
+                self.price_list_currency or self.pos_profile.get("currency"),
+                self.exchange_rate,
+                self.company_currency,
+                partner_mode=self.partner_mode,
             )
+            # A partner can only order what is priced on their customer's list.
+            if self.partner_mode and flt(row.get("price_list_rate")) <= 0:
+                continue
+            if lead_weeks is not None:
+                row["fixed_eta_weeks"] = lead_weeks.get(row.get("item_code"))
+            result.append(row)
         return result
 
 

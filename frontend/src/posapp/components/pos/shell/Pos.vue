@@ -11,6 +11,7 @@
 		<NewAddress></NewAddress>
 		<MpesaPayments></MpesaPayments>
 		<Variants></Variants>
+		<PartnerStartDialog v-if="isPartner" :active="!dialog && !!uiStore.posProfile?.name" />
 		<OpeningDialog
 			v-if="dialog"
 			:dialog="dialog"
@@ -203,6 +204,8 @@
 import ItemsSelector from "../items/ItemsSelector.vue";
 import Invoice from "../Invoice.vue";
 import OpeningDialog from "../shift/OpeningDialog.vue";
+import PartnerStartDialog from "../customer/PartnerStartDialog.vue";
+import { isPartnerMode } from "../../../utils/partnerMode";
 import Payments from "../Payments.vue";
 import YellowTicketPhotoDialog from "../payments/YellowTicketPhotoDialog.vue";
 import OrderSuccessDialog from "../payments/OrderSuccessDialog.vue";
@@ -433,6 +436,8 @@ export default {
 		};
 		const commitAdditionalDiscount = () => {
 			invoicePanel.value?.commit_discount_amount?.();
+			additionalDiscountDisplay.value = normalizeDiscountDisplay(additionalDiscount.value);
+			additionalDiscountPercentageDisplay.value = normalizeDiscountDisplay(additionalDiscountPercentage.value);
 		};
 		const handleAdditionalDiscountBlur = () => {
 			isEditingAdditionalDiscount.value = false;
@@ -448,6 +453,10 @@ export default {
 		};
 		const commitAdditionalDiscountPercentage = () => {
 			invoicePanel.value?.update_discount_umount?.();
+			// Focused fields ignore store watchers; write the clamped values back to
+			// both inputs when the discount is committed.
+			additionalDiscountDisplay.value = normalizeDiscountDisplay(additionalDiscount.value);
+			additionalDiscountPercentageDisplay.value = normalizeDiscountDisplay(additionalDiscountPercentage.value);
 		};
 		const handleAdditionalDiscountPercentageBlur = () => {
 			isEditingAdditionalDiscountPercentage.value = false;
@@ -603,6 +612,8 @@ export default {
 			invoicePanel,
 			eventBus,
 			dialog,
+			uiStore,
+			isPartner: isPartnerMode(),
 		};
 	},
 	data: function () {
@@ -613,6 +624,7 @@ export default {
 		ItemsSelector,
 		Invoice,
 		OpeningDialog,
+		PartnerStartDialog,
 		Payments,
 		YellowTicketPhotoDialog,
 		OrderSuccessDialog,
@@ -633,6 +645,8 @@ export default {
 			this.dialog = true;
 		},
 		get_pos_setting() {
+			// The result is unused, and a partner has no access to POS Settings.
+			if (isPartnerMode()) return;
 			frappe.db.get_doc("POS Settings", undefined).then((_doc) => {
 				// Update store directly instead of emitting event
 				// If Payments.vue or others need this, they should watch uiStore.posSettings

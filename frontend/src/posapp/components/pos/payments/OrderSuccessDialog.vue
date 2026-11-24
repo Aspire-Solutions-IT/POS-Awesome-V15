@@ -13,7 +13,7 @@
 						{{ noPayment ? "mdi-cart-check" : "mdi-check-circle" }}
 					</v-icon>
 					<h2 class="order-success__title">
-						{{ noPayment ? __("Order Placed") : __("Payment Successful") }}
+						{{ dialogTitle }}
 					</h2>
 				</div>
 
@@ -56,6 +56,57 @@
 						</div>
 					</div>
 
+					<!-- Pro forma: the email goes out right after the order is saved. -->
+					<div
+						v-if="isProforma && orders.length === 1"
+						class="order-success__proforma"
+						data-testid="proforma-status"
+					>
+						<div v-if="proformaBusy" class="order-success__window-pending">
+							<v-progress-circular indeterminate size="18" width="2" color="primary" />
+							<span>{{ __("Sending the pro forma…") }}</span>
+						</div>
+						<v-alert
+							v-else-if="proformaOutcome"
+							:type="proformaOutcome.level"
+							variant="tonal"
+							density="compact"
+							data-testid="proforma-outcome"
+						>
+							{{ proformaOutcome.message }}
+						</v-alert>
+						<div v-if="proformaLink" class="order-success__proforma-link">
+							<a :href="proformaLink" target="_blank" rel="noopener">{{ __("Payment link") }}</a>
+						</div>
+						<!-- The first send already went to the address confirmed before submit.
+						     The field only appears together with a send action: always when the
+						     last attempt needs a retry, else after "Resend to a different address". -->
+						<v-btn
+							v-if="proformaOutcome && !proformaBusy && !recipientVisible"
+							variant="text"
+							size="small"
+							prepend-icon="mdi-email-edit-outline"
+							class="mt-2"
+							data-testid="proforma-change-recipient"
+							@click="showRecipientField = true"
+						>
+							{{ __("Resend to a different address") }}
+						</v-btn>
+						<v-text-field
+							v-if="recipientVisible"
+							v-model="proformaRecipient"
+							:label="__('Send pro forma to')"
+							:placeholder="__('The customer\'s pro forma email address')"
+							:error-messages="proformaRecipientError ? [proformaRecipientError] : []"
+							density="compact"
+							hide-details="auto"
+							type="email"
+							class="pos-themed-input mt-3"
+							data-testid="proforma-recipient"
+							@update:model-value="proformaRecipientEdited = true"
+						/>
+					</div>
+
 					<v-btn
 						v-if="orders.length > 1"
 						color="primary"
@@ -75,7 +126,18 @@
 					{{ __("Done") }}
 				</v-btn>
 				<v-btn
-					v-if="orders.length === 1"
+					v-if="isProforma && orders.length === 1 && recipientVisible"
+					color="primary"
+					variant="flat"
+					prepend-icon="mdi-email-sync-outline"
+					:disabled="proformaBusy || Boolean(proformaRecipientError)"
+					data-testid="proforma-retry"
+					@click="runProforma(true)"
+				>
+					{{ resendLabel }}
+				</v-btn>
+				<v-btn
+					v-if="orders.length === 1 && !isProforma"
 					:color="noPayment ? 'default' : 'primary'"
 					:variant="noPayment ? 'tonal' : 'flat'"
 					prepend-icon="mdi-printer"
@@ -84,7 +146,7 @@
 					{{ __("Print Receipt") }}
 				</v-btn>
 				<v-btn
-					v-if="noPayment && orders.length === 1"
+					v-if="noPayment && orders.length === 1 && !isPartner && !paymentType"
 					color="primary"
 					variant="flat"
 					prepend-icon="mdi-credit-card-outline"
@@ -100,9 +162,17 @@
 <script setup>
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useUIStore } from "../../../stores/uiStore.js";
+import { useUIStore } from "../../../stores/uiStore";
 import { useFormat } from "../../../format";
 import { openReceiptPdf } from "../../../utils/receiptPdfUrl";
+import { isPartnerMode } from "../../../utils/partnerMode";
+import {
+	PAYMENT_TYPE_ON_ACCOUNT,
+	PAYMENT_TYPE_PROFORMA,
+	describeProformaResult,
+	isValidProformaRecipient,
+	sendProforma,
+} from "../../../services/proformaService";
 
 defineOptions({
 	name: "OrderSuccessDialog",
@@ -114,9 +184,73 @@ const uiStore = useUIStore();
 const router = useRouter();
 const { formatCurrency, currencySymbol } = useFormat();
 
+// "On Account" / "Proforma": which payment type this order was submitted with (or "").
+const paymentType = computed(() => String(uiStore.orderSuccess?.paymentType || ""));
+const isProforma = computed(() => paymentType.value === PAYMENT_TYPE_PROFORMA);
+const dialogTitle = computed(() => {
+	if (isProforma.value) return __("Pro Forma Order Placed");
+	if (paymentType.value === PAYMENT_TYPE_ON_ACCOUNT) return __("Order Placed On Account");
+	return noPayment.value ? __("Order Placed") : __("Payment Successful");
+});
+
+const proformaBusy = ref(false);
+const proformaOutcome = ref(null);
+const proformaLink = ref("");
+// The address a Retry / Resend goes to: filled from the first send's answer. The first (automatic)
+// send goes to the address the partner confirmed before submitting (blank: the customer's own).
+const proformaRecipient = ref("");
+const proformaRecipientEdited = ref(false);
+// Opened by "Resend to a different address" after a successful send.
+const showRecipientField = ref(false);
+// The field is only ever offered with a send action: when the last attempt can be retried, or once asked for.
+const recipientVisible = computed(
+	() => Boolean(proformaOutcome.value) && (Boolean(proformaOutcome.value?.canRetry) || showRecipientField.value),
+);
+const resendLabel = computed(() => {
+	const state = proformaOutcome.value?.state;
+	if (state === "failed") return __("Retry");
+	return state === "sent" ? __("Send") : __("Resend Pro Forma");
+});
+const proformaRecipientError = computed(() =>
+	isValidProformaRecipient(proformaRecipient.value) ? "" : __("Enter a valid email address"),
+);
+
+// Every send is tied to the order it was started for: a slow answer for an earlier order must
+// not paint over (or free) the order shown now.
+let proformaRun = 0;
+
+// The order is already saved and on hold when this runs, so a failure only means "not sent yet".
+const runProforma = async (resend = false) => {
+	const name = orderNames.value[0];
+	if (!name || proformaBusy.value) return;
+	if (resend && proformaRecipientError.value) return;
+	const run = ++proformaRun;
+	proformaBusy.value = true;
+	try {
+		const result = await sendProforma(name, {
+			resend,
+			recipient: resend
+				? String(proformaRecipient.value ?? "").trim()
+				: String(uiStore.orderSuccess?.proformaRecipient || "").trim(),
+		});
+		if (run !== proformaRun || orderNames.value[0] !== name) return;
+		proformaLink.value = result.link || "";
+		if (!proformaRecipientEdited.value) {
+			proformaRecipient.value = result.recipient || result.recipientDefault || proformaRecipient.value;
+		}
+		proformaOutcome.value = describeProformaResult(result, __, result.recipient);
+		// A resend that worked closes the field again; a failed one keeps it (with Retry).
+		if (resend && !proformaOutcome.value.canRetry) showRecipientField.value = false;
+	} finally {
+		if (run === proformaRun) proformaBusy.value = false;
+	}
+};
+
 // "Submit without payment": reframe the dialog as "Order Placed" and offer a
 // shortcut into Sales Order Management with the payment-link button flashing.
 const noPayment = computed(() => Boolean(uiStore.orderSuccess?.noPayment));
+// A Sales Partner can't send payment links: Agile invoices the order.
+const isPartner = isPartnerMode();
 
 // The window is written by an after_commit hook and can be revised again by the
 // background work that follows submit, so it is polled rather than read from the
@@ -216,11 +350,22 @@ watch(
 	orderNames,
 	(names) => {
 		clearTimers();
+		// A new order: whatever an earlier order's send is still doing is no longer shown here.
+		proformaRun += 1;
+		proformaBusy.value = false;
+		proformaOutcome.value = null;
+		proformaLink.value = "";
+		proformaRecipient.value = "";
+		proformaRecipientEdited.value = false;
+		showRecipientField.value = false;
 		Object.keys(summaries).forEach((key) => delete summaries[key]);
 		names.forEach((name) => {
 			summaries[name] = { state: "loading" };
 			fetchSummary(name);
 		});
+		if (isProforma.value && names.length === 1) {
+			void runProforma(false);
+		}
 	},
 	{ immediate: true },
 );
@@ -240,6 +385,15 @@ onBeforeUnmount(clearTimers);
 	font-size: 1.5rem;
 	font-weight: 600;
 	margin: 0;
+}
+
+.order-success__proforma {
+	margin-top: 14px;
+}
+
+.order-success__proforma-link {
+	margin-top: 8px;
+	font-size: 0.9rem;
 }
 
 .order-success__order + .order-success__order {

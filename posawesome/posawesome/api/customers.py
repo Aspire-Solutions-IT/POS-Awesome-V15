@@ -15,6 +15,7 @@ from frappe.utils.caching import redis_cache
 from .utils import fetch_sales_person_names
 from .stored_value import get_stored_value_summary
 from .email_validation import validate_optional_email
+from .partner_gate import customer_scope_partners
 
 EXCLUDED_POS_CUSTOMER_NAMES = {"13682"}
 
@@ -72,7 +73,15 @@ def get_customer_group_condition(pos_profile):
 
 
 def _get_rfs_customer_filters(pos_profile, modified_after=None, start_after=None):
-    filters = {"disabled": 0, "rfs_customer": 1}
+    filters = {"disabled": 0}
+
+    # Staff POS: RFS customers only. A partner's customers are Agile-side and
+    # deliberately not RFS, so they are scoped by Sales Partner instead.
+    partners = customer_scope_partners()
+    if partners is None:
+        filters["rfs_customer"] = 1
+    else:
+        filters["default_sales_partner"] = ["in", partners]
 
     customer_groups = get_customer_groups(pos_profile)
     if customer_groups:
@@ -163,7 +172,13 @@ def get_customer_names(pos_profile, limit=None, offset=None, start_after=None, m
         )
         return _exclude_hidden_pos_customers(customers)
 
-    if _pos_profile.get("posa_use_server_cache") and not (limit or offset or start_after or modified_after):
+    # The cache key does not include the user, so a partner's scoped list must never
+    # be stored or served from it.
+    if (
+        _pos_profile.get("posa_use_server_cache")
+        and customer_scope_partners() is None
+        and not (limit or offset or start_after or modified_after)
+    ):
         return __get_customer_names(pos_profile, limit, offset, start_after, modified_after)
     else:
         return _get_customer_names(pos_profile, limit, offset, start_after, modified_after)
@@ -246,8 +261,13 @@ def search_customers(pos_profile, search_term=None, limit=None, offset=0):
             customer.primary_address,
         )
         .where(customer.disabled == 0)
-        .where(customer.rfs_customer == 1)
     )
+
+    partners = customer_scope_partners()
+    if partners is None:
+        query = query.where(customer.rfs_customer == 1)
+    else:
+        query = query.where(customer.default_sales_partner.isin(partners))
 
     customer_groups = get_customer_groups(pos_profile)
     if customer_groups:

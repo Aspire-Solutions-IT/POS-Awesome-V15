@@ -101,6 +101,7 @@ import { useToastStore } from "../stores/toastStore.js";
 import { useUIStore } from "../stores/uiStore.js";
 import { useItemsStore } from "../stores/itemsStore.js";
 import { useOfflineSyncStore } from "../stores/offlineSyncStore";
+import { useEmployeeStore } from "../stores/employeeStore";
 import { storeToRefs } from "pinia";
 import {
 	getOpeningStorage,
@@ -150,6 +151,7 @@ import {
 import { useRtl } from "../composables/core/useRtl";
 import authService from "../services/authService.js";
 import { getValidCachedOpeningForCurrentUser } from "../utils/openingCache";
+import { isPartnerMode } from "../utils/partnerMode";
 import { formatBootstrapWarning, shouldShowBootstrapBanner } from "../utils/bootstrapWarnings";
 import { listenForBootstrapSnapshotUpdates } from "../utils/bootstrapRuntimeEvents";
 import {
@@ -268,7 +270,12 @@ initLoadingSources(
 );
 
 // Auto-lock the terminal after 5 minutes of no activity, once a POS profile is registered.
-useInactivityLock(5 * 60 * 1000, () => Boolean(posProfile.value?.name));
+// A Sales Partner is only locked once they have a PIN to unlock with (the store checks).
+const employeeStoreForLock = useEmployeeStore();
+useInactivityLock(
+	5 * 60 * 1000,
+	() => Boolean(posProfile.value?.name) && employeeStoreForLock.canLockTerminal,
+);
 
 function getCurrentBootstrapProfile() {
 	return posProfile.value || frappe?.boot?.pos_profile || null;
@@ -384,6 +391,10 @@ function getOfflineSyncProfile() {
 }
 
 function canRunOfflineSync() {
+	// Partners never sync prices, items or customers into the browser for offline use.
+	if (isPartnerMode()) {
+		return false;
+	}
 	return !!(getOfflineSyncProfile()?.name && !getIsManualOffline() && navigator.onLine);
 }
 
@@ -609,7 +620,8 @@ watch(
 watch(
 	bootstrapWarningSignature,
 	(nextSignature, previousSignature) => {
-		if (!nextSignature) {
+		// Partners never sell offline, so there is nothing for this banner to warn about.
+		if (!nextSignature || isPartnerMode()) {
 			bootstrapSnackbarVisible.value = false;
 			return;
 		}

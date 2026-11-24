@@ -2,6 +2,47 @@
 
 All notable changes.
 
+Release 15.36.0 — November 23, 2026
+### ✨ Features
+- The POS can submit orders as On Account or Pro Forma when the POS Profile allows it. Sales partners can choose Pro Forma; the pro forma PDF and its payment link are emailed to the customer's pro forma address. Staff who are signed in as POS staff can send and resend the pro forma link for any Pro Forma order; other users cannot, even if they know the order.
+- The email a pro forma goes to is confirmed before anything is submitted: pressing Pro Forma opens a box filled with the customer's own pro forma address (on a development site it says where emails are diverted). Edit it if needed; an invalid address is refused with a message, and a customer with no email on file needs one typed. Send & Submit then submits the order and emails the pro forma to that address once; Cancel submits nothing. The order-placed screen shows the result, and Resend to a different address (or Retry after a failure) shows a "Send pro forma to" box with its send button. The payment link dialog for a pro forma order is filled in the same way.
+- Sales partners no longer see Place Order when On Account and/or Pro Forma are available; those buttons replace it. A partner whose POS Profile offers neither still gets Place Order. Staff are unchanged.
+- If the order-placed screen is replaced by the next order while a pro forma is still being sent, the slow answer no longer shows against the new order. If the payment link is already being created, the screen says so and Retry tries again.
+- Applying item changes with a payment link now only accepts a POST request.
+- If a pro forma PDF cannot be made, no email is sent and the cashier or partner is told; sending again sends the whole pro forma.
+- An order on a ship-complete delivery charge (the container order types: DDP, FOB, Cabinet and Snugg Container) is never split into delivery groups, for partners and staff alike. The fulfilment step shows "This order ships complete: no partial deliveries" and hides Split Delivery, and the server saves the order fully allocated and refuses a split request, whatever the browser sends, and a split request on a charge the customer or POS profile cannot use is refused as unavailable rather than as ship-complete. A delivery charge saved by an older POS build (no ship-complete flag) is refreshed from the server when online and never offers Split Delivery offline, and a saved split is cleared whenever a ship-complete draft is loaded. This needs customer_due_dates 2.42.0 (planned release).
+- A delivery address typed for a DHD order can now be saved on the customer as a reusable Shipping address (server side only; the POS form follows). It is only accepted for a DHD delivery charge the user may use, and for partners only on their own customers. Only the address lines, city, county, postcode, country, phone and email are accepted. Typing the same first line and postcode again returns the customer's existing Shipping address instead of making a duplicate, even for two requests at once. Values must be plain text (no markup or JSON), the address gets a random name rather than one built from the street, and only desk staff or a partner on their own customer can use it; a charge restricted to POS Profiles is refused for a partner with no profile.
+- Choosing a DHD delivery charge now shows a Delivery address form in the payment step, for sales partners and staff: address lines, city, county, postcode, country (United Kingdom by default), phone and optional email. Save address stores it on the customer as a reusable Shipping address and selects it for the order, with any refusal (plain text only, not permitted) shown under the form. A DHD order cannot be placed until an address is saved or picked. Other delivery charges are unchanged. Sales partners no longer see the Add Customer Address button, which they cannot use. The delivery charge list now carries the Order Type name (`order_type_name`) so the POS can recognise DHD.
+- Orders on a fixed lead-time delivery charge (12 weeks for express items, 16 otherwise) can now be given an ETA before they are saved. A new read-only request, `get_fixed_eta`, returns each basket line's ETA and the order ETA for the chosen charge (only for charges the POS would offer that user, and for partners only their own customers; the customer's address charges are checked only when a customer is sent; nothing is saved and the order's own dates are unchanged; the date must be between 2000 and 2100 and basket keys must be unique), and item-grid rows carry `fixed_eta_weeks` when the request names such a charge. The ETA is counted from today unless a date is given, so a back-dated order's saved dates can differ. The POS display follows. This needs customer_due_dates 2.42.0 (planned release).
+_Total: 10 changes_
+
+Release 15.35.0 — November 19, 2026
+### ✨ Features
+- The default shipping method in the POS is now picked per audience: partners and non-partners each get the delivery charge set in the Delivery Charges "Default For" dropdown. Only a charge that is enabled, available to that audience and offered for the customer and POS profile is preselected. This needs customer_due_dates 2.40.0; without it the POS keeps the old default checkbox behaviour (AP-1). With Auto Set Delivery Charges on, a new order now gets that default charge instead of simply the first one (the first one is still used when no default is set). The POS is no longer sent the Default For value, and the old checkbox is also used if customer_due_dates is old or its Default For field is missing. If customer_due_dates cannot be loaded, sales partners are still only offered Agile only and Both charges.
+_Total: 1 change_
+
+Release 15.34.0 — November 16, 2026
+### ✨ Features
+- The delivery charge chosen in the POS now decides the order's Order Type and price list. Container charges (DDP, FOB) price every item from their own price list only; other charges use the customer's price list and fall back to Stockist (or DHD for DHD price lists) for any item the customer has no price for. Items reload, and lines already in the basket are repriced, when the charge changes (AP-1).
+- Delivery charges are filtered by their Available To setting, so sales partners only see Agile or Both charges and standard POS users only see TFW or Both (AP-1).
+- Hovering the Due date in the POS item list now shows the next three purchase-order due dates and the quantity due on each (AP-15).
+- Sales Partners have a new My Commission page in the POS showing the commission on their own submitted orders: date, order, customer, net value, rate, commission and status, with totals. Tick Delivered only to see commission on fully delivered orders. Only available to sales partners (AP-20).
+### 🐞 Bug Fixes
+- After a new POS build, some pages could misbehave until the browser cache was cleared: menu items did nothing or the screen showed "is not a function". The POS bundle's entry file is now a small loader, so every page imports its shared code from files that change on each build.
+_Total: 5 changes_
+
+Release 15.33.0 — November 10, 2026
+### ✨ Features
+- Sales Partners now see a "Who is this order for?" window when the POS opens. They must choose one of their customers and a delivery address before they can start; the choice fills the normal Customer box and the order's delivery address. The chosen address carries through to the Shipping Address on the payment screen, and stays selected if the order code clears it. Clicking the Customer box reopens the window to change customer or address (AP-1).
+_Total: 1 change_
+
+Release 15.32.0 — November 10, 2026
+### ✨ Features
+- Sales Partners can sign in to a restricted POS to work with their assigned customers and Sales Orders. Each customer uses their own default price list; partners cannot change prices, take payments, create invoices or customers, or access cashier functions. Partner access is checked on the server as well as in the POS (AP-1).
+- Sales Partners can discount orders by up to 50% of the price list value. Item and order discounts count together toward the cap, and commission is calculated on the discounted amount (AP-1).
+- When a partner enters a discount above the allowed maximum, the discount percentage and amount shown in the Active Sale fields now update to the capped values (AP-1).
+_Total: 3 changes_
+
 Release 15.31.1 — November 16, 2026
 ### 🐞 Bug Fixes
 - Sales Order Management: orders with Stainguard cover (including any order in the same split as one) are now locked against editing in POS. The order shows "This order has Stainguard cover and cannot be edited in POS. Please contact Customer Services." and item changes are rejected on the server too, so the warranty held by Stainguard can no longer drift from the order

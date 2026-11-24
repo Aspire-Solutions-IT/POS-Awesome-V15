@@ -15,12 +15,29 @@ from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, 
 from frappe.utils import cint, cstr, flt, getdate, nowdate, split_emails, validate_email_address
 
 from posawesome.posawesome.api.email_validation import validate_optional_email
+from posawesome.posawesome.api.partner_gate import get_scope, is_customer_in_scope, is_partner_user
+from posawesome.posawesome.api.partner_pricing import neutralise_payment_fields
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
 
 
 _ORDER_REF_ALPHABET = string.ascii_uppercase + string.digits
 MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS = {"13682"}
+
+# Payment types a POS order can be submitted with (Sales Order.posa_payment_type). "" is the
+# ordinary flow and "Paid" is descriptive only; both are never validated against the profile.
+# On Account and Proforma both submit with no payment, and each must be enabled on the
+# POS Profile. Proforma also puts the order On Hold ("No Payment") until the customer pays
+# the payment link; On Account follows the normal order process (no forced hold).
+PAYMENT_TYPE_PAID = "Paid"
+PAYMENT_TYPE_ON_ACCOUNT = "On Account"
+PAYMENT_TYPE_PROFORMA = "Proforma"
+PAYMENT_TYPES = ("", PAYMENT_TYPE_PAID, PAYMENT_TYPE_ON_ACCOUNT, PAYMENT_TYPE_PROFORMA)
+NO_PAYMENT_TYPES = (PAYMENT_TYPE_ON_ACCOUNT, PAYMENT_TYPE_PROFORMA)
+PAYMENT_TYPE_PROFILE_FLAGS = {
+    PAYMENT_TYPE_ON_ACCOUNT: "posa_allow_on_account",
+    PAYMENT_TYPE_PROFORMA: "posa_allow_proforma",
+}
 # Surplus below this is rounding noise from tax and discount arithmetic, not money
 # anyone wants to move. Staff should not be prompted about a few pence.
 MANAGED_SALES_ORDER_MIN_SURPLUS = 1.0
@@ -324,6 +341,10 @@ def _build_receipt_attachment(so_doc, print_format):
 
 def _should_auto_email_receipt(so_doc, log_skip=False):
     if not cint(getattr(so_doc, "is_pos", 0) or 0):
+        return False, "", []
+
+    # The pro forma email (invoice PDF plus payment link) replaces the receipt.
+    if cstr(getattr(so_doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA:
         return False, "", []
 
     if not getattr(so_doc, "pos_profile", None):
@@ -636,6 +657,8 @@ def _managed_sales_order_filters(company, currency, pos_profile=None, status=Non
         "is_pos": 1,
         "customer": ["not in", sorted(MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS)],
     }
+    if is_partner_user():
+        del filters["rfs_order"]
     if pos_profile:
         filters["pos_profile"] = pos_profile
     status = cstr(status or "").strip()
@@ -740,21 +763,74 @@ def _search_managed_sales_order_names(search_term, base_filters):
     return names
 
 
-def _is_managed_sales_order_doc(doc):
+def _is_managed_sales_order_doc(doc, allow_proforma=False):
     if not doc or cstr(getattr(doc, "doctype", "")).strip() != "Sales Order":
         return False
     if cint(getattr(doc, "docstatus", 0)) != 1:
         return False
-    if cint(getattr(doc, "rfs_order", 0)) != 1:
-        return False
+    # Partner orders are Agile-side, so never RFS; the request gate has already
+    # confined a partner to their own customers' orders. Staff may also reach a Proforma
+    # order (a partner's, so not RFS) where the caller says so: only to send or resend its
+    # pro forma payment link.
+    is_proforma = cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA
+    if cint(getattr(doc, "rfs_order", 0)) != 1 and not is_partner_user():
+        # The staff exception needs staff: a Website User with no Sales Order permission
+        # must not reach a partner's checkout link or order details through it.
+        if not (allow_proforma and is_proforma and _is_pos_staff_for_order(doc)):
+            return False
     if cint(getattr(doc, "is_pos", 0)) != 1:
         return False
     return cstr(getattr(doc, "customer", "")).strip() not in MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS
 
 
-def _validate_managed_sales_order_doc(doc):
-    if not _is_managed_sales_order_doc(doc):
+def _proforma_default_recipient(doc):
+    """Where a pro forma for this order goes unless the sender types another address (the
+    customer's Invoice Email, then address emails, then the customer's email), for the UI to
+    prefill. Blank for any other order."""
+    if cstr(getattr(doc, "posa_payment_type", "") or "").strip() != PAYMENT_TYPE_PROFORMA:
+        return ""
+    try:
+        from customer_due_dates.revolut.payment_link import resolve_proforma_recipient
+
+        return resolve_proforma_recipient(
+            doc.customer, doc.get("customer_address"), doc.get("shipping_address_name")
+        )
+    except Exception:
+        return ""
+
+
+def _is_pos_staff_for_order(doc):
+    """A signed-in desk (System) user who is POS staff for this order: allowed to read the
+    Sales Order, or assigned to a POS Profile. A Website User, however they got here, is not
+    staff, and neither is a Guest."""
+    user = frappe.session.user
+    if not user or user == "Guest":
+        return False
+    if user == "Administrator":
+        return True
+    if frappe.db.get_value("User", user, "user_type") != "System User":
+        return False
+    if frappe.has_permission("Sales Order", "read", doc):
+        return True
+    return bool(frappe.db.exists("POS Profile User", {"user": user}))
+
+
+def _validate_managed_sales_order_doc(doc, allow_proforma=False):
+    if not _is_managed_sales_order_doc(doc, allow_proforma=allow_proforma):
         frappe.throw(_("Sales Order is not available in POS management."))
+    _require_partner_scope_for_order(doc)
+
+
+def _require_partner_scope_for_order(doc):
+    """A Sales Partner login only reaches orders of its own partners' customers. The
+    request gate (partner_gate) checks this for allow-listed methods, but a request that
+    skips it (API-key auth does not run before_request) would otherwise reach the
+    payment-link lookup/create/delete and the detail response that carries the checkout
+    URL. Every managed-order endpoint validates through here, so check it here too.
+    Staff are not touched: they are authorised as before, by reaching the POS."""
+    user = frappe.session.user
+    if is_partner_user(user) and not is_customer_in_scope(doc.customer, get_scope(user)["partners"]):
+        frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
 
 
 PICK_LIST_STREAM_FIELDS = ("stream_id", "stream_status", "tracking_link")
@@ -1197,9 +1273,18 @@ def _get_managed_sales_order_revolut_link(doc):
     if cint(frappe.db.get_single_value("Revolut Settings", "enabled")) != 1:
         return None
 
-    from customer_due_dates.revolut.payment_link import get_active_payment_link
+    # The link carries the customer's checkout URL: never for a partner outside its scope.
+    user = frappe.session.user
+    if is_partner_user(user) and not is_customer_in_scope(
+        getattr(doc, "customer", None), get_scope(user)["partners"]
+    ):
+        return None
 
-    return get_active_payment_link("Sales Order", doc.name)
+    # The trusted lookup: the caller was authorised by the managed-order checks, and a
+    # cashier role carries no Sales Order permission row for the read check to pass.
+    from customer_due_dates.revolut.payment_link import find_active_payment_link
+
+    return find_active_payment_link("Sales Order", doc.name)
 
 
 def _serialize_managed_sales_order(doc):
@@ -1277,6 +1362,7 @@ def _serialize_managed_sales_order(doc):
         "prefered_earliest_delivery_date": getattr(doc, "prefered_earliest_delivery_date", None),
         "customer_ref": getattr(doc, "customer_ref", None),
         "customer_order_ref": getattr(doc, "customer_order_ref", None),
+        "posa_payment_type": cstr(getattr(doc, "posa_payment_type", "") or "").strip(),
         "posa_notes": getattr(doc, "posa_notes", None),
         "shopify_notes": getattr(doc, "shopify_notes", None),
         "auto_release_date": getattr(doc, "auto_release_date", None),
@@ -1306,6 +1392,7 @@ def _serialize_managed_sales_order(doc):
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
         "receipt_email": _managed_sales_order_receipt_email_state(doc),
+        "proforma_recipient": _proforma_default_recipient(doc),
         "revolut_payment_link": _get_managed_sales_order_revolut_link(doc),
         "items": items,
     }
@@ -1461,6 +1548,14 @@ def _keep_computed_fields_on_save(doctype, name):
     Those fields are computed by the save, never taken from the cashier, and write
     permission on the order is still checked, so skipping the reset is safe here. The
     patch is limited to this one document and always restored.
+
+    The same reset blanks item_code (permlevel 1, read-only for a partner) on a NEW row
+    before it is inserted, so adding a line failed with "Mandatory: item_code". Rows
+    being inserted into this order are therefore let through too: set_order_defaults
+    fills them from the Item, and the cashier's payload is already reduced to qty, uom,
+    conversion factor and a server-priced rate by the managed-update normaliser.
+    Existing rows are saved with ignore_permissions and other orders' rows are not
+    matched (parenttype and parent must both be this order).
     """
     from frappe.model.document import Document
 
@@ -1468,6 +1563,14 @@ def _keep_computed_fields_on_save(doctype, name):
 
     def validate_higher_perm_levels(self):
         if self.doctype == doctype and self.name == name:
+            return
+        if (
+            self.doctype == f"{doctype} Item"
+            and self.get("parenttype") == doctype
+            and self.get("parent") == name
+            and self.is_new()
+            and self.meta.istable
+        ):
             return
         return original(self)
 
@@ -1550,7 +1653,8 @@ def _prepare_managed_sales_order_item_rows(doc, incoming_items):
             normalized["delivery_date"] = str(getdate(delivery_date)) if delivery_date else None
         else:
             requested_rate = normalized.get("rate")
-            if requested_rate is None or flt(requested_rate) < 0:
+            # A partner never sets a price: the rate always comes from their price list.
+            if is_partner_user() or requested_rate is None or flt(requested_rate) < 0:
                 pricing = _resolve_managed_sales_order_item_pricing(
                     doc, normalized["item_code"], normalized.get("uom")
                 )
@@ -1586,11 +1690,15 @@ def _resolve_managed_sales_order_item_pricing(doc, item_code, uom=None):
     item_meta = frappe.db.get_value(
         "Item",
         item_code,
-        ["item_name", "description", "stock_uom", "has_variants"],
+        ["item_name", "description", "stock_uom", "has_variants", "disabled", "is_sales_item"],
         as_dict=True,
     )
     if not item_meta:
         frappe.throw(_("Item {0} does not exist.").format(item_code))
+    if cint(item_meta.get("disabled")):
+        frappe.throw(_("Item {0} is disabled.").format(item_code))
+    if cint(item_meta.get("is_sales_item", 1)) == 0:
+        frappe.throw(_("Item {0} is not a sales item.").format(item_code))
     if cint(item_meta.get("has_variants")):
         frappe.throw(_("Item {0} is a template. Please select a variant.").format(item_code))
 
@@ -1605,8 +1713,16 @@ def _resolve_managed_sales_order_item_pricing(doc, item_code, uom=None):
         or cstr(profile.get("selling_price_list") or "").strip()
         or None
     )
+    # For a partner, the order's own charge and never one from the request: it fixes the
+    # list (a container charge) and the fallback, exactly as when the order was saved.
+    # Staff keep following the request.
     aggregator = ItemDetailAggregator(
-        profile, price_list=price_list, customer=getattr(doc, "customer", None)
+        profile,
+        price_list=price_list,
+        customer=getattr(doc, "customer", None),
+        delivery_charge=(
+            cstr(getattr(doc, "posa_delivery_charges", "") or "").strip() if is_partner_user() else None
+        ),
     )
     rows = aggregator.build_details([{"item_code": item_code, "uom": uom}]) or []
     row = rows[0] if rows else {}
@@ -2080,7 +2196,7 @@ def update_managed_sales_order_items(data):
     return _serialize_managed_sales_order(doc)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_managed_sales_order_items_with_payment(data):
     """Apply item changes and take the resulting balance in one transaction.
 
@@ -2242,13 +2358,13 @@ def _send_item_change_payment_link(doc, amount_due, recipient, payment, credit_a
     from customer_due_dates.revolut.payment_link import (
         create_payment_link,
         delete_payment_link,
-        get_active_payment_link,
+        find_active_payment_link,
     )
 
     # Before anything leaves for Revolut, so a failed hold rolls back with nothing sent.
     _hold_managed_sales_order_for_payment_link(doc)
 
-    if get_active_payment_link("Sales Order", doc.name):
+    if find_active_payment_link("Sales Order", doc.name):
         delete_payment_link(reference_doctype="Sales Order", reference_name=doc.name, check_permission=False)
 
     send_email = cint(payment.get("send_email", 1))
@@ -2260,6 +2376,9 @@ def _send_item_change_payment_link(doc, amount_due, recipient, payment, credit_a
         send_email=send_email,
         # Authorised by this whitelisted layer, as in create_managed_sales_order_payment_link.
         check_permission=False,
+        # The item changes above must roll back with a failure here, so nothing in the link
+        # code may commit them half-applied.
+        atomic=True,
     )
 
     doc.reload()
@@ -2302,6 +2421,7 @@ def get_managed_sales_orders(
             "prefered_earliest_delivery_date",
             "customer_ref",
             "customer_order_ref",
+            "posa_payment_type",
             "currency",
             "pos_profile",
             "grand_total",
@@ -2631,6 +2751,11 @@ def resend_managed_sales_order_receipt(sales_order, address=None, email=None, in
     doc = frappe.get_doc("Sales Order", sales_order_name)
     _validate_managed_sales_order_doc(doc)
 
+    # The automatic paths skip a pro forma (its email replaces the receipt); a manual
+    # resend must not send a receipt for one either.
+    if cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA:
+        frappe.throw(_("A pro forma order has no receipt. Use Resend Pro Forma instead."))
+
     if cstr(email or "").strip():
         _update_managed_sales_order_address_email(doc, address, email)
 
@@ -2755,7 +2880,7 @@ def pay_managed_sales_order_balance(
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_managed_sales_order_payment_link(sales_order, amount=None, email=None, send_email=1):
     """Create a Revolut hosted-checkout payment link for this order's outstanding balance
     and email it to the customer.
@@ -2764,13 +2889,19 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
     only creates and sends the link. The Payment Entry is created later, when the
     customer actually pays, by customer_due_dates' Revolut webhook handler. See
     customer_due_dates.revolut.payment_link.create_payment_link for the rest of that flow.
+
+    POST only: it creates a Revolut order and queues an email, and a GET is rolled back by
+    Frappe, which would lose the local record of an order that stays payable.
+
+    Staff may send and resend the pro forma link for ANY Proforma order (a partner's
+    included); a partner only for their own customers' orders (_validate_managed_sales_order_doc).
     """
     sales_order_name = cstr(sales_order or "").strip()
     if not sales_order_name:
         frappe.throw(_("Sales Order name is required."))
 
     doc = frappe.get_doc("Sales Order", sales_order_name)
-    _validate_managed_sales_order_doc(doc)
+    _validate_managed_sales_order_doc(doc, allow_proforma=True)
 
     order_total = flt(getattr(doc, "grand_total", None) or 0)
     advance_paid = flt(getattr(doc, "advance_paid", None) or 0)
@@ -2784,9 +2915,16 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
     if payment_amount - outstanding_balance > 0.001:
         frappe.throw(_("Payment amount cannot exceed the remaining balance."))
 
-    # Same resolution the receipt resend uses, so the link defaults to wherever this
-    # order's paperwork already goes rather than asking the till operator to know it.
-    recipient = validate_optional_email(email) or _resolve_customer_email(doc)
+    is_proforma = cstr(getattr(doc, "posa_payment_type", "") or "").strip() == PAYMENT_TYPE_PROFORMA
+    if is_proforma:
+        # A pro forma goes to the address the sender typed (checked: one valid address), else
+        # to the customer's own chain resolved on the server (Invoice Email, address emails,
+        # customer email). A development site still redirects it, whatever was typed.
+        recipient = validate_optional_email(email)
+    else:
+        # Same resolution the receipt resend uses, so the link defaults to wherever this
+        # order's paperwork already goes rather than asking the till operator to know it.
+        recipient = validate_optional_email(email) or _resolve_customer_email(doc)
 
     from customer_due_dates.revolut.payment_link import create_payment_link
 
@@ -2796,6 +2934,10 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
         amount=payment_amount,
         email_to=recipient or None,
         send_email=cint(send_email),
+        proforma=is_proforma,
+        # An operator pressing Send/Resend on a pro forma means it: reuse of an already
+        # emailed link must still email.
+        resend=is_proforma,
         # Shop/till roles carry no standard Sales Order permission at all -- they're
         # authorised by reaching this whitelisted endpoint (_validate_managed_sales_order_doc
         # above), the same as every other Sales Order mutation in this file.
@@ -2808,10 +2950,16 @@ def create_managed_sales_order_payment_link(sales_order, amount=None, email=None
         "payment_request": result.get("payment_request"),
         "checkout_url": result.get("checkout_url"),
         "already_paid": result.get("already_paid"),
+        "email_sent": result.get("email_sent"),
+        "attachment_ok": result.get("attachment_ok", True),
+        "email_error": result.get("email_error") or "",
+        "in_progress": bool(result.get("in_progress")),
+        "recipient": result.get("recipient") or "",
+        "recipient_default": result.get("recipient_default") or "",
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_managed_sales_order_payment_link(sales_order):
     """Cancel this order's pending Revolut payment link, on Revolut's side and ours.
     Refuses if Revolut already completed it -- create_managed_sales_order_payment_link
@@ -3166,6 +3314,8 @@ def update_sales_order(data):
     _apply_ns_default_warehouse(data)
     _force_peterborough_store_collection(data)
     data.pop("posa_split_groups", None)
+    # Only a validated submit sets the payment type (see _apply_payment_type).
+    data.pop("posa_payment_type", None)
     _ensure_unique_customer_order_ref(data, data.get("name"))
     so_doc = _save_sales_order_doc_from_payload(data)
     return so_doc
@@ -3288,6 +3438,45 @@ def _normalize_split_groups(payload):
             }
         )
     return groups
+
+
+def _charge_is_ship_complete(charge_name):
+    """True when the delivery charge's Order Type ships complete (container order types).
+
+    Read from the database, never from the payload, so a forged ``ship_complete`` cannot matter.
+    A site without the columns (cdd not migrated) has no ship-complete orders.
+    """
+    charge_name = cstr(charge_name).strip()
+    if not charge_name:
+        return False
+    if not frappe.db.has_column("Delivery Charges", "order_type") or not frappe.db.has_column(
+        "Order Type", "ship_complete"
+    ):
+        return False
+    order_type = frappe.db.get_value("Delivery Charges", charge_name, "order_type")
+    if not order_type:
+        return False
+    return bool(cint(frappe.db.get_value("Order Type", order_type, "ship_complete")))
+
+
+def _enforce_ship_complete(order):
+    """A ship-complete order is never split-delivered or part-delivered, whoever places it.
+
+    The POS hides the toggle for these charges, so a split request here is a stale or forged
+    payload and is refused. The order is always saved fully allocated, whatever the payload says.
+    """
+    if not _charge_is_ship_complete(order.get("posa_delivery_charges")):
+        return
+    if cint(order.get("posa_split_delivery")):
+        # A charge this customer or POS profile cannot use gets the availability denial, not
+        # the ship-complete message (which would confirm what the charge is).
+        from posawesome.posawesome.api import charge_pricing
+
+        charge_pricing.validated_partner_charge(order.get("posa_delivery_charges"), order.get("customer"))
+        frappe.throw(_("This order ships complete, so it cannot be split into delivery groups."))
+    order["posa_split_delivery"] = 0
+    order["must_be_fully_allocated"] = 1
+    order.pop("posa_split_groups", None)
 
 
 def _is_split_group_submit(payload):
@@ -3665,6 +3854,16 @@ def _should_force_full_allocation_for_pos_order(order):
     return bool(cint((order or {}).get("posa_split_delivery")))
 
 
+def _hold_proforma_order(so_doc):
+    """Put a just-submitted pro forma order On Hold, as the POS does for "Submit Without
+    Payment": the same hold function, run here because a partner cannot call it from the
+    browser. After the delivery note step, which needs the order off hold. Raising rolls
+    the whole submit back, so there is never a submitted pro forma that is not held."""
+    from customer_due_dates.kit_items.overrides.sales_order import hold_sales_order_from_pos
+
+    hold_sales_order_from_pos(so_doc.name, _("pro forma: awaiting payment"))
+
+
 @frappe.whitelist()
 def submit_sales_order(order, data=None):
     """Submit sales order and create payment entries."""
@@ -3676,12 +3875,250 @@ def submit_sales_order(order, data=None):
     return result
 
 
+def _user_may_use_pos_profile(profile):
+    """The signed-in user sells on this POS Profile (assigned to it, or it is the POS
+    Settings default), so a browser cannot borrow another profile's settings."""
+    user = frappe.session.user
+    if user == "Administrator":
+        return True
+    if frappe.db.exists("POS Profile User", {"parent": profile, "user": user}):
+        return True
+    # The POS Settings default only exists on sites that carry that field.
+    if not frappe.get_meta("POS Settings").has_field("pos_profile"):
+        return False
+    return bool(profile) and frappe.db.get_single_value("POS Settings", "pos_profile") == profile
+
+
+def _apply_payment_type(order, data):
+    """Validate the requested POS payment type and write the result to the order payload.
+
+    The type arrives as ``payment_type`` (in ``data`` or ``order``) and is the only source:
+    whatever a browser put in ``posa_payment_type`` is overwritten, because that field is
+    read-only on the form and must reflect what this function validated. "" and Paid are
+    not validated; On Account and Proforma need the POS Profile's switch for them.
+    A partner never pays, so Paid means "" for them.
+    """
+    requested = ""
+    for payload in (data, order):
+        if isinstance(payload, dict):
+            candidate = cstr(payload.pop("payment_type", "") or "").strip()
+            requested = requested or candidate
+
+    if requested not in PAYMENT_TYPES:
+        frappe.throw(_("Unknown payment type {0}.").format(requested))
+
+    if requested == PAYMENT_TYPE_PAID and is_partner_user():
+        requested = ""
+
+    # Pro forma is the Sales Partner flow; staff sell Paid / On Account as before.
+    if requested == PAYMENT_TYPE_PROFORMA and not is_partner_user():
+        frappe.throw(_("Pro forma orders are only available to Sales Partners."))
+
+    flag = PAYMENT_TYPE_PROFILE_FLAGS.get(requested)
+    if flag:
+        profile = cstr(order.get("pos_profile") or "").strip()
+        if not profile or not _user_may_use_pos_profile(profile):
+            frappe.throw(_("A POS Profile you sell on is required for {0} orders.").format(requested))
+        if not cint(frappe.db.get_value("POS Profile", profile, flag)):
+            frappe.throw(_("{0} orders are not enabled on POS Profile {1}.").format(requested, profile))
+
+    order["posa_payment_type"] = requested
+    return requested
+
+
+def _apply_proforma_recipient(order, data, payment_type):
+    """The address the partner confirmed for the pro forma, taken from ``proforma_recipient``
+    in ``data`` or ``order`` and removed from both. One plain address (checked before
+    anything is saved, so a bad one rejects the whole submit); blank means the customer's
+    own. Only a Proforma order carries one: for any other type it is dropped, never trusted."""
+    typed = ""
+    for payload in (data, order):
+        if isinstance(payload, dict):
+            candidate = cstr(payload.pop("proforma_recipient", "") or "").strip()
+            typed = typed or candidate
+    if payment_type != PAYMENT_TYPE_PROFORMA:
+        return ""
+    return validate_optional_email(typed)
+
+
+def _may_send_proforma(doc):
+    """Only a Sales Partner login sends a pro forma, and only for its own customers'
+    orders. Staff use the normal payment-link actions; they are not pro forma senders.
+    (Because of that, no POS Profile assignment, ownership or Sales Order permission
+    grants access here -- the global default POS Profile in particular must never.)
+    The managed-order rules for other actions (RFS only, is_pos) deliberately do not
+    apply: pro forma orders are usually Agile customers, not RFS."""
+    user = frappe.session.user
+    if not is_partner_user(user):
+        return False
+    return is_customer_in_scope(doc.customer, get_scope(user)["partners"])
+
+
+def _plain_error(exc):
+    """The reason text for the POS: the exception's own message, else the last message
+    Frappe queued for the user (a failed permission check raises with no text)."""
+    import re
+
+    text = cstr(exc).strip()
+    if not text:
+        for entry in reversed(getattr(frappe.local, "message_log", None) or []):
+            if isinstance(entry, str):
+                try:
+                    entry = json.loads(entry)
+                except ValueError:
+                    entry = {"message": entry}
+            text = cstr((entry or {}).get("message")).strip()
+            if text:
+                break
+    return re.sub(r"<[^>]+>", "", text).strip() or _("The pro forma could not be sent.")
+
+
+@frappe.whitelist()
+def get_proforma_default_recipient(customer):
+    """Who a pro forma for this customer would go to (Invoice Email, then the customer's
+    address emails, then the customer email), so the POS can ask the partner to confirm it
+    before anything is submitted. Read-only. A partner may only ask about their own
+    customers (the gate checks this too; repeated here so the method is safe on its own);
+    staff need read access to the Customer.
+
+    Returns ``{"recipient", "dev_site_override"}``. On a ``.localhost`` site the real
+    recipient is hidden: ``recipient`` is the developer address that every pro forma email
+    is redirected to, and ``dev_site_override`` is true so the UI can say so."""
+    customer = cstr(customer or "").strip()
+    if not customer:
+        frappe.throw(_("Customer is required."))
+    if not frappe.db.exists("Customer", customer):
+        frappe.throw(_("Customer {0} was not found.").format(customer), frappe.DoesNotExistError)
+
+    user = frappe.session.user
+    if is_partner_user(user):
+        allowed = is_customer_in_scope(customer, get_scope(user)["partners"])
+    else:
+        allowed = frappe.has_permission("Customer", "read", customer)
+    if not allowed:
+        frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
+
+    from customer_due_dates.revolut import payment_link
+
+    if payment_link.DEV_SITE_MARKER in (frappe.local.site or ""):
+        return {"recipient": payment_link.DEV_SITE_PROFORMA_RECIPIENT, "dev_site_override": True}
+    return {
+        "recipient": payment_link.resolve_proforma_recipient(customer) or "",
+        "dev_site_override": False,
+    }
+
+
+@frappe.whitelist(methods=["POST"])
+def send_proforma(sales_order, resend=0, recipient=None):
+    """Create the payment link for a submitted Proforma order and email the customer the
+    pro forma PDF with that link.
+
+    Runs after the submit has committed (never inside it). No row lock is held here: the
+    customer_due_dates function serialises on the Sales Order itself, never across its
+    Revolut calls, and commits once the Revolut order is recorded, so the link survives
+    whatever happens to the rest of the request. A retry reuses the link and, unless
+    ``resend`` is set, sends nothing more when the email for it is already queued or sent
+    (an email that ended in an Error is sent again). A failure leaves the order submitted
+    and On Hold and is returned (and logged) rather than raised, so the POS can say "order
+    saved, pro forma not sent" and offer Retry.
+
+    ``recipient`` is an optional address the sender typed (one valid address, checked here
+    and again by the link code). Without it the customer's own address chain is used. Either
+    way the result carries ``recipient`` (who it was meant for) and ``recipient_default`` (the
+    chain's answer) so the UI can prefill them. On a development site the email always goes to
+    the developer address, whatever was typed.
+    """
+    sales_order_name = cstr(sales_order or "").strip()
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required."))
+
+    if not frappe.db.get_value("Sales Order", sales_order_name, "name"):
+        frappe.throw(_("Sales Order {0} was not found.").format(sales_order_name), frappe.DoesNotExistError)
+
+    doc = frappe.get_doc("Sales Order", sales_order_name)
+    # Permission first, so a caller learns nothing about an order they cannot touch.
+    if not _may_send_proforma(doc):
+        frappe.throw(_("You are not permitted to do this."), frappe.PermissionError)
+    if cstr(doc.customer).strip() in MANAGED_SALES_ORDER_EXCLUDED_CUSTOMERS:
+        frappe.throw(_("Sales Order is not available in POS management."))
+    if cint(doc.docstatus) != 1:
+        frappe.throw(_("Sales Order must be submitted before a pro forma can be sent."))
+    if cstr(doc.get("posa_payment_type") or "").strip() != PAYMENT_TYPE_PROFORMA:
+        frappe.throw(_("Sales Order {0} is not a pro forma order.").format(doc.name))
+
+    from customer_due_dates.revolut.payment_link import _create_payment_link
+
+    # Checked before anything is created, so a bad address leaves the order alone.
+    typed_recipient = validate_optional_email(recipient)
+
+    try:
+        result = _create_payment_link(
+            "Sales Order",
+            doc.name,
+            email_to=typed_recipient or None,
+            send_email=True,
+            # Authorised above, as in create_managed_sales_order_payment_link.
+            check_permission=False,
+            proforma=True,
+            resend=bool(cint(resend)),
+        )
+    except Exception as exc:
+        # Only what happened since the link code's last commit is undone; a Revolut order it
+        # created is cancelled by that code before it re-raises.
+        frappe.db.rollback()
+        error = _plain_error(exc)
+        frappe.clear_messages()
+        frappe.log_error(
+            title="POS Pro Forma Send Failed",
+            message=f"Sales Order: {doc.name}\n{frappe.get_traceback()}",
+        )
+        return {"ok": False, "link": None, "email_sent": False, "attachment_ok": True, "error": error}
+
+    # A retry that reuses a link the customer was already emailed sends nothing more, and
+    # that is success: the pro forma is with the customer.
+    email_sent = bool(result.get("email_sent") or result.get("email_already_sent"))
+    attachment_ok = bool(result.get("attachment_ok", True))
+    error = ""
+    if result.get("already_paid"):
+        error = _("This order has already been paid, so no pro forma was sent.")
+    elif not email_sent:
+        error = cstr(result.get("email_error") or "") or _(
+            "The payment link was created but the email could not be sent."
+        )
+    return {
+        "ok": True,
+        "link": result.get("checkout_url"),
+        "email_sent": email_sent,
+        "attachment_ok": attachment_ok,
+        "error": error,
+        "in_progress": bool(result.get("in_progress")),
+        "recipient": result.get("recipient") or "",
+        "recipient_default": result.get("recipient_default") or "",
+    }
+
+
 def _submit_sales_order(order, data=None):
     order = json.loads(order)
     from posawesome.posawesome.api.stainguard import validate_pos_stainguard
 
     validate_pos_stainguard(order)
     data = json.loads(data) if data else {}
+    if is_partner_user():
+        # Partners place orders; they never collect payment or spend customer credit.
+        neutralise_payment_fields(order, data)
+    payment_type = _apply_payment_type(order, data)
+    proforma_recipient = _apply_proforma_recipient(order, data, payment_type)
+    if payment_type in NO_PAYMENT_TYPES:
+        # Both types are "submit without payment": nothing is collected at the till and no
+        # customer credit is spent (the no-payment block below empties payments and sets
+        # the settlement to none). A pro forma is paid later through its link.
+        order["allow_no_payment_order_submit"] = 1
+        order["redeemed_customer_credit"] = 0
+        data["redeemed_customer_credit"] = 0
+    if payment_type == PAYMENT_TYPE_PROFORMA:
+        # The same reason the "Submit Without Payment" button sets, so the Revolut webhook's
+        # existing release (release_sales_order_from_hold_if_paid) lifts the hold on payment.
+        order["posa_pending_auto_hold_reason"] = "No Payment"
     if data.get("sales_order_settlement_state") and not order.get("sales_order_settlement_state"):
         order["sales_order_settlement_state"] = data.get("sales_order_settlement_state")
     if data.get("allow_no_payment_order_submit") and not order.get("allow_no_payment_order_submit"):
@@ -3697,7 +4134,10 @@ def _submit_sales_order(order, data=None):
     _map_delivery_dates(order)
     _apply_ns_default_warehouse(order)
     _force_peterborough_store_collection(order)
+    _enforce_ship_complete(order)
     is_split_group_submit = _is_split_group_submit(order)
+    if payment_type == PAYMENT_TYPE_PROFORMA and is_split_group_submit:
+        frappe.throw(_("Pro forma orders cannot be split into delivery groups."))
     if _should_force_full_allocation_for_pos_order(order):
         order["must_be_fully_allocated"] = 1
     if not is_split_group_submit:
@@ -3785,4 +4225,11 @@ def _submit_sales_order(order, data=None):
 
     # Payment entries run in the background to speed up checkout
 
-    return {"name": so_doc.name, "status": so_doc.docstatus, "doctype": so_doc.doctype}
+    if payment_type == PAYMENT_TYPE_PROFORMA:
+        _hold_proforma_order(so_doc)
+
+    result = {"name": so_doc.name, "status": so_doc.docstatus, "doctype": so_doc.doctype}
+    if proforma_recipient:
+        # Validated above; the success dialog's one automatic send uses it.
+        result["proforma_recipient"] = proforma_recipient
+    return result

@@ -1,5 +1,6 @@
 import api from "./api";
 import type { Item } from "../types/models";
+import { chargeRequestArgs } from "../utils/chargePricingContext";
 
 export interface ItemGroup {
   name: string;
@@ -45,7 +46,9 @@ const itemService = {
   },
 
   getItemsFromBarcode(args: { selling_price_list: string; currency: string; barcode: string }): Promise<Item | null> {
-    return api.call("posawesome.posawesome.api.items.get_items_from_barcode", args);
+    // The server prices a partner's scan from the customer (added by the partner call guard)
+    // and the order's delivery charge, the same as the grid, not from the list sent here.
+    return api.call("posawesome.posawesome.api.items.get_items_from_barcode", { ...args, ...chargeRequestArgs() });
   },
 
   getItemBrand(itemCode: string): Promise<string> {

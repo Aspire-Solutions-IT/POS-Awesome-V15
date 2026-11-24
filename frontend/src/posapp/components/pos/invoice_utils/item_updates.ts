@@ -1,4 +1,5 @@
 import stockCoordinator from "../../../utils/stockCoordinator";
+import { chargeRequestArgs } from "../../../utils/chargePricingContext";
 import { isOffline } from "../../../../offline/index";
 
 declare const __: (_text: string, _args?: any[]) => string;
@@ -24,6 +25,7 @@ export async function update_items_details(context: any, items: any[]) {
 				price_list: context.get_price_list
 					? context.get_price_list()
 					: null,
+				...chargeRequestArgs(),
 			},
 		});
 

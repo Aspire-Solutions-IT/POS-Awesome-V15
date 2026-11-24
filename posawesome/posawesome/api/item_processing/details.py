@@ -1,5 +1,6 @@
 import frappe
 from frappe.utils import cint, nowdate
+from posawesome.posawesome.api import partner_pricing
 from posawesome.posawesome.api.item_fetchers import ItemDetailAggregator, get_batches
 from posawesome.posawesome.api.item_processing.stock import get_stock_availability
 from posawesome.posawesome.api.utils import _ensure_pos_profile, log_perf_event
@@ -21,7 +22,7 @@ def _resolve_display_item_name(item) -> str:
     return custom_name or frappe.utils.cstr(item.get("item_name")).strip()
 
 @frappe.whitelist()
-def get_items_details(pos_profile, items_data, price_list=None, customer=None):
+def get_items_details(pos_profile, items_data, price_list=None, customer=None, delivery_charge=None):
     """Bulk fetch item details for a list of items."""
 
     started_at = time.perf_counter()
@@ -39,7 +40,9 @@ def get_items_details(pos_profile, items_data, price_list=None, customer=None):
         )
         return []
 
-    aggregator = ItemDetailAggregator(pos_profile, price_list=price_list, customer=customer)
+    aggregator = ItemDetailAggregator(
+        pos_profile, price_list=price_list, customer=customer, delivery_charge=delivery_charge
+    )
     result = aggregator.build_details(items_data)
     log_perf_event(
         "get_items_details",
@@ -99,6 +102,20 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
                 "warehouse": warehouse,
             },
             fields=["name as serial_no", "batch_no"],
+        )
+
+    partner_customer = None
+    partner_charge = None
+    if partner_pricing.is_partner_user():
+        partner_customer = (doc.get("customer") if doc else None) or item.get("customer")
+        partner_pricing.require_scoped_customer(partner_customer)
+        partner_charge = (doc.get("posa_delivery_charges") if doc else None) or item.get("delivery_charge")
+        price_list = partner_pricing.get_customer_price_list(partner_customer, partner_charge)
+        # ERPNext runs below as Administrator, so it only ever sees inputs built here, from
+        # the validated customer, charge and list: never the browser's rate, price list,
+        # conversion rates, supplier or flags (which could make it write an Item Price).
+        item, doc = partner_pricing.sanitise_item_details_input(
+            item, partner_customer, partner_charge, price_list, company
         )
 
     item["selling_price_list"] = price_list
@@ -164,16 +181,29 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
     )
 
     max_discount = item_meta.get("max_discount")
-    res = get_item_details(
-        item,
-        doc,
-        overwrite_warehouse=False,
-    )
+    if partner_customer:
+        with partner_pricing.as_system_user():
+            res = get_item_details(item, doc, overwrite_warehouse=False)
+    else:
+        res = get_item_details(
+            item,
+            doc,
+            overwrite_warehouse=False,
+        )
     if item.get("is_stock_item") and warehouse:
         if item.get("has_batch_no"):
             res["actual_qty"] = non_expired_batch_qty
         else:
             res["actual_qty"] = get_stock_availability(item_code, warehouse)
+    if partner_customer:
+        partner_pricing.apply_item_detail(
+            res,
+            partner_customer,
+            item.get("uom"),
+            item.get("conversion_factor"),
+            partner_charge,
+        )
+        max_discount = partner_pricing.PARTNER_MAX_DISCOUNT
     res["max_discount"] = max_discount
     res["batch_no_data"] = batch_no_data
     res["serial_no_data"] = serial_no_data
@@ -231,12 +261,15 @@ def get_item_variants(pos_profile, parent_item_code, price_list=None, customer=N
     if _item_has_custom_tfw_name():
         fields.append("custom_tfw_name")
 
+    from posawesome.posawesome.api.partner_pricing import exclusion_field
+
+    exclude_field = exclusion_field()
     items_data = frappe.get_all(
         "Item",
         filters={
             "variant_of": parent_item_code,
             "disabled": 0,
-            **({"custom_exclude_from_pos": ["!=", 1]} if _item_has_custom_exclude_from_pos() else {}),
+            **({exclude_field: ["!=", 1]} if exclude_field else {}),
         },
         fields=fields,
         order_by="custom_tfw_name asc, item_name asc" if _item_has_custom_tfw_name() else "item_name asc",
@@ -256,6 +289,9 @@ def get_item_variants(pos_profile, parent_item_code, price_list=None, customer=N
     result = []
     for item in items_data:
         detail = detail_map.get(item["item_code"], {})
+        # A partner is only offered variants that are priced on their customer's list.
+        if partner_pricing.is_unpriced(item, detail):
+            continue
         if detail:
             item.update(detail)
         else:

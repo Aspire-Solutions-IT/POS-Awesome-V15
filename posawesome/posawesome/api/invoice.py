@@ -234,6 +234,16 @@ def set_patient(doc):
         doc.patient = patient_list[0].name
 
 
+def _pick_delivery_charge(delivery_charges):
+    """The charge to auto-select: the flagged default, else the first applicable row.
+
+    ``is_default`` is set per audience by get_applicable_delivery_charges. When nothing
+    is flagged (no default configured, or customer_due_dates is not updated) the
+    previous behaviour, the first row, is kept.
+    """
+    return next((c for c in delivery_charges if c.get("is_default") == 1), delivery_charges[0])
+
+
 def auto_set_delivery_charges(doc):
     if not doc.pos_profile:
         return
@@ -257,8 +267,9 @@ def auto_set_delivery_charges(doc):
                 doc.posa_delivery_charges_rate = delivery_charges[0].rate
     else:
         if len(delivery_charges) > 0:
-            doc.posa_delivery_charges = delivery_charges[0].name
-            doc.posa_delivery_charges_rate = delivery_charges[0].rate
+            charge = _pick_delivery_charge(delivery_charges)
+            doc.posa_delivery_charges = charge.name
+            doc.posa_delivery_charges_rate = charge.rate
         else:
             doc.posa_delivery_charges = None
             doc.posa_delivery_charges_rate = None

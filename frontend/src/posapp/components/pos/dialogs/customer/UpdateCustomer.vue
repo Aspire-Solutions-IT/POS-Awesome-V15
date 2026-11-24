@@ -220,6 +220,7 @@ import { useUIStore } from "../../../../stores/uiStore.js";
 import { storeToRefs } from "pinia";
 import { useToastStore } from "../../../../stores/toastStore.js";
 import { isValidOptionalEmail } from "../../../../utils/emailValidation";
+import { isPartnerMode } from "../../../../utils/partnerMode";
 
 export default {
 	setup() {
@@ -377,7 +378,8 @@ export default {
 			this.loyalty_program = null;
 		},
 		getCustomerGroups() {
-			if (this.groups.length > 0) return;
+			// Partners can't create or edit customers, so this dialog never opens for them.
+			if (isPartnerMode() || this.groups.length > 0) return;
 			const vm = this;
 			frappe.db
 				.get_list("Customer Group", {
@@ -395,7 +397,7 @@ export default {
 				});
 		},
 		getCustomerTerritorys() {
-			if (this.territorys.length > 0) return;
+			if (isPartnerMode() || this.territorys.length > 0) return;
 			const vm = this;
 			frappe.db
 				.get_list("Territory", {

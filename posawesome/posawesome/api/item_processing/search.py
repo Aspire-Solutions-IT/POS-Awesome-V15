@@ -8,6 +8,8 @@ import frappe
 from frappe import _, as_json
 from frappe.utils import cint, cstr, get_datetime
 from frappe.utils.caching import redis_cache
+from posawesome.posawesome.api import partner_pricing
+from posawesome.posawesome.api.partner_gate import is_partner_user
 
 from posawesome.posawesome.api.item_fetchers import ItemDetailAggregator
 from posawesome.posawesome.api.utils import (
@@ -122,11 +124,11 @@ def _build_search_plan(
     offset = _to_positive_int(offset)
 
     has_custom_tfw_name = _item_has_custom_tfw_name()
-    has_custom_exclude_from_pos = _item_has_custom_exclude_from_pos()
+    exclude_field = partner_pricing.exclusion_field()
 
     filters: Dict[str, Any] = {"disabled": 0, "is_sales_item": 1, "is_fixed_asset": 0}
-    if has_custom_exclude_from_pos:
-        filters["custom_exclude_from_pos"] = ["!=", 1]
+    if exclude_field:
+        filters[exclude_field] = ["!=", 1]
     if start_after:
         filters["custom_tfw_name" if has_custom_tfw_name else "item_name"] = [">", start_after]
     if modified_after:
@@ -440,8 +442,13 @@ def _run_item_query(
     price_list: Optional[str],
     customer: Optional[str],
     plan: SearchPlan,
+    delivery_charge: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Execute the search described by ``plan`` and return shaped rows."""
+    """Execute the search described by ``plan`` and return shaped rows.
+
+    ``delivery_charge`` is passed to the details lookup explicitly (not read from the request there),
+    so the rows always match the charge the caller (and the cache key) used.
+    """
 
     result: List[Dict[str, Any]] = []
     page_start = plan.initial_page_start
@@ -483,12 +490,15 @@ def _run_item_query(
             frappe.as_json(items_data),
             price_list=price_list,
             customer=customer,
+            delivery_charge=delivery_charge or "",
         )
         detail_map = {d["item_code"]: d for d in details}
         template_attributes_map, variant_attributes_map = _build_attribute_maps(items_data, plan)
 
         for item in items_data:
             detail = detail_map.get(item.get("item_code"), {})
+            if partner_pricing.is_unpriced(item, detail):
+                continue
             row = _shape_item_row(
                 dict(item),
                 detail,
@@ -527,6 +537,7 @@ def _execute_item_search(
     include_description: bool,
     include_image: bool,
     item_groups: Optional[Sequence[str]],
+    delivery_charge: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Orchestrate the helpers responsible for executing the search query."""
 
@@ -548,7 +559,7 @@ def _execute_item_search(
         item_groups,
     )
 
-    return _run_item_query(pos_profile, price_list, customer, plan)
+    return _run_item_query(pos_profile, price_list, customer, plan, delivery_charge)
 
 
 def _normalize_profile_context(pos_profile) -> ProfileContext:
@@ -612,6 +623,9 @@ def get_items(
     started_at = time.perf_counter()
     profile_ctx = _normalize_profile_context(pos_profile)
     groups_ctx = _prepare_item_groups(profile_ctx.profile_name, item_groups)
+    # The charge decides the price list and the rows' ``fixed_eta_weeks``, so it is read once here,
+    # part of the cache key, and passed down explicitly.
+    delivery_charge = frappe.form_dict.get("delivery_charge") or None
 
     @redis_cache(ttl=profile_ctx.cache_ttl or 300)
     def __get_items(
@@ -628,6 +642,7 @@ def get_items(
         include_description,
         include_image,
         item_groups_tuple,
+        delivery_charge,
     ):
         return _execute_item_search(
             profile_ctx.pos_profile_json,
@@ -642,9 +657,12 @@ def get_items(
             include_description,
             include_image,
             list(item_groups_tuple),
+            delivery_charge,
         )
 
-    if profile_ctx.use_price_list_cache:
+    # The cache key has no user or mode in it, so partner rows (price list only, no cost
+    # fields) must never be written to it, and a partner must never be served from it.
+    if profile_ctx.use_price_list_cache and not is_partner_user():
         result = __get_items(
             profile_ctx.profile_name,
             profile_ctx.warehouse,
@@ -659,6 +677,7 @@ def get_items(
             include_description,
             include_image,
             groups_ctx.groups_tuple,
+            delivery_charge,
         )
         log_perf_event(
             "get_items",
@@ -684,6 +703,7 @@ def get_items(
         include_description,
         include_image,
         groups_ctx.groups,
+        delivery_charge,
     )
     log_perf_event(
         "get_items",
@@ -760,6 +780,7 @@ def search_items(
         price_list,
         customer,
         plan,
+        frappe.form_dict.get("delivery_charge") or None,
     )
     log_perf_event(
         "search_items",
@@ -835,6 +856,7 @@ def search_items_by_code(
         price_list,
         customer,
         plan,
+        frappe.form_dict.get("delivery_charge") or None,
     )
     log_perf_event(
         "search_items_by_code",
@@ -857,8 +879,9 @@ def item_advanced_search_query(doctype, txt, searchfield, start, page_len, filte
     if isinstance(filters, str):
         filters = json.loads(filters) if filters else {}
     filters = dict(filters or {})
-    if _item_has_custom_exclude_from_pos():
-        filters["custom_exclude_from_pos"] = ["!=", 1]
+    exclude_field = partner_pricing.exclusion_field()
+    if exclude_field:
+        filters[exclude_field] = ["!=", 1]
 
     return item_query(doctype, txt, searchfield, start, page_len, filters, as_dict=as_dict)
 

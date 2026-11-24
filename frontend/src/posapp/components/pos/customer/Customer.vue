@@ -6,7 +6,6 @@
 				ref="customerDropdown"
 				class="customer-autocomplete sleek-field pos-themed-input"
 				density="compact"
-				clearable
 				variant="solo"
 				color="primary"
 				:label="customerFieldLabel"
@@ -20,6 +19,9 @@
 				hide-details
 				:customFilter="() => true"
 				:disabled="effectiveReadonly || isCustomerSearchLocked"
+				:readonly="isPartner"
+				:clearable="!isPartner"
+				@click="isPartner && requestPartnerStart()"
 				:menu-props="{ closeOnContentClick: false }"
 				@update:menu="onCustomerMenuToggle"
 				@update:modelValue="onCustomerChange"
@@ -30,7 +32,7 @@
 			>
 				<!-- Edit icon (left) -->
 				<template #prepend-inner>
-					<v-tooltip :text="__('Edit customer')" content-class="posa-theme-tooltip">
+					<v-tooltip v-if="!isPartner" :text="__('Edit customer')" content-class="posa-theme-tooltip">
 						<template #activator="{ props }">
 							<v-icon
 								v-bind="props"
@@ -227,6 +229,8 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, getCurrentInstance, n
 import { storeToRefs } from "pinia";
 import _ from "lodash";
 import UpdateCustomer from "../dialogs/customer/UpdateCustomer.vue";
+import { isPartnerMode } from "../../../utils/partnerMode";
+import { requestPartnerStart } from "../../../utils/partnerStartRequest";
 import { useCustomersStore } from "../../../stores/customersStore.js";
 import { useOnlineStatus } from "../../../composables/core/useOnlineStatus";
 import { useToastStore } from "../../../stores/toastStore.js";
@@ -290,8 +294,10 @@ export default {
 				: __("Customers not found"),
 		);
 		const trimmedCustomerSearch = computed(() => customerSearch.value.trim());
+		// Sales Partners order for their existing customers only.
+		const isPartner = isPartnerMode();
 		const showCreateCustomerAction = computed(
-			() => !isCustomerSearchLocked.value && Boolean(trimmedCustomerSearch.value),
+			() => !isPartner && !isCustomerSearchLocked.value && Boolean(trimmedCustomerSearch.value),
 		);
 		const createCustomerHint = computed(() =>
 			trimmedCustomerSearch.value
@@ -599,6 +605,8 @@ export default {
 			customerFieldPlaceholder,
 			customerNoDataText,
 			showCreateCustomerAction,
+			isPartner,
+			requestPartnerStart,
 			createCustomerHint,
 			internalCustomer,
 			effectiveReadonly,

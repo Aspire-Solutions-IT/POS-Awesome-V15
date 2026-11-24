@@ -292,6 +292,7 @@ import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYell
 import PriceListRateDialog from "./invoice/PriceListRateDialog.vue";
 import DeliveryEstimateDialog from "./invoice/DeliveryEstimateDialog.vue";
 import api from "../../services/api";
+import { selectedChargeName } from "../../utils/chargePricingContext";
 import { parseBooleanSetting } from "../../utils/stock";
 import {
 	applySupplyTypes,
@@ -1201,6 +1202,18 @@ export default {
 				}
 			},
 			{ immediate: true },
+		);
+		// A different delivery charge can change the price list (FOB, DDP) or the per-item
+		// fallback, so reprice the lines already in the cart (AP-1).
+		this.$watch(
+			() => selectedChargeName.value,
+			async (next, prev) => {
+				if (next === prev || !this.items?.length) return;
+				await this.update_items_details(this.items);
+				if (this.schedulePricingRuleApplication) {
+					this.schedulePricingRuleApplication(true);
+				}
+			},
 		);
 		this.$watch(
 			() => this.customerRefreshToken,

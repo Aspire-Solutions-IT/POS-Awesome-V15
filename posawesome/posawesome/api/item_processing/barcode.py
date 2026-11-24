@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 from frappe.utils import cint, cstr, flt
 from typing import Any, Dict, Optional
 
@@ -386,7 +387,19 @@ def build_scale_barcode(
 
 
 @frappe.whitelist()
-def get_items_from_barcode(selling_price_list, currency, barcode):
+def get_items_from_barcode(selling_price_list, currency, barcode, customer=None, delivery_charge=None):
+    from posawesome.posawesome.api import partner_pricing
+
+    partner_mode = partner_pricing.is_partner_user()
+    partner_context = None
+    if partner_mode:
+        # The list comes from the customer and the order's charge, never from the browser's
+        # ``selling_price_list`` (which may be the profile's list, or a buying list).
+        partner_pricing.require_scoped_customer(customer)
+        partner_context = partner_pricing.resolve_pricing_context(customer, delivery_charge)
+        selling_price_list = partner_context.price_list
+        currency = frappe.db.get_value("Price List", selling_price_list, "currency")
+
     scale_data = _parse_scale_barcode_data(barcode)
     item_code = None
     scale_qty = None
@@ -395,7 +408,8 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
     if scale_data:
         item_code = scale_data.get("item_code")
         scale_qty = scale_data.get("qty")
-        scale_price = scale_data.get("price")
+        # An encoded scale price is the shop's, not the partner's price list.
+        scale_price = None if partner_mode else scale_data.get("price")
 
     if not item_code:
         search_item = frappe.db.get_value(
@@ -433,12 +447,18 @@ def get_items_from_barcode(selling_price_list, currency, barcode):
     if frappe.db.has_column("Item", "custom_tfw_price"):
         custom_tfw_price = flt(getattr(item_doc, "custom_tfw_price", 0))
 
+    if partner_mode:
+        # A partner pays the price list rate: no TFW or on-sale override reaches the browser.
+        custom_tfw_price = 0
+
     pos_on_sale_price = 0
-    if frappe.db.has_column("Item", "pos_on_sale_price"):
+    if not partner_mode and frappe.db.has_column("Item", "pos_on_sale_price"):
         pos_on_sale_price = flt(getattr(item_doc, "pos_on_sale_price", 0))
 
     base_rate = None
-    if scale_price is not None:
+    if partner_mode:
+        base_rate = partner_pricing.get_uom_rate(item_code, item_uom or item_doc.stock_uom, customer, delivery_charge)
+    elif scale_price is not None:
         base_rate = flt(scale_price)
     elif custom_tfw_price > 0:
         base_rate = custom_tfw_price

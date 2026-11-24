@@ -36,6 +36,13 @@
 					<span class="payment-context__item">
 						<span class="payment-context__label">{{ __("Delivery Charge") }}:</span>
 						<span class="payment-context__value">{{ paymentDeliveryChargeText }}</span>
+						<span
+							v-if="isShipCompleteSelected && invoiceType === 'Order'"
+							class="payment-context__value"
+							data-test="ship-complete-summary"
+						>
+							- {{ __("This order ships complete: no partial deliveries") }}
+						</span>
 					</span>
 				</div>
 				<div
@@ -47,7 +54,22 @@
 						},
 					]"
 				>
-					<section v-if="showPaymentStep" class="payment-section payment-section--summary">
+					<section v-if="showPaymentStep && isPartner" class="payment-section payment-section--partner-order">
+						<div class="payment-section__header">
+							<h3 class="payment-section__title">{{ partnerNote.title }}</h3>
+						</div>
+						<div class="partner-order-note">
+							<div class="partner-order-note__total">
+								{{ __("Order total") }}:
+								<strong>{{ formatCurrency(invoice_doc.rounded_total || invoice_doc.grand_total || 0, invoice_doc.currency) }}</strong>
+							</div>
+							<div v-for="line in partnerNote.lines" :key="line" class="partner-order-note__text">
+								{{ line }}
+							</div>
+						</div>
+					</section>
+
+					<section v-if="showPaymentStep && !isPartner" class="payment-section payment-section--summary">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Payment Summary") }}</h3>
 						</div>
@@ -74,7 +96,7 @@
 					</section>
 
 					<section
-						v-if="is_cashback && invoice_doc && showPaymentStep"
+						v-if="is_cashback && invoice_doc && showPaymentStep && !isPartner"
 						class="payment-section payment-section--methods"
 					>
 						<div class="payment-section__header">
@@ -134,6 +156,9 @@
 							:show-address-action="showAddressAction"
 							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
 							:show-split-delivery="showSplitDeliveryOption"
+							:ship-complete="isShipCompleteSelected"
+							:show-dhd-address-form="isDhdChargeSelected"
+							:delivery-charge="selectedChargeRow?.name || ''"
 							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
 							:show-collection-date="showCollectionDate"
 							:collection-date="collection_date"
@@ -180,6 +205,9 @@
 								}
 							"
 							@new-address="handlePaymentNewAddress"
+							@dhd-address-saving="handleDhdAddressSaving"
+							@dhd-address-saved="handleDhdAddressSaved"
+							@dhd-address-save-ended="handleDhdAddressSaveEnded"
 						/>
 						<div class="payment-next-step">
 							<v-btn variant="text" color="error" @click="back_to_invoice">
@@ -237,7 +265,7 @@
 						</div>
 					</section>
 
-					<section v-if="showPaymentStep" class="payment-section payment-section--adjustments">
+					<section v-if="showPaymentStep && !isPartner" class="payment-section payment-section--adjustments">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Redemption and Totals") }}</h3>
 						</div>
@@ -276,7 +304,7 @@
 						/>
 					</section>
 
-					<section v-if="showPaymentStep" class="payment-section payment-section--settlement">
+					<section v-if="showPaymentStep && !isPartner" class="payment-section payment-section--settlement">
 						<div class="payment-section__header">
 							<h3 class="payment-section__title">{{ __("Credit and Output") }}</h3>
 						</div>
@@ -366,9 +394,13 @@
 				:highlightSubmit="highlightSubmit"
 				:compact="dialogMode"
 				:show-submit-without-payment="showSubmitWithoutPayment"
+				:show-on-account="showOnAccount"
+				:show-proforma="showProforma"
 				@submit="submit"
 				@submit-and-print="submit(undefined, false, true)"
 				@submit-without-payment="submitWithoutPaymentOrder"
+				@submit-on-account="submitOnAccountOrder"
+				@submit-proforma="submitProformaOrder"
 				@cancel="back_to_invoice"
 			/>
 		</div>
@@ -383,6 +415,12 @@
 			@apply-custom-days="applyCustomDays"
 			@update:phone-dialog="phone_dialog = $event"
 			@request-payment="request_payment"
+		/>
+		<ProformaConfirmDialog
+			v-model="proformaConfirmOpen"
+			:customer="String(invoice_doc?.customer || '')"
+			:customer-name="String(invoice_doc?.customer_name || '')"
+			@confirm="confirmProformaRecipient"
 		/>
 		<MissingOrderAddressDialog
 			v-model="missingOrderAddressDialog"
@@ -428,6 +466,7 @@ import { useEmployeeStore } from "../../stores/employeeStore";
 import { usePaymentCalculations } from "../../composables/pos/payments/usePaymentCalculations";
 import { usePaymentSubmission } from "../../composables/pos/payments/usePaymentSubmission";
 import { useRedemptionLogic } from "../../composables/pos/payments/useRedemptionLogic";
+import { useDhdAddressSave } from "../../composables/pos/payments/useDhdAddressSave";
 import { usePaymentPrinting } from "../../composables/pos/payments/usePaymentPrinting";
 import { usePaymentMethods } from "../../composables/pos/payments/usePaymentMethods";
 import { useInvoiceDetails } from "../../composables/pos/invoice/useInvoiceDetails";
@@ -442,17 +481,21 @@ import {
 import { resolvePaymentPrintFormatDoctypes } from "../../utils/paymentPrintDoctype";
 import { resolvePaymentPrintFormat } from "../../utils/paymentPrintFormat";
 import { parseBooleanSetting } from "../../utils/stock";
+import { isPartnerMode } from "../../utils/partnerMode";
+import { partnerPaymentNote, resolvePaymentTypeOptions } from "../../utils/paymentTypeOptions";
 import {
 	buildSuggestedSplitGroups,
 	hasCompleteSupplyTypes,
 	storedSupplyByRowId,
 } from "../../utils/suggestedSplitGroups";
 import api from "../../services/api";
+import { PAYMENT_TYPE_ON_ACCOUNT, PAYMENT_TYPE_PROFORMA } from "../../services/proformaService";
 
 // Components
 import PaymentSummary from "./payments/PaymentSummary.vue";
 import InvoiceTotals from "./payments/InvoiceTotals.vue";
 import PaymentActionButtons from "./payments/PaymentActionButtons.vue";
+import ProformaConfirmDialog from "./payments/ProformaConfirmDialog.vue";
 import PaymentMethods from "./payments/PaymentMethods.vue";
 import PaymentGiftCardSection from "./payments/PaymentGiftCardSection.vue";
 import PaymentRedemption from "./payments/PaymentRedemption.vue";
@@ -465,6 +508,8 @@ import PaymentSelectionFields from "./payments/PaymentSelectionFields.vue";
 import PaymentDialogs from "./payments/PaymentDialogs.vue";
 import MissingOrderAddressDialog from "./payments/MissingOrderAddressDialog.vue";
 import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYellowTicketPhotoGate";
+import { canSplitDelivery, isOrderTypeUnverified, isShipCompleteCharge } from "../../composables/pos/invoice/shipComplete";
+import { canShowAddAddressAction, isDhdCharge } from "../../services/orderAddressService";
 
 const props = defineProps({
 	dialogMode: {
@@ -627,8 +672,13 @@ const paymentDeliveryChargeText = computed(() => {
 	const title = selectedRow?.title || selectedName;
 	return title ? `${title} (${amount})` : amount;
 });
+// The grouping step follows the same rule as the toggle (showSplitDeliveryOption), so a saved
+// posa_split_delivery on a ship-complete draft can never open it.
 const isSplitDeliveryEnabled = computed(
-	() => Boolean(invoice_doc.value?.posa_split_delivery) && invoiceType.value === "Order",
+	() =>
+		Boolean(invoice_doc.value?.posa_split_delivery) &&
+		invoiceType.value === "Order" &&
+		showSplitDeliveryOption.value,
 );
 const wizardStepCount = computed(() => (isSplitDeliveryEnabled.value ? 3 : 2));
 const wizardStepTitle = computed(() => {
@@ -663,8 +713,45 @@ const showDeliverySchedulingFields = computed(
 	() => !isCollectionDeliveryChargeSelected() && !shouldUseStoreCollectionFlow.value,
 );
 
-// Collect-from-store orders can still be split; only customer collections can't.
-const showSplitDeliveryOption = computed(() => !isCollectionDeliveryChargeSelected());
+// A ship-complete charge (container order types) means the whole order goes out together.
+// Missing or unrecognised means 0, so a POS talking to an older server behaves as before.
+const isShipCompleteSelected = computed(() => {
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	if (!selectedName) {
+		return false;
+	}
+	const selectedRow = (Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+		(row) => String(row?.name || "").trim() === selectedName,
+	);
+	return isShipCompleteCharge(selectedRow);
+});
+
+const selectedChargeRow = computed(() => {
+	const selectedName = String(
+		invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "",
+	).trim();
+	return (
+		(Array.isArray(deliveryCharges.value) ? deliveryCharges.value : []).find(
+			(row) => String(row?.name || "").trim() === selectedName,
+		) || null
+	);
+});
+
+// A DHD (direct home delivery) charge takes a typed delivery address, saved on the customer.
+// The server names the Order Type on each offered charge; a cached row without it never matches.
+const isDhdChargeSelected = computed(() => isDhdCharge(selectedChargeRow.value));
+
+// A cached charge row with no order type name could be a DHD charge: it cannot be submitted until
+// the charge details are reloaded from the server.
+const isChargeOrderTypeUnverified = computed(() => isOrderTypeUnverified(selectedChargeRow.value));
+
+// Collect-from-store orders can still be split; customer collections and ship-complete orders can't,
+// nor can a charge whose cached row cannot say whether it ships complete.
+const showSplitDeliveryOption = computed(() =>
+	canSplitDelivery(selectedChargeRow.value, isCollectionDeliveryChargeSelected()),
+);
 
 const availableFulfillmentAddresses = computed(() =>
 	shouldUseStoreCollectionFlow.value ? storeCollectionAddresses.value : addresses.value,
@@ -1079,6 +1166,7 @@ const canProceedToPayment = computed(() => {
 		return true;
 	}
 	return (
+		!dhdSavePending.value &&
 		hasFulfillmentAddress.value &&
 		hasFulfillmentNotes.value &&
 		hasOnlyNsItemsForCollection.value &&
@@ -1098,9 +1186,25 @@ const validatePayment = computed(() => {
 	return false;
 });
 
-const showSubmitWithoutPayment = computed(
-	() => invoiceType.value === "Order" && Boolean(pos_profile.value?.posa_create_only_sales_order),
+// A Sales Partner only places orders: no payment methods, credit or gift cards.
+const isPartner = isPartnerMode();
+
+// On Account and Pro Forma are Sales Order submit options switched on per POS Profile. Pro
+// Forma is the Sales Partner flow only (the server refuses it for staff). For a partner they
+// replace "Place Order"; a partner whose profile offers neither keeps it.
+const paymentTypeOptions = computed(() =>
+	resolvePaymentTypeOptions({
+		isPartner,
+		isOrder: invoiceType.value === "Order",
+		createOnlySalesOrder: Boolean(pos_profile.value?.posa_create_only_sales_order),
+		allowOnAccount: Boolean(Number(pos_profile.value?.posa_allow_on_account || 0)),
+		allowProforma: Boolean(Number(pos_profile.value?.posa_allow_proforma || 0)),
+	}),
 );
+const showSubmitWithoutPayment = computed(() => paymentTypeOptions.value.showSubmitWithoutPayment);
+const showOnAccount = computed(() => paymentTypeOptions.value.showOnAccount);
+const showProforma = computed(() => paymentTypeOptions.value.showProforma);
+const partnerNote = computed(() => partnerPaymentNote(paymentTypeOptions.value, __));
 
 const getWriteOffLimit = (profile) => {
 	if (!profile) return null;
@@ -1434,6 +1538,7 @@ const {
 	custom_days_value,
 	return_valid_upto_date,
 	get_addresses,
+	invalidateAddressRequests,
 	new_address,
 	addressFilter,
 	normalizeAddress,
@@ -2336,7 +2441,7 @@ const scheduleBackgroundStatusCheck = ({
 // Submission Wrapper
 const submit = async (_event, payment_received = false, print = false) => {
 	if (isWizardFlow.value && currentStep.value === 1) {
-		if (canProceedToPayment.value) {
+		if (!blockWhileDhdSavePending() && canProceedToPayment.value) {
 			currentStep.value = 2;
 		}
 		return;
@@ -2348,7 +2453,7 @@ const submit = async (_event, payment_received = false, print = false) => {
 
 const submitWithoutPaymentOrder = async () => {
 	if (isWizardFlow.value && currentStep.value === 1) {
-		if (canProceedToPayment.value) {
+		if (!blockWhileDhdSavePending() && canProceedToPayment.value) {
 			currentStep.value = 2;
 		}
 		return;
@@ -2358,6 +2463,52 @@ const submitWithoutPaymentOrder = async () => {
 		allowNoPaymentOrderSubmit: true,
 		forceHoldOrder: true,
 	});
+};
+
+// Both types are saved by the server in one step (and the pro forma email follows it), so they
+// can't be queued in the offline outbox.
+const submitWithPaymentType = async (paymentType, extraOptions = {}) => {
+	if (isOffline()) {
+		toastStore.show({
+			title: __("{0} orders need an online connection", [
+				paymentType === PAYMENT_TYPE_PROFORMA ? __("Pro Forma") : __("On Account"),
+			]),
+			color: "warning",
+		});
+		return;
+	}
+	if (isWizardFlow.value && currentStep.value === 1) {
+		if (!blockWhileDhdSavePending() && canProceedToPayment.value) {
+			currentStep.value = 2;
+		}
+		return;
+	}
+	await submitInvoiceWrapper(false, undefined, {
+		allowNoPaymentOrderSubmit: true,
+		paymentType,
+		...extraOptions,
+	});
+};
+
+const submitOnAccountOrder = () => submitWithPaymentType(PAYMENT_TYPE_ON_ACCOUNT);
+
+// A pro forma asks who it goes to BEFORE anything is submitted: the dialog opens first
+// (never offline, and never on the wizard's first step), and only its "Send & Submit"
+// submits the order, carrying the confirmed address. The server puts the order on hold
+// itself, so no forceHoldOrder here.
+const proformaConfirmOpen = ref(false);
+const submitProformaOrder = () => {
+	if (isOffline()) {
+		return submitWithPaymentType(PAYMENT_TYPE_PROFORMA);
+	}
+	if (isWizardFlow.value && currentStep.value === 1) {
+		return submitWithPaymentType(PAYMENT_TYPE_PROFORMA);
+	}
+	proformaConfirmOpen.value = true;
+};
+const confirmProformaRecipient = async (recipient) => {
+	proformaConfirmOpen.value = false;
+	await submitWithPaymentType(PAYMENT_TYPE_PROFORMA, { proformaRecipient: recipient });
 };
 
 const shouldConfirmMissingOrderAddress = (options = {}) => {
@@ -2406,7 +2557,11 @@ const shippingAddressLabel = computed(() =>
 		: __("Shipping Address *"),
 );
 
-const showAddressAction = computed(() => !shouldUseStoreCollectionFlow.value);
+// "Add Customer Address" saves an Address the partner has no permission to create, so it is
+// staff only; a partner on a DHD charge types the address into the Delivery address form.
+const showAddressAction = computed(() =>
+	canShowAddAddressAction(isPartner, shouldUseStoreCollectionFlow.value),
+);
 
 const showCollectionItemsValidationError = () => {
 	frappe.msgprint({
@@ -2417,6 +2572,9 @@ const showCollectionItemsValidationError = () => {
 };
 
 const proceedFromFulfillmentStep = () => {
+	if (blockWhileDhdSavePending()) {
+		return;
+	}
 	fulfillmentValidationVisible.value = true;
 	if (!hasOnlyNsItemsForCollection.value) {
 		showCollectionItemsValidationError();
@@ -2430,6 +2588,9 @@ const proceedFromFulfillmentStep = () => {
 };
 
 const proceedToPaymentStep = () => {
+	if (blockWhileDhdSavePending()) {
+		return;
+	}
 	if (isSplitDeliveryEnabled.value && !canProceedFromGrouping.value) {
 		return;
 	}
@@ -2573,11 +2734,44 @@ const ensureStoreCollectionAddressLinked = async (addressName) => {
 	return String(response?.message?.address_name || normalizedName).trim();
 };
 
+const {
+	pending: dhdSavePending,
+	abandon: abandonDhdSave,
+	blockWhilePending: blockWhileDhdSavePendingBase,
+	onSaving: handleDhdAddressSaving,
+	onSaved: handleDhdAddressSaved,
+	onSaveEnded: handleDhdAddressSaveEnded,
+} = useDhdAddressSave({
+	getDoc: () => invoice_doc.value,
+	getCharge: () =>
+		String(invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "").trim(),
+	isDhdChargeSelected: () => isDhdChargeSelected.value,
+	getAddresses: get_addresses,
+	invalidateAddressRequests,
+	addresses,
+	normalizeAddress,
+	clearStoreCollectionSelection: () => {
+		selectedStoreCollectionAddressName.value = null;
+	},
+	notify: (title, color) => toastStore.show({ title, color }),
+	translate: __,
+});
+
+const blockWhileDhdSavePending = () => {
+	const blocked = blockWhileDhdSavePendingBase();
+	if (blocked) {
+		fulfillmentValidationVisible.value = true;
+	}
+	return blocked;
+};
+
 const handleShippingAddressSelection = async (addressName) => {
 	if (!invoice_doc.value) {
 		return;
 	}
 
+	// An explicit pick wins over a DHD address save still in flight.
+	abandonDhdSave();
 	const normalizedName = String(addressName || "").trim() || null;
 	if (shouldUseStoreCollectionFlow.value && normalizedName) {
 		selectedStoreCollectionAddressName.value = normalizedName;
@@ -2617,6 +2811,33 @@ const openMissingOrderAddressEntry = () => {
 };
 
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	if (blockWhileDhdSavePending()) {
+		return;
+	}
+	// A charge whose order type is unknown (legacy cache, offline) may be a DHD charge.
+	if (invoiceType.value === "Order" && isChargeOrderTypeUnverified.value) {
+		fulfillmentValidationVisible.value = true;
+		toastStore.show({
+			title: __("Delivery charge details could not be verified; reconnect and reselect the charge."),
+			color: "error",
+		});
+		return;
+	}
+
+	// A DHD order is delivered to a typed address: save one (or pick one) before submitting.
+	if (
+		invoiceType.value === "Order" &&
+		isDhdChargeSelected.value &&
+		!String(invoice_doc.value?.shipping_address_name || "").trim()
+	) {
+		fulfillmentValidationVisible.value = true;
+		toastStore.show({
+			title: __("Save the delivery address before placing a DHD order."),
+			color: "error",
+		});
+		return;
+	}
+
 	if (!hasOnlyNsItemsForCollection.value) {
 		showCollectionItemsValidationError();
 		return;
@@ -2780,6 +3001,9 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 						// "Submit without payment" -> the dialog reads "Order Placed" and
 						// offers a shortcut into Sales Order Management to send a payment link.
 						noPayment: Boolean(options.allowNoPaymentOrderSubmit),
+						paymentType: options.paymentType || "",
+						// The address the partner confirmed; the dialog's one automatic send uses it.
+						proformaRecipient: options.proformaRecipient || "",
 					});
 				}
 			},
@@ -2792,6 +3016,8 @@ const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {})
 			...callbackOverrides,
 		}, {
 			allowNoPaymentOrderSubmit: Boolean(options.allowNoPaymentOrderSubmit),
+			paymentType: options.paymentType || undefined,
+			proformaRecipient: options.proformaRecipient || undefined,
 			yellowTicketPhotos,
 		});
 		if (yellowTicketPhotos) {
@@ -3225,6 +3451,7 @@ watch(
 			return;
 		}
 
+		abandonDhdSave();
 		invoice_doc.value.shipping_address_name = null;
 		invoice_doc.value.customer_address = null;
 		selectedStoreCollectionAddressName.value = null;
@@ -3264,11 +3491,16 @@ watch(
 	{ immediate: true },
 );
 
+// Also runs when a different draft is loaded: two drafts on the same ship-complete charge never
+// flip showSplitDeliveryOption, yet the second can arrive with posa_split_delivery already saved.
 watch(
-	showSplitDeliveryOption,
-	(enabled) => {
+	[showSplitDeliveryOption, () => invoice_doc.value],
+	([enabled]) => {
 		if (!enabled && invoice_doc.value) {
 			invoice_doc.value.posa_split_delivery = 0;
+			if (Array.isArray(invoice_doc.value.posa_split_groups) && invoice_doc.value.posa_split_groups.length) {
+				invoice_doc.value.posa_split_groups = [];
+			}
 		}
 	},
 	{ immediate: true },
@@ -3279,8 +3511,14 @@ watch(customerInfo, (newInfo) => {
 	set_print_format();
 });
 
+// The invoice or its customer changed (new invoice, reset, another customer): a DHD address save
+// in flight belongs to the old one.
+watch(() => invoice_doc.value, () => abandonDhdSave());
+watch(() => invoice_doc.value?.customer, () => abandonDhdSave());
+
 watch(selectedCustomer, (newCustomer, oldCustomer) => {
 	if (newCustomer === oldCustomer) return;
+	abandonDhdSave();
 	customer_credit_dict.value = [];
 	redeem_customer_credit.value = false;
 	is_cashback.value = true;
@@ -3408,6 +3646,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+	abandonDhdSave();
 	currentStep.value = 1;
 	missingOrderAddressDialog.value = false;
 	pendingMissingAddressSubmit.value = null;

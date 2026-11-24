@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { chargeRequestArgs } from "../../../../utils/chargePricingContext";
 import type { Item, POSProfile } from "../../../../types/models";
 import itemService from "../../../../services/itemService";
 // @ts-ignore
@@ -149,6 +150,7 @@ export function useItemsSync() {
 				args: {
 					pos_profile: JSON.stringify(posProfile),
 					price_list: activePriceList,
+					...chargeRequestArgs(),
 					customer,
 					modified_after: lastSync,
 					limit: 500,
@@ -275,6 +277,7 @@ export function useItemsSync() {
 					args: {
 						pos_profile: JSON.stringify(requestProfile),
 						price_list: activePriceList,
+						...chargeRequestArgs(),
 						item_group:
 							normalizedGroup !== "ALL"
 								? normalizedGroup.toLowerCase()

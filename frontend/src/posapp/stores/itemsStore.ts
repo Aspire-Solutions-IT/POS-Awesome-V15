@@ -3,6 +3,7 @@
  * Optimized state management with multi-layer caching and performance improvements
  */
 
+import { chargeLockedPriceList, chargeRequestArgs, selectedChargeName } from "../utils/chargePricingContext";
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import type { Item, POSProfile } from "../types/models";
@@ -15,6 +16,7 @@ import { useItemsSearch } from "../composables/pos/items/store/useItemsSearch";
 import { useItemsSync } from "../composables/pos/items/store/useItemsSync";
 import { useItemsPagination } from "../composables/pos/items/store/useItemsPagination";
 import { useItemsMetrics } from "../composables/pos/items/store/useItemsMetrics";
+import { isPartnerMode } from "../utils/partnerMode";
 
 export const useItemsStore = defineStore("items", () => {
 	type OfflineModule = Record<string, any>;
@@ -288,6 +290,7 @@ export const useItemsStore = defineStore("items", () => {
 	// Computed
 	const activePriceList = computed(() => {
 		return (
+			chargeLockedPriceList.value ||
 			customerPriceList.value ||
 			posProfile.value?.selling_price_list ||
 			""
@@ -345,6 +348,8 @@ export const useItemsStore = defineStore("items", () => {
 			),
 		};
 	});
+
+	const awaitingPartnerCustomer = () => isPartnerMode() && !customer.value;
 
 	// Actions
 	const initialize = async (
@@ -486,6 +491,15 @@ export const useItemsStore = defineStore("items", () => {
 		const currentRequestToken = ++requestToken.value;
 		let cacheKey: string | null = null;
 
+		// A Sales Partner is priced from their customer's own price list, so there is
+		// nothing to show until a customer is chosen. The server refuses the call anyway.
+		if (awaitingPartnerCustomer()) {
+			items.value = [];
+			filteredItems.value = [];
+			itemsLoaded.value = true;
+			return [];
+		}
+
 		try {
 			isLoading.value = true;
 			performanceMetrics.value.totalRequests++;
@@ -582,6 +596,7 @@ export const useItemsStore = defineStore("items", () => {
 			const args: any = {
 				pos_profile: JSON.stringify(requestProfile),
 				price_list: effectivePriceList,
+				...chargeRequestArgs(),
 				item_group:
 					normalizedGroup !== "ALL"
 						? normalizedGroup.toLowerCase()
@@ -734,7 +749,7 @@ export const useItemsStore = defineStore("items", () => {
 	};
 
 	const searchServerItems = async (term: string, group: string) => {
-		if (!posProfile.value) {
+		if (!posProfile.value || awaitingPartnerCustomer()) {
 			return [];
 		}
 
@@ -744,6 +759,7 @@ export const useItemsStore = defineStore("items", () => {
 		const serverResults = await itemService.searchItems({
 			pos_profile: JSON.stringify(requestProfile),
 			price_list: activePriceList.value,
+			...chargeRequestArgs(),
 			item_group:
 				normalizedGroup !== "ALL" ? normalizedGroup.toLowerCase() : "",
 			search_value: term,
@@ -835,7 +851,7 @@ export const useItemsStore = defineStore("items", () => {
 			}
 		}
 
-		const cacheKey = `search_${getCacheScope()}_${activePriceList.value || "default"}_${term}_${itemGroup.value}`;
+		const cacheKey = `search_${getCacheScope()}_${activePriceList.value || "default"}_${selectedChargeName.value || "nocharge"}_${term}_${itemGroup.value}`;
 		const cached = getCachedSearchResult(cacheKey);
 		if (cached) {
 			filteredItems.value = cached;
@@ -952,7 +968,7 @@ export const useItemsStore = defineStore("items", () => {
 			return filteredItems.value;
 		}
 
-		if (!posProfile.value) {
+		if (!posProfile.value || awaitingPartnerCustomer()) {
 			return [];
 		}
 
@@ -967,6 +983,7 @@ export const useItemsStore = defineStore("items", () => {
 			const serverResults = await itemService.searchItemsByCode({
 				pos_profile: JSON.stringify(posProfile.value),
 				price_list: activePriceList.value,
+				...chargeRequestArgs(),
 				item_group:
 					normalizedGroup !== "ALL" ? normalizedGroup.toLowerCase() : "",
 				search_value: normalized,
@@ -1348,6 +1365,37 @@ export const useItemsStore = defineStore("items", () => {
 	};
 
 	// Watchers
+	// A partner's prices belong to the selected customer, so a different customer means
+	// a different set of items and prices: drop them and reload for the new one.
+	watch(customer, (newCustomer, oldCustomer) => {
+		if (!isPartnerMode() || newCustomer === oldCustomer) {
+			return;
+		}
+		items.value = [];
+		filteredItems.value = [];
+		if (newCustomer) {
+			void loadItems({ forceServer: true });
+		}
+	});
+
+	// The delivery charge can lock the price list and decides the per-item fallback,
+	// so a different charge means different prices: reload from the server.
+	watch(selectedChargeName, async (next, prev) => {
+		if (next === prev) return;
+		const activeSearch = searchTerm.value;
+		const activeCodeSearch = codeSearchTerm.value;
+		clearSearchCache();
+		if (itemsLoaded.value) {
+			await loadItems({ forceServer: true });
+		}
+		// An already-searched grid shows prices for the old charge: search again.
+		if (activeCodeSearch) {
+			await searchItemsByCode(activeCodeSearch);
+		} else if (activeSearch) {
+			await searchItems(activeSearch);
+		}
+	});
+
 	watch(customerPriceList, (newPriceList) => {
 		if (newPriceList && itemsLoaded.value) {
 			updatePriceList(newPriceList);

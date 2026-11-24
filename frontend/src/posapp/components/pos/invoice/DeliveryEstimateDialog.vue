@@ -49,11 +49,11 @@
 					<v-btn
 						color="success"
 						variant="flat"
-						prepend-icon="mdi-credit-card"
+						:prepend-icon="isPartner ? 'mdi-arrow-right' : 'mdi-credit-card'"
 						data-test="estimate-continue-to-payment"
 						@click="emit('continue')"
 					>
-						{{ __("Continue to Payment") }}
+						{{ isPartner ? __("Continue") : __("Continue to Payment") }}
 					</v-btn>
 				</template>
 				<v-btn v-else color="primary" variant="tonal" @click="emit('update:modelValue', false)">
@@ -66,6 +66,7 @@
 
 <script setup>
 import { computed } from "vue";
+import { isPartnerMode } from "../../../utils/partnerMode";
 
 const props = defineProps({
 	modelValue: Boolean,
@@ -80,6 +81,8 @@ const props = defineProps({
 const emit = defineEmits(["update:modelValue", "continue"]);
 
 const __ = window.__;
+// A Sales Partner places orders and never pays at the till.
+const isPartner = isPartnerMode();
 
 const emptyMessage = computed(() => __("No delivery window could be estimated for this cart."));
 </script>

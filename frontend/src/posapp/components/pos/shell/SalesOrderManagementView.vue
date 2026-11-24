@@ -11,7 +11,11 @@
 					<div>
 						<h1 class="page-title">{{ __("Sales Order Management") }}</h1>
 						<p class="page-subtitle">
-							{{ __("Browse RFS Sales Orders, review due dates, and update key order details.") }}
+							{{
+								isPartner
+									? __("Browse your Sales Orders, review due dates, and update key order details.")
+									: __("Browse RFS Sales Orders, review due dates, and update key order details.")
+							}}
 						</p>
 					</div>
 				</div>
@@ -42,7 +46,7 @@
 			<v-col v-show="isSplitLayout || mobilePane === 'list'" cols="12" lg="4" class="left-panel-col">
 				<v-card class="pos-themed-card left-panel">
 					<v-card-title class="panel-title">
-						<span>{{ __("RFS Sales Orders") }}</span>
+						<span>{{ isPartner ? __("Sales Orders") : __("RFS Sales Orders") }}</span>
 						<v-btn
 							icon="mdi-refresh"
 							variant="text"
@@ -129,6 +133,9 @@
 								<div class="order-list-item__top">
 									<strong>{{ order.customer_name || order.customer }}</strong>
 									<span>{{ order.status || __("Unknown") }}</span>
+								</div>
+								<div v-if="paymentTypeLabel(order)" class="order-list-item__meta">
+									<span data-testid="order-payment-type">{{ paymentTypeLabel(order) }}</span>
 								</div>
 								<div class="order-list-item__meta">
 									<span>{{ order.name }}</span>
@@ -233,7 +240,27 @@
 							</v-menu>
 							<template v-if="isSplitLayout">
 								<v-btn
-									v-if="selectedOrder"
+									v-if="canResendProforma"
+									color="primary"
+									variant="tonal"
+									prepend-icon="mdi-email-sync-outline"
+									:loading="proformaLoading"
+									:disabled="proformaLoading"
+									data-testid="resend-proforma"
+									@click="openProformaDialog"
+								>
+									{{ __("Resend Pro Forma") }}
+								</v-btn>
+								<v-chip
+									v-if="selectedOrder && paymentTypeLabel(selectedOrder)"
+									size="small"
+									variant="tonal"
+									data-testid="selected-payment-type"
+								>
+									{{ paymentTypeLabel(selectedOrder) }}
+								</v-chip>
+								<v-btn
+									v-if="selectedOrder && !isPartner && !isProformaOrder"
 									color="primary"
 									variant="tonal"
 									prepend-icon="mdi-email-outline"
@@ -272,6 +299,15 @@
 								</template>
 								<v-list density="compact">
 									<v-list-item
+										v-if="canResendProforma"
+										prepend-icon="mdi-email-sync-outline"
+										:title="__('Resend Pro Forma')"
+										:disabled="proformaLoading"
+										data-testid="resend-proforma-menu"
+										@click="openProformaDialog"
+									/>
+									<v-list-item
+										v-if="!isPartner && !isProformaOrder"
 										prepend-icon="mdi-email-outline"
 										:title="__('Email Receipt')"
 										:disabled="receiptLoading"
@@ -877,6 +913,7 @@
 						<v-text-field
 							v-model="revolutForm.email"
 							:label="__('Send To')"
+							:placeholder="isProformaOrder ? __('The customer\'s pro forma email address') : ''"
 							density="compact"
 							hide-details="auto"
 							type="email"
@@ -984,6 +1021,42 @@
 		<!-- Resending is a deliberate act, so the recipient is shown and editable before
 		     anything is queued rather than the receipt silently going wherever the order
 		     happens to point. -->
+		<!-- Resend Pro Forma: the address is editable and prefilled with the customer's own. -->
+		<v-dialog v-model="proformaDialogOpen" max-width="460">
+			<v-card class="pos-themed-card">
+				<v-card-title>{{ __("Resend Pro Forma") }}</v-card-title>
+				<v-card-text class="pt-2">
+					<p class="mb-3">
+						{{ __("Email the pro forma and payment link for {0} to:", [selectedOrder?.name || ""]) }}
+					</p>
+					<v-text-field
+						v-model="proformaForm.email"
+						:label="__('Send To')"
+						:placeholder="__('The customer\'s pro forma email address')"
+						:error-messages="proformaFormError ? [proformaFormError] : []"
+						density="compact"
+						hide-details="auto"
+						type="email"
+						class="pos-themed-input"
+						data-testid="proforma-resend-email"
+					/>
+				</v-card-text>
+				<v-card-actions class="justify-end">
+					<v-btn variant="text" @click="closeProformaDialog">{{ __("Cancel") }}</v-btn>
+					<v-btn
+						color="primary"
+						variant="flat"
+						:loading="proformaLoading"
+						:disabled="proformaLoading"
+						data-testid="proforma-resend-send"
+						@click="resendProforma"
+					>
+						{{ __("Send") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+
 		<v-dialog v-model="receiptDialogOpen" max-width="520">
 			<v-card class="pos-themed-card">
 				<v-card-title>{{ __("Email Receipt") }}</v-card-title>
@@ -1262,6 +1335,15 @@ import { useRoute, useRouter } from "vue-router";
 import api from "../../../services/api";
 import ItemsSelector from "../items/ItemsSelector.vue";
 import RaiseClaimDialog from "../claims/RaiseClaimDialog.vue";
+import { isPartnerMode } from "../../../utils/partnerMode";
+import { isOffline } from "../../../../offline/index";
+import {
+	PAYMENT_TYPE_ON_ACCOUNT,
+	PAYMENT_TYPE_PROFORMA,
+	describeProformaResult,
+	isValidProformaRecipient,
+	sendProforma,
+} from "../../../services/proformaService";
 import { useToastStore } from "../../../stores/toastStore.js";
 import { useUIStore } from "../../../stores/uiStore.js";
 import { isValidOptionalEmail } from "../../../utils/emailValidation";
@@ -1281,6 +1363,8 @@ type ManagedSalesOrderListRow = {
 	prefered_earliest_delivery_date?: string | null;
 	customer_ref?: string | null;
 	customer_order_ref?: string | null;
+	/** "", "Paid", "On Account" or "Proforma" (older servers omit it). */
+	posa_payment_type?: string | null;
 	currency?: string | null;
 	pos_profile?: string | null;
 	grand_total?: number | null;
@@ -1419,6 +1503,8 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
 	receipt_email?: ManagedSalesOrderReceiptEmail | null;
+	/** Where a pro forma for this order goes by default (Pro Forma orders only). */
+	proforma_recipient?: string | null;
 	revolut_payment_link?: ManagedSalesOrderRevolutLink | null;
 	delivery_charge_collection?: number | null;
 	company?: string | null;
@@ -1865,8 +1951,84 @@ const openStreamLink = (name = selectedStreamPickList.value) => {
 
 // Header actions split across two menus: "Take Payment" (collect money) and
 // "Other Options" (everything else). "Save" stays a standalone button.
+// A Sales Partner places and edits orders but never takes payment or emails receipts:
+// Agile invoices the order.
+const isPartner = isPartnerMode();
+
+// Pro forma: partners resend their own orders' pro forma; the manual receipt is refused
+// by the server for these orders, so it is not offered.
+const isProformaOrder = computed(
+	() => String(selectedOrder.value?.posa_payment_type || "").trim() === PAYMENT_TYPE_PROFORMA,
+);
+const canResendProforma = computed(
+	() =>
+		isPartner &&
+		isProformaOrder.value &&
+		!["Cancelled", "Closed", "Completed", "Draft"].includes(String(selectedOrder.value?.status || "")),
+);
+const paymentTypeLabel = (order: { posa_payment_type?: string | null } | null | undefined) => {
+	const type = String(order?.posa_payment_type || "").trim();
+	if (type === PAYMENT_TYPE_PROFORMA) return __("Pro Forma");
+	if (type === PAYMENT_TYPE_ON_ACCOUNT) return __("On Account");
+	return "";
+};
+const proformaLoading = ref(false);
+const proformaDialogOpen = ref(false);
+const proformaForm = reactive({ email: "" });
+const proformaFormError = ref("");
+
+// Resend Pro Forma asks where to send it: the field is prefilled with the customer's own
+// pro forma address and can be changed for this send.
+const openProformaDialog = () => {
+	const order = selectedOrder.value;
+	if (!order || proformaLoading.value) return;
+	if (isOffline()) {
+		toastStore.show({ title: __("Resending a pro forma needs an online connection"), color: "warning" });
+		return;
+	}
+	proformaForm.email = String(order.proforma_recipient || "");
+	proformaFormError.value = "";
+	proformaDialogOpen.value = true;
+};
+
+const closeProformaDialog = () => {
+	proformaDialogOpen.value = false;
+	proformaFormError.value = "";
+};
+
+const resendProforma = async () => {
+	const order = selectedOrder.value;
+	if (!order || proformaLoading.value) return;
+	if (!isValidProformaRecipient(proformaForm.email)) {
+		proformaFormError.value = __("Enter a valid email address");
+		return;
+	}
+	if (isOffline()) {
+		toastStore.show({ title: __("Resending a pro forma needs an online connection"), color: "warning" });
+		return;
+	}
+	proformaLoading.value = true;
+	try {
+		const result = await sendProforma(order.name, {
+			resend: true,
+			recipient: String(proformaForm.email ?? "").trim(),
+		});
+		const outcome = describeProformaResult(result, __, result.recipient);
+		proformaDialogOpen.value = false;
+		toastStore.show({
+			title: outcome.state === "sent" ? __("Pro forma sent") : __("Pro forma not fully sent"),
+			detail: outcome.message,
+			color: outcome.level,
+		});
+	} finally {
+		proformaLoading.value = false;
+	}
+};
+
 const hasTakePaymentOptions = computed(
-	() => canPayRemainingBalance.value || canSendRevolutLink.value || canResendRevolutLink.value,
+	() =>
+		!isPartner &&
+		(canPayRemainingBalance.value || canSendRevolutLink.value || canResendRevolutLink.value),
 );
 const hasOtherOptions = computed(
 	() => Boolean(selectedOrder.value) || streamPickLists.value.length > 0,
@@ -1982,7 +2144,7 @@ const canPickWarehouse = (item: EditableSalesOrderItem) =>
 
 const loadWarehouseOptions = async (company?: string | null) => {
 	const target = String(company || "").trim();
-	if (!target || warehouseLoading.value || loadedWarehouseCompany === target) return;
+	if (!target || warehouseLoading.value || loadedWarehouseCompany === target || isPartner) return;
 	warehouseLoading.value = true;
 	try {
 		const rows = await api.call<any[]>("frappe.client.get_list", {
@@ -2110,7 +2272,11 @@ const openRevolutDialog = () => {
 	revolutError.value = "";
 	revolutResult.value = null;
 	revolutForm.amount = String(selectedOrder.value.outstanding_balance || "");
-	revolutForm.email = String(selectedOrder.value.receipt_email?.recipient || "");
+	// A pro forma is prefilled with where the customer's pro forma goes (Invoice Email, then
+	// address emails), not the receipt address; the sender may change it.
+	revolutForm.email = isProformaOrder.value
+		? String(selectedOrder.value.proforma_recipient || "")
+		: String(selectedOrder.value.receipt_email?.recipient || "");
 	revolutForm.sendEmail = true;
 	revolutDialogOpen.value = true;
 };
@@ -2139,6 +2305,9 @@ const submitRevolutPaymentLink = async () => {
 			payment_request?: string | null;
 			checkout_url?: string | null;
 			already_paid?: boolean;
+			email_sent?: boolean;
+			attachment_ok?: boolean;
+			email_error?: string;
 		}>(
 			"posawesome.posawesome.api.sales_orders.create_managed_sales_order_payment_link",
 			{
@@ -2171,6 +2340,17 @@ const submitRevolutPaymentLink = async () => {
 			checkout_url: message?.checkout_url,
 		};
 
+		if (revolutForm.sendEmail && message?.email_sent === false) {
+			// The link exists but nothing was emailed (a pro forma whose PDF failed to render
+			// queues nothing): say so, the dialog's resend sends the whole thing again.
+			toastStore.show({
+				title: message.email_error
+					? __("Payment link created, but the email was not sent: {0}", [message.email_error])
+					: __("Payment link created, but the email was not sent."),
+				color: "warning",
+			});
+			return;
+		}
 		toastStore.show({
 			title: revolutForm.sendEmail
 				? __("Payment link created and emailed to the customer.")
@@ -2732,7 +2912,7 @@ const saveOrder = async () => {
 	if (isItemDirty.value) {
 		const preview = await previewItemChanges();
 		if (!preview) return;
-		if (Number(preview.amount_due || 0) > 0.001) {
+		if (!isPartner && Number(preview.amount_due || 0) > 0.001) {
 			itemPaymentPreview.value = preview;
 			itemPaymentMode.value = paymentModeOptions.value[0]?.value || "";
 			itemPaymentReference.value = referenceForMode(itemPaymentMode.value, "");

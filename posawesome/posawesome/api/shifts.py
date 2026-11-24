@@ -7,6 +7,7 @@ import json
 import frappe
 from frappe.utils import cint, nowdate
 from frappe import _
+from .partner_gate import is_partner_user, lock_pos_profile
 from .utilities import get_version
 from .employees import (
     _ensure_terminal_user,
@@ -130,6 +131,40 @@ def create_opening_voucher(pos_profile, company, balance_details):
     return data
 
 
+def _check_partner_opening_shift(user):
+    """Register data for a Sales Partner, who has no till and so never opens a shift.
+
+    The POS needs an opening shift to exist, so a partner gets one quiet, system-made
+    shift with no balances the first time, reused after that. There is no dialog and
+    no cashier PIN. A partner must be assigned to a POS Profile like any other user.
+    """
+    profiles = _get_user_pos_profiles(user)
+    if not profiles:
+        frappe.throw(
+            _("You are not assigned to a POS Profile. Ask Agile to add you to one before using the POS.")
+        )
+
+    profile = profiles[0]
+    open_shifts = _get_open_shifts(user, profile.name)
+    if open_shifts:
+        shift_name = open_shifts[0]["name"]
+    else:
+        # A POS Opening Shift must carry a balance row, so give it a zero opening
+        # balance for each of the profile's payment methods.
+        balances = [
+            {"mode_of_payment": row["mode_of_payment"], "amount": 0}
+            for row in frappe.get_all(
+                "POS Payment Method", filters={"parent": profile.name}, fields=["mode_of_payment"]
+            )
+        ]
+        shift_name = _create_opening_shift(profile.name, profile.company, balances).name
+
+    data = {"pos_opening_shift": frappe.get_doc("POS Opening Shift", shift_name)}
+    update_opening_shift_data(data, profile.name)
+    lock_pos_profile(data["pos_profile"])
+    return data
+
+
 @frappe.whitelist()
 def check_opening_shift(user, preferred_shift=None):
     """Return the user's active opening shift.
@@ -139,6 +174,9 @@ def check_opening_shift(user, preferred_shift=None):
     last operating, it passes ``preferred_shift`` and that one wins as long as it is
     still open. Otherwise the newest open shift is returned, as before.
     """
+    if is_partner_user():
+        return _check_partner_opening_shift(frappe.session.user)
+
     open_vouchers = _get_open_shifts(user)
     data = ""
     if len(open_vouchers) > 0:
