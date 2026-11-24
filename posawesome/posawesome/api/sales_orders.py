@@ -14,6 +14,7 @@ from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
 from frappe.utils import cint, cstr, flt, getdate, nowdate, split_emails, validate_email_address
 
+from posawesome.posawesome.api import stainguard_edit
 from posawesome.posawesome.api.email_validation import validate_optional_email
 
 from posawesome.posawesome.api.payment_entry import create_payment_entry
@@ -894,50 +895,31 @@ def _managed_sales_order_completion(doc):
 
 
 def _managed_sales_order_has_stainguard(doc):
-    """Whether the order, or any live order from the same POS split, carries Stainguard.
+    """Why the order's Stainguard warranty locks it against POS editing, or None.
 
-    The warranty is registered with Staingard from the order's payload, so changing
-    the order afterwards would leave the two out of step.
+    An order holding a warranty can be edited in POS until the warranty has a delivery
+    date: the edit goes through customer_due_dates' update path, which resyncs the whole
+    warranty with Staingard. From the delivery date on nothing may change, on this order
+    or on any other order of its split (see stainguard_edit.delivered_lock_reason).
     """
-    names = [doc.name]
-    batch = (
-        getattr(doc, "split_order_batch", None)
-        if frappe.db.has_column("Sales Order", "split_order_batch")
-        else None
-    )
-    if batch:
-        names = frappe.get_all(
-            "Sales Order", filters={"split_order_batch": batch, "docstatus": ["<", 2]}, pluck="name"
-        ) or names
-
-    if frappe.db.has_column("Sales Order", "staingard_warranty_id") and frappe.db.get_value(
-        "Sales Order", {"name": ["in", names], "staingard_warranty_id": ["is", "set"]}, "name"
-    ):
-        return True
-
-    if not frappe.db.has_column("Item", "is_staingard_item"):
-        return False
-    item_codes = frappe.get_all("Sales Order Item", filters={"parent": ["in", names]}, pluck="item_code")
-    return bool(
-        item_codes
-        and frappe.db.exists("Item", {"name": ["in", list(set(item_codes))], "is_staingard_item": 1})
-    )
+    return stainguard_edit.delivered_lock_reason(doc)
 
 
-def _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists):
+_UNSET = object()
+
+
+def _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists, stainguard_lock_reason=_UNSET):
     """Whole-order edit lock, from Pick Lists linked to the order rather than a row.
 
     Same condition _validate_managed_sales_order_item_mutations throws on, exposed on
     the serialized order so POS can disable editing up front instead of only finding
-    out when a save fails.
+    out when a save fails. `stainguard_lock_reason` is passed by a caller that already
+    worked it out.
     """
-    if _managed_sales_order_has_stainguard(doc):
-        return {
-            "is_locked": True,
-            "reason": _(
-                "This order has Stainguard cover and cannot be edited in POS. Please contact Customer Services."
-            ),
-        }
+    if stainguard_lock_reason is _UNSET:
+        stainguard_lock_reason = _managed_sales_order_has_stainguard(doc)
+    if stainguard_lock_reason:
+        return {"is_locked": True, "reason": stainguard_lock_reason}
 
     # A finished order is closed to edits outright: adding or changing a line after
     # everything has been picked or handed over would silently diverge from what the
@@ -968,10 +950,22 @@ def _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists):
     }
 
 
-def _build_managed_sales_order_item_lock(item, linked_pick_lists):
+def _build_managed_sales_order_item_lock(item, linked_pick_lists, is_stainguard_cover=False):
     picked_qty = flt(getattr(item, "picked_qty", 0) or 0)
     delivered_qty = flt(getattr(item, "delivered_qty", 0) or 0)
     active_pick_lists = [link for link in linked_pick_lists if _is_active_pick_list(link)]
+
+    if is_stainguard_cover:
+        # The cover is the warranty itself: it is swapped automatically when an edit
+        # moves the order into another band, never changed or removed by hand.
+        return {
+            "picked_qty": picked_qty,
+            "delivered_qty": delivered_qty,
+            "is_locked": True,
+            "lock_reason": _(
+                "Stainguard cover is set automatically from the order's value, so it cannot be edited or removed."
+            ),
+        }
 
     if picked_qty > 0:
         return {
@@ -1206,6 +1200,8 @@ def _serialize_managed_sales_order(doc):
     items = []
     latest_component_due_date = None
     row_pick_lists, order_level_pick_lists, stream_pick_lists = _get_sales_order_pick_list_links(doc)
+    stainguard_codes = stainguard_edit.order_cover_codes(doc)
+    stainguard_lock_reason = _managed_sales_order_has_stainguard(doc)
 
     for item in getattr(doc, "items", []) or []:
         component_due_date = getattr(item, "component_due_date", None)
@@ -1223,7 +1219,10 @@ def _serialize_managed_sales_order(doc):
             linked_pick_lists.append(order_level_link)
             seen_pick_lists.add(order_level_link["name"])
 
-        lock_meta = _build_managed_sales_order_item_lock(item, linked_pick_lists)
+        is_stainguard_cover = item.item_code in stainguard_codes
+        lock_meta = _build_managed_sales_order_item_lock(
+            item, linked_pick_lists, is_stainguard_cover=is_stainguard_cover
+        )
 
         items.append(
             {
@@ -1245,6 +1244,7 @@ def _serialize_managed_sales_order(doc):
                 "posa_notes": getattr(item, "posa_notes", None),
                 "is_locked": lock_meta["is_locked"],
                 "lock_reason": lock_meta["lock_reason"],
+                "is_stainguard_cover": is_stainguard_cover,
                 "linked_pick_lists": linked_pick_lists,
             }
         )
@@ -1301,7 +1301,12 @@ def _serialize_managed_sales_order(doc):
         "payment_types": _get_managed_sales_order_payment_types(doc.name),
         "payments": _get_managed_sales_order_payments(doc.name),
         "stream_pick_lists": stream_pick_lists,
-        "order_level_lock": _build_managed_sales_order_order_level_lock(doc, order_level_pick_lists),
+        "order_level_lock": _build_managed_sales_order_order_level_lock(
+            doc, order_level_pick_lists, stainguard_lock_reason
+        ),
+        # The delivered-warranty lock on its own: it also closes the header fields (notes,
+        # refs, dates), which the other order-level locks leave open.
+        "warranty_lock": {"is_locked": bool(stainguard_lock_reason), "reason": stainguard_lock_reason or None},
         "surplus": _get_managed_sales_order_surplus(doc),
         "shipping_address": shipping_address,
         "shipping_address_mobile": (shipping_address or {}).get("phone", ""),
@@ -1425,9 +1430,16 @@ def _validate_managed_sales_order_item_mutations(doc, normalized_items):
 
     existing_rows = {row.name: row for row in getattr(doc, "items", []) or [] if getattr(row, "name", None)}
     incoming_by_docname = {row["docname"]: row for row in normalized_items if row.get("docname")}
+    stainguard_codes = stainguard_edit.order_cover_codes(doc)
+
+    stainguard_edit.validate_cover_rows(doc, normalized_items)
 
     for docname, row in existing_rows.items():
-        lock_meta = _build_managed_sales_order_item_lock(row, row_pick_lists.get(docname, []))
+        lock_meta = _build_managed_sales_order_item_lock(
+            row,
+            row_pick_lists.get(docname, []),
+            is_stainguard_cover=row.item_code in stainguard_codes,
+        )
         incoming_row = incoming_by_docname.get(docname)
         if incoming_row is None:
             if lock_meta["is_locked"]:
@@ -1448,8 +1460,8 @@ def _validate_managed_sales_order_item_mutations(doc, normalized_items):
 
 
 @contextmanager
-def _keep_computed_fields_on_save(doctype, name):
-    """Stop Frappe reverting fields above the user's permlevel when `name` is saved.
+def _keep_computed_fields_on_save(doctype, *names):
+    """Stop Frappe reverting fields above the user's permlevel when `names` are saved.
 
     ERPNext's update_child_qty_rate loads and saves the order itself, as the session
     user. On a till login the totals (grand_total at permlevel 4, the rest at 5) are
@@ -1460,14 +1472,16 @@ def _keep_computed_fields_on_save(doctype, name):
 
     Those fields are computed by the save, never taken from the cashier, and write
     permission on the order is still checked, so skipping the reset is safe here. The
-    patch is limited to this one document and always restored.
+    patch is limited to the named documents - the edited order and, when a Stainguard
+    cover swap changes the order holding the cover, that one too - and always restored.
     """
     from frappe.model.document import Document
 
     original = Document.validate_higher_perm_levels
+    kept = set(names)
 
     def validate_higher_perm_levels(self):
-        if self.doctype == doctype and self.name == name:
+        if self.doctype == doctype and self.name in kept:
             return
         return original(self)
 
@@ -1478,17 +1492,37 @@ def _keep_computed_fields_on_save(doctype, name):
         Document.validate_higher_perm_levels = original
 
 
-def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items):
-    """Write the prepared rows through the shared Sales Order update path."""
+def _apply_managed_sales_order_items(doc, sales_order_name, normalized_items, cover_plan=None):
+    """Write the prepared rows through the shared Sales Order update path.
+
+    `cover_plan` is the Stainguard plan for the edit (stainguard_edit.plan_cover_swap). When
+    the cover has to change on another order of the split and cdd's guard is not there to
+    do it, that order is updated here too, in the same transaction.
+    """
     from customer_due_dates.api.update_child_qty_rate import update_child_qty_rate as update_sales_order_items
 
-    with _keep_computed_fields_on_save("Sales Order", sales_order_name):
+    swap = getattr(cover_plan, "swap", None)
+    # cdd makes a cross-order swap inside its own update, so that order needs the
+    # permlevel patch for the whole call, not only when POS swaps it itself.
+    names = {sales_order_name}
+    if swap and not swap.get("same_order", True):
+        names.add(swap["order"])
+
+    with _keep_computed_fields_on_save("Sales Order", *names):
         update_sales_order_items(
             parent_doctype="Sales Order",
             trans_items=json.dumps(normalized_items),
             parent_doctype_name=sales_order_name,
             child_docname="items",
         )
+        if swap and cover_plan.apply_on_owner:
+            frappe.get_doc("Sales Order", swap["order"]).check_permission("write")
+            update_sales_order_items(
+                parent_doctype="Sales Order",
+                trans_items=json.dumps(cover_plan.owner_items),
+                parent_doctype_name=swap["order"],
+                child_docname="items",
+            )
 
     # A reduction can leave money stranded on the order. Settle it here so the order
     # always ends up holding exactly its own value, whichever route made the change.
@@ -1637,6 +1671,29 @@ def _resolve_managed_sales_order_item_pricing(doc, item_code, uom=None):
     }
 
 
+def _apply_new_row_item_tax_defaults(preview, row):
+    """Give a row being added the item tax template, tax rate map and tax rows that ERPNext's
+    Update Items gives it (set_order_defaults), so the projected total is taxed the way the
+    saved one will be. Without them an item whose tax template differs from the order's
+    taxes (a Stainguard cover is one) projects to another total than the save produces and
+    the customer is charged the wrong balance. Nothing is written: the tax rows are added to
+    the in-memory copy only."""
+    try:
+        from erpnext.controllers.accounts_controller import (
+            add_taxes_from_tax_template,
+            set_child_tax_template_and_map,
+        )
+    except ImportError:
+        # An ERPNext without these has no item tax defaults on new rows to mirror. The
+        # persisted total is still checked against the projection before anything is charged.
+        return
+
+    item = frappe.get_doc("Item", row.item_code)
+    row.item_group = item.item_group
+    set_child_tax_template_and_map(item, row, preview)
+    add_taxes_from_tax_template(row, preview, db_insert=False)
+
+
 def _managed_sales_order_projected_grand_total(doc, normalized_items):
     """Grand total the order would have if these rows were applied.
 
@@ -1660,6 +1717,7 @@ def _managed_sales_order_projected_grand_total(doc, normalized_items):
             row.description = item.get("description") or item.get("item_code")
             row.delivery_date = item.get("delivery_date") or getattr(preview, "delivery_date", None)
             row.warehouse = item.get("warehouse") or getattr(preview, "set_warehouse", None)
+            _apply_new_row_item_tax_defaults(preview, row)
 
         qty = flt(item.get("qty"))
         rate = flt(item.get("rate"))
@@ -1676,6 +1734,44 @@ def _managed_sales_order_projected_grand_total(doc, normalized_items):
     preview.items = rows
     preview.calculate_taxes_and_totals()
     return flt(getattr(preview, "grand_total", 0))
+
+
+def _expected_order_totals(doc, cover_plan, projected_total):
+    """What every order an edit changes must total once saved: the edited order and, when a
+    Stainguard cover swap changes the order holding the cover, that order (priced with the
+    same projection, so the premium and its item tax are in it)."""
+    expected = [
+        {"order": doc.name, "grand_total": projected_total, "precision": doc.precision("grand_total")}
+    ]
+    if cover_plan.swap and cover_plan.owner_items is not None:
+        owner = frappe.get_doc("Sales Order", cover_plan.swap["order"])
+        expected.append(
+            {
+                "order": owner.name,
+                "grand_total": _managed_sales_order_projected_grand_total(owner, cover_plan.owner_items),
+                "precision": owner.precision("grand_total"),
+            }
+        )
+    return expected
+
+
+def _verify_saved_order_totals(expected):
+    """After the save, before anything is charged: every changed order must hold the total
+    the cashier was shown. Raises - rolling the edit back - when one does not, instead of
+    charging a balance that is not the order's. Needed because the projection is built
+    in memory, while the save is ERPNext's (and, on a till login, can be reverted by
+    permissions or changed by defaults the projection missed)."""
+    for entry in expected:
+        precision = entry["precision"]
+        saved = flt(frappe.db.get_value("Sales Order", entry["order"], "grand_total"), precision)
+        if abs(saved - flt(entry["grand_total"], precision)) > 0.5 * 10 ** -precision:
+            frappe.throw(
+                _(
+                    "Sales Order {0} totals {1} after the change instead of the {2} that was calculated, so the "
+                    "change was not saved and nothing was charged. {3}"
+                ).format(entry["order"], saved, flt(entry["grand_total"], precision), stainguard_edit._customer_services()),
+                title=_("Order total mismatch"),
+            )
 
 
 def _get_managed_sales_order_credit_payments(doc):
@@ -2019,9 +2115,14 @@ def preview_managed_sales_order_items(data):
 
     normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
     _validate_managed_sales_order_item_mutations(doc, normalized_items)
+    cover_plan = stainguard_edit.plan_cover_swap(doc, normalized_items)
 
     current_total = flt(getattr(doc, "grand_total", 0))
-    projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
+    projected_total = _managed_sales_order_projected_grand_total(doc, cover_plan.project_items)
+    swap = cover_plan.swap
+    if swap and cover_plan.owner_items is not None:
+        # The cover is on another order: say what that order will total with the new cover.
+        swap = {**swap, "order_grand_total": _expected_order_totals(doc, cover_plan, projected_total)[1]["grand_total"]}
     advance_paid = flt(getattr(doc, "advance_paid", 0))
     # Currency precision, so the figure shown to the cashier matches the one the
     # payment endpoint will allocate (raw float subtraction drifts a fraction of a
@@ -2043,6 +2144,9 @@ def preview_managed_sales_order_items(data):
         # order actually needs. Stored value is excluded - it lives on invoices and
         # cannot be moved onto an order.
         "credit_applicable": min(flt(customer_credit.get("unallocated_payments") or 0), amount_due),
+        # The Stainguard cover the order moves to if this edit changes its band, or None.
+        # Already included in the totals above when the cover is on this order.
+        "stainguard_swap": swap,
     }
 
 
@@ -2055,6 +2159,12 @@ def get_managed_sales_order_new_item_details(sales_order, item_code, uom=None, q
 
     doc = frappe.get_doc("Sales Order", sales_order)
     _validate_managed_sales_order_doc(doc)
+
+    if stainguard_edit.cover_item_codes([cstr(item_code or "").strip()]):
+        frappe.throw(
+            _("Stainguard cover is set automatically from the order's value and cannot be added in POS."),
+            title=_("Stainguard cover"),
+        )
 
     details = _resolve_managed_sales_order_item_pricing(doc, item_code, uom)
     details["qty"] = flt(qty) or 1
@@ -2073,11 +2183,27 @@ def update_managed_sales_order_items(data):
 
     normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
     _validate_managed_sales_order_item_mutations(doc, normalized_items)
+    cover_plan = stainguard_edit.plan_cover_swap(doc, normalized_items)
+    # No money is taken here, so the totals are only checked when a cover swap changes
+    # what an order is worth: the premium and the order holding it must come out as quoted.
+    expected = (
+        _expected_order_totals(
+            doc, cover_plan, _managed_sales_order_projected_grand_total(doc, cover_plan.project_items)
+        )
+        if cover_plan.swap
+        else None
+    )
 
-    _apply_managed_sales_order_items(doc, sales_order_name, normalized_items)
+    _apply_managed_sales_order_items(doc, sales_order_name, cover_plan.apply_items, cover_plan)
+    stainguard_edit.verify_swap(cover_plan.swap)
+    if expected:
+        _verify_saved_order_totals(expected)
 
     doc.reload()
-    return _serialize_managed_sales_order(doc)
+    serialized = _serialize_managed_sales_order(doc)
+    if cover_plan.swap:
+        serialized["stainguard_swap"] = cover_plan.swap
+    return serialized
 
 
 @frappe.whitelist()
@@ -2122,7 +2248,8 @@ def update_managed_sales_order_items_with_payment(data):
     # client supplied figure must never decide what the customer is charged.
     normalized_items = _prepare_managed_sales_order_item_rows(doc, payload.get("items") or [])
     _validate_managed_sales_order_item_mutations(doc, normalized_items)
-    projected_total = _managed_sales_order_projected_grand_total(doc, normalized_items)
+    cover_plan = stainguard_edit.plan_cover_swap(doc, normalized_items)
+    projected_total = _managed_sales_order_projected_grand_total(doc, cover_plan.project_items)
     # Round to the order's currency precision: the raw subtraction carries float noise
     # (e.g. 480.66 - 303.96 == 176.70000000000005), and that value becomes the Payment
     # Entry's allocated_amount. ERPNext then re-derives the reference outstanding in SQL
@@ -2141,8 +2268,15 @@ def update_managed_sales_order_items_with_payment(data):
     if amount_due <= 0.001:
         frappe.throw(_("This Sales Order has nothing further to pay."))
 
-    _apply_managed_sales_order_items(doc, sales_order_name, normalized_items)
+    expected = _expected_order_totals(doc, cover_plan, projected_total)
+    _apply_managed_sales_order_items(doc, sales_order_name, cover_plan.apply_items, cover_plan)
+    stainguard_edit.verify_swap(cover_plan.swap)
+    # Before any credit or payment is taken: what is charged is the preview's balance, so
+    # every order the edit changed must now hold exactly the total it was worked out on.
+    _verify_saved_order_totals(expected)
     doc.reload()
+    # Tells the cashier which Stainguard cover the order moved to, when the edit changed its band.
+    swap_info = {"stainguard_swap": cover_plan.swap} if cover_plan.swap else {}
 
     # Spend the customer's own money first, if the cashier offered it. How much is
     # decided here, never by the client - it is capped at what the order still needs.
@@ -2157,10 +2291,14 @@ def update_managed_sales_order_items_with_payment(data):
             "payment_entry": None,
             "amount_paid": 0.0,
             "credit_applied": credit_applied,
+            **swap_info,
         }
 
     if method == "payment_link":
-        return _send_item_change_payment_link(doc, amount_due, link_recipient, payment, credit_applied)
+        return {
+            **_send_item_change_payment_link(doc, amount_due, link_recipient, payment, credit_applied),
+            **swap_info,
+        }
 
     if not mode_of_payment:
         frappe.throw(_("Mode of Payment is required."))
@@ -2204,6 +2342,7 @@ def update_managed_sales_order_items_with_payment(data):
         "payment_entry": payment_entry.name,
         "amount_paid": amount_due,
         "credit_applied": credit_applied,
+        **swap_info,
     }
 
 
@@ -2582,6 +2721,13 @@ def update_managed_sales_order(data):
 
     doc = frappe.get_doc("Sales Order", sales_order_name)
     _validate_managed_sales_order_doc(doc)
+
+    # Header fields are part of the order too: once Staingard has the warranty delivered
+    # nothing on it, or on its split, may change (the same rule as the item endpoints).
+    # Header edits before delivery stay allowed.
+    stainguard_lock_reason = _managed_sales_order_has_stainguard(doc)
+    if stainguard_lock_reason:
+        frappe.throw(stainguard_lock_reason, title=_("Stainguard warranty delivered"))
 
     updates = _normalize_managed_sales_order_update_payload(payload)
     if "customer_order_ref" in payload and cstr(payload.get("customer_order_ref") or "").strip():

@@ -341,6 +341,17 @@
 							{{ creditNotice }}
 						</v-alert>
 						<v-alert
+							v-if="stainguardNotice"
+							type="info"
+							variant="tonal"
+							density="compact"
+							border="start"
+							class="mb-4"
+							data-test="stainguard-swap-notice"
+						>
+							{{ stainguardNotice }}
+						</v-alert>
+						<v-alert
 							v-if="detailError"
 							type="error"
 							variant="tonal"
@@ -383,6 +394,17 @@
 									<strong>{{ formatDate(selectedOrder.auto_release_date) }}</strong>
 								</div>
 							</div>
+
+							<v-alert
+								v-if="warrantyLock?.is_locked"
+								type="warning"
+								variant="tonal"
+								density="compact"
+								border="start"
+								data-test="stainguard-header-lock"
+							>
+								{{ warrantyLock.reason }}
+							</v-alert>
 
 							<v-tabs v-model="detailTab" color="primary" class="detail-tabs">
 								<v-tab value="details">{{ __("Details") }}</v-tab>
@@ -434,6 +456,7 @@
 										v-model="form.customer_ref"
 										:label="__('Customer Ref')"
 										density="compact"
+										:disabled="!canEditHeader"
 										hide-details
 										class="pos-themed-input"
 									/>
@@ -454,6 +477,7 @@
 										format="dd-MM-yyyy"
 										:enable-time-picker="false"
 										auto-apply
+										:disabled="!canEditHeader"
 										class="sleek-field pos-themed-input"
 										:placeholder="__('Preferred Delivery Date')"
 										@update:model-value="
@@ -512,6 +536,7 @@
 										:label="__('Notes')"
 										rows="4"
 										auto-grow
+										:disabled="!canEditHeader"
 										hide-details
 										class="pos-themed-input"
 									/>
@@ -536,7 +561,7 @@
 									</v-btn>
 								</div>
 								<v-alert
-									v-if="orderLevelLock?.is_locked"
+									v-if="orderLevelLock?.is_locked && !warrantyLock?.is_locked"
 									type="warning"
 									variant="tonal"
 									density="compact"
@@ -596,7 +621,7 @@
 														autocomplete="off"
 														min="0.01"
 														step="0.01"
-														:readonly="item.is_locked || !canEditItems || saveLoading"
+														:readonly="isItemReadOnly(item) || !canEditItems || saveLoading"
 														@blur="normalizeQty(item)"
 													/>
 												</td>
@@ -645,9 +670,11 @@
 															{{
 																item.is_new
 																	? __("New")
-																	: item.is_locked
-																		? __("Locked")
-																		: __("Editable")
+																	: item.is_stainguard_cover
+																		? __("Stainguard cover")
+																		: item.is_locked
+																			? __("Locked")
+																			: __("Editable")
 															}}
 														</span>
 														<span v-if="item.linked_pick_lists?.length" class="item-status__meta">
@@ -660,7 +687,7 @@
 														variant="text"
 														color="error"
 														size="small"
-														:disabled="item.is_locked || !canEditItems || saveLoading"
+														:disabled="isItemReadOnly(item) || !canEditItems || saveLoading"
 														@click="removeItem(item.rowKey)"
 													>
 														{{ __("Remove") }}
@@ -1116,6 +1143,17 @@
 					<p class="mb-4">
 						{{ __("These changes increase the order total. Payment is needed before the items are saved.") }}
 					</p>
+					<v-alert
+						v-if="itemPaymentPreview?.stainguard_swap"
+						type="info"
+						variant="tonal"
+						density="compact"
+						border="start"
+						class="mb-4"
+						data-test="stainguard-swap-preview"
+					>
+						{{ describeStainguardSwap(itemPaymentPreview.stainguard_swap) }}
+					</v-alert>
 					<div class="payment-balance-copy mb-2">
 						<span class="payment-balance-copy__label">{{ __("New Order Total") }}</span>
 						<strong>{{ formatCurrency(itemPaymentPreview?.projected_grand_total, selectedOrder?.currency) }}</strong>
@@ -1323,7 +1361,22 @@ type ManagedSalesOrderItem = {
 	quoted_date?: string | null;
 	is_locked?: boolean;
 	lock_reason?: string | null;
+	/** The order's Stainguard cover line: set automatically, never edited or removed here. */
+	is_stainguard_cover?: boolean;
 	linked_pick_lists?: PickListSummary[];
+};
+
+/** The cover the order moves to when an edit changes its value band. */
+type StainguardSwap = {
+	from_item: string;
+	to_item: string;
+	to_item_name?: string | null;
+	rate?: number | null;
+	covered_amount?: number | null;
+	/** The order holding the cover line. */
+	order?: string | null;
+	/** False when the cover sits on another order of the split. */
+	same_order?: boolean;
 };
 
 /** A row in the local edit buffer. */
@@ -1407,6 +1460,8 @@ type ManagedSalesOrderRevolutLink = {
 };
 
 type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
+	/** Set on the response to an item save that changed the order's Stainguard cover band. */
+	stainguard_swap?: StainguardSwap | null;
 	delivery_charge?: string | null;
 	delivery_charge_rate?: number | null;
 	pos_sales_person?: string | null;
@@ -1415,6 +1470,8 @@ type ManagedSalesOrderDetail = ManagedSalesOrderListRow & {
 	payments?: ManagedSalesOrderPayment[] | null;
 	stream_pick_lists?: ManagedSalesOrderStreamPickList[] | null;
 	order_level_lock?: ManagedSalesOrderOrderLevelLock | null;
+	/** The delivered-warranty lock alone: it also closes the header fields. */
+	warranty_lock?: ManagedSalesOrderOrderLevelLock | null;
 	surplus?: ManagedSalesOrderSurplus | null;
 	shipping_address?: ManagedSalesOrderAddress | null;
 	shipping_address_mobile?: string | null;
@@ -1584,6 +1641,8 @@ const itemPaymentLinkForm = reactive({
 // Opt-in: spending a customer's credit is their decision, not a silent netting off.
 const useCustomerCredit = ref(false);
 const creditNotice = ref("");
+// Which Stainguard cover the order moved to (or will move to), when an edit changed its band.
+const stainguardNotice = ref("");
 
 // Resend receipt: the recipient is confirmed (and can be corrected on the Address)
 // before anything is queued.
@@ -1670,6 +1729,7 @@ const cloneEditableItems = (items?: ManagedSalesOrderItem[] | null): EditableSal
 		quoted_date: item.quoted_date ?? "",
 		is_locked: Boolean(item.is_locked),
 		lock_reason: item.lock_reason ?? "",
+		is_stainguard_cover: Boolean(item.is_stainguard_cover),
 		linked_pick_lists: Array.isArray(item.linked_pick_lists)
 			? item.linked_pick_lists.map((link) => ({ ...link }))
 			: [],
@@ -1685,8 +1745,15 @@ const resetForm = (order: ManagedSalesOrderDetail | null) => {
 	detailTab.value = "details";
 };
 
+const warrantyLock = computed(() => selectedOrder.value?.warranty_lock || null);
+
+// Once Staingard has the warranty delivered nothing on the order may change, header
+// fields included (the server refuses them too); before that the header stays editable
+// whatever else locks the items.
+const canEditHeader = computed(() => Boolean(selectedOrder.value) && !warrantyLock.value?.is_locked);
+
 const isHeaderDirty = computed(() => {
-	if (!selectedOrder.value) return false;
+	if (!selectedOrder.value || !canEditHeader.value) return false;
 	return (
 		form.customer_ref !== String(selectedOrder.value.customer_ref || "") ||
 		form.prefered_earliest_delivery_date !==
@@ -1738,6 +1805,27 @@ const orderLevelLock = computed(() => selectedOrder.value?.order_level_lock || n
 const canEditItems = computed(
 	() => Boolean(selectedOrder.value) && !orderLevelLock.value?.is_locked,
 );
+
+/** Locked rows, and the Stainguard cover line whatever else is true of it, take no edits. */
+const isItemReadOnly = (item: EditableSalesOrderItem) =>
+	Boolean(item.is_locked || item.is_stainguard_cover);
+
+/** What the cashier is told when an edit moves the order into another Stainguard cover band. */
+const describeStainguardSwap = (swap?: StainguardSwap | null) => {
+	if (!swap) return "";
+	const price = formatCurrency(swap.rate, selectedOrder.value?.currency);
+	const name = swap.to_item_name || swap.to_item;
+	if (swap.same_order === false) {
+		return __(
+			"The order's value moves into another Stainguard band, so the cover on {0} changes from {1} to {2} ({3}). Its total changes with it.",
+			[swap.order || "", swap.from_item, name, price],
+		);
+	}
+	return __(
+		"The order's value moves into another Stainguard band, so the cover changes from {0} to {1} ({2}).",
+		[swap.from_item, name, price],
+	);
+};
 
 // Only ever populated when settling could not run - money that reached the order
 // without a payment reference to trim. Everything else is settled on save.
@@ -2511,6 +2599,8 @@ const backToOrders = async () => {
 
 const selectOrder = async (name: string) => {
 	if (!name || detailLoading.value) return;
+	// Reloading the same order after a save keeps the notice about its cover swap.
+	if (name !== selectedOrderName.value) stainguardNotice.value = "";
 
 	selectedOrderName.value = name;
 	detailLoading.value = true;
@@ -2652,6 +2742,7 @@ const confirmItemPayment = async () => {
 		const creditApplied = Number(message?.credit_applied || 0);
 		selectedOrder.value = message?.sales_order || selectedOrder.value;
 		resetForm(selectedOrder.value);
+		stainguardNotice.value = describeStainguardSwap(message?.stainguard_swap);
 		itemPaymentDialogOpen.value = false;
 		itemPaymentPreview.value = null;
 		if (message?.payment_link) {
@@ -2749,6 +2840,7 @@ const saveOrder = async () => {
 		const credit = Number(preview.credit_after_change || 0);
 		// Settled server side on save: the order keeps its own value and the excess
 		// moves to the customer's account.
+		stainguardNotice.value = describeStainguardSwap(preview.stainguard_swap);
 		creditNotice.value =
 			credit >= 1
 				? __("{0} has been moved to the customer's account.", [
@@ -2757,6 +2849,7 @@ const saveOrder = async () => {
 				: "";
 	} else {
 		creditNotice.value = "";
+		stainguardNotice.value = "";
 	}
 
 	saveLoading.value = true;
@@ -2789,6 +2882,8 @@ const saveOrder = async () => {
 				syncSelectedListRow(selectedOrder.value);
 			}
 			resetForm(selectedOrder.value);
+			// The returned order already carries the swapped cover line; say so as well.
+			stainguardNotice.value = describeStainguardSwap(itemMessage?.stainguard_swap);
 			form.customer_ref = pendingHeader.customer_ref;
 			form.prefered_earliest_delivery_date = String(pendingHeader.prefered_earliest_delivery_date || "");
 			form.posa_notes = pendingHeader.posa_notes;
@@ -2825,6 +2920,7 @@ const saveOrder = async () => {
 		}
 	} catch (error: any) {
 		console.error("Failed to update managed Sales Order", error);
+		stainguardNotice.value = "";
 		detailError.value = getErrorMessage(error, __("Unable to update the Sales Order"));
 	} finally {
 		saveLoading.value = false;

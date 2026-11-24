@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import json
 import sys
@@ -14,7 +15,7 @@ def _install_stub_modules():
             return lambda wrapped: wrapped
         return fn
 
-    def _throw(message):
+    def _throw(message, *args, **kwargs):
         raise RuntimeError(message)
 
     frappe_module = types.ModuleType("frappe")
@@ -31,6 +32,8 @@ def _install_stub_modules():
     frappe_module.get_list = lambda *args, **kwargs: []
     frappe_module.attach_print = lambda *args, **kwargs: None
     frappe_module.sendmail = lambda *args, **kwargs: None
+    frappe_module.format_value = lambda value, df=None, *args, **kwargs: str(value)
+    frappe_module._dict = dict
     frappe_module.get_traceback = lambda: "traceback"
     frappe_module.log_error = lambda *args, **kwargs: None
     frappe_module.logger = lambda *args, **kwargs: SimpleNamespace(info=lambda *a, **k: None)
@@ -910,29 +913,34 @@ class TestSalesOrderSubmit(TestCase):
             returned_qty=returned, rate=10, bom_no=None, conversion_factor=1,
         )
 
-    def test_stainguard_order_is_locked_with_customer_services_reason(self):
+    def test_delivered_stainguard_order_is_locked_with_customer_services_reason(self):
         doc = self._completion_order([self._row(qty=2)])
-        with patch.object(sales_orders, "_managed_sales_order_has_stainguard", return_value=True):
+        reason = (
+            "This order is covered by Stainguard warranty SG-1 (delivery date 2026-11-20), so it can "
+            "no longer be edited in POS. Please contact Customer Services."
+        )
+        with patch.object(sales_orders, "_managed_sales_order_has_stainguard", return_value=reason):
             lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
         self.assertTrue(lock["is_locked"])
         self.assertIn("Stainguard", lock["reason"])
+        self.assertIn("delivery date", lock["reason"])
         self.assertIn("Customer Services", lock["reason"])
 
-    def test_stainguard_order_rejects_item_changes(self):
+    def test_delivered_stainguard_order_rejects_item_changes(self):
         doc = self._completion_order([self._row(qty=2)])
         payload = {"name": "SO-DONE", "items": [
             {"docname": "SOI-1", "item_code": "ITEM-1", "uom": "Nos", "description": "D",
              "bom_no": None, "qty": 5, "conversion_factor": 1}
         ]}
         with patch.object(sales_orders.frappe, "get_doc", return_value=doc), patch.object(
-            sales_orders, "_managed_sales_order_has_stainguard", return_value=True
+            sales_orders, "_managed_sales_order_has_stainguard", return_value="Customer Services will help."
         ):
             with self.assertRaisesRegex(RuntimeError, "Customer Services"):
                 sales_orders.update_managed_sales_order_items(payload)
 
-    def test_order_without_stainguard_is_not_locked_by_it(self):
+    def test_order_without_a_delivered_stainguard_warranty_is_not_locked_by_it(self):
         doc = self._completion_order([self._row(qty=2)])
-        with patch.object(sales_orders, "_managed_sales_order_has_stainguard", return_value=False):
+        with patch.object(sales_orders, "_managed_sales_order_has_stainguard", return_value=None):
             lock = sales_orders._build_managed_sales_order_order_level_lock(doc, [])
         self.assertFalse(lock["is_locked"])
 
@@ -2874,8 +2882,12 @@ class TestItemChangePaymentLink(TestCase):
         ), patch.object(
             sales_orders, "_validate_managed_sales_order_item_mutations"
         ), patch.object(
-            sales_orders, "_managed_sales_order_projected_grand_total", return_value=350.0
+            sales_orders.stainguard_edit,
+            "plan_cover_swap",
+            return_value=SimpleNamespace(project_items=[], apply_items=[], swap=None),
         ), patch.object(
+            sales_orders, "_managed_sales_order_projected_grand_total", return_value=350.0
+        ), patch.object(sales_orders, "_verify_saved_order_totals"), patch.object(
             sales_orders, "_apply_managed_sales_order_items", side_effect=lambda *a: calls["applied"].append(a)
         ), patch.object(
             sales_orders, "_resolve_customer_email", return_value=order_email
@@ -2966,3 +2978,850 @@ class TestItemChangePaymentLink(TestCase):
 
         self.assertEqual(calls["doc"].hold_log, [])
         release.assert_called_once_with("SO-TEST-0001", source="POS item change payment")
+
+
+stainguard_edit = sales_orders.stainguard_edit
+
+
+# The real ones, kept here because TestStainguardPosEdit.setUp replaces them on the module.
+_REAL_PROJECTION = sales_orders._managed_sales_order_projected_grand_total
+_REAL_SERIALIZE = sales_orders._serialize_managed_sales_order
+
+
+class _Loose(SimpleNamespace):
+    """An order that answers None for any field the test did not give it."""
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return None
+
+
+class TestStainguardPosEdit(TestCase):
+    """EB-15: POS may edit an order holding a Staingard warranty until the warranty has a
+    delivery date; the cover line is fixed and follows the order's value band."""
+
+    COVERS = {"STG-A", "STG-B"}
+    # Starting value, top value, premium.
+    BANDS = {"STG-A": (0.01, 500, 20.0), "STG-B": (500.01, 1000, 35.0)}
+
+    def setUp(self):
+        self.update_items = MagicMock()
+        self.stack = []
+        for target in (
+            patch.object(
+                stainguard_edit,
+                "cover_item_codes",
+                side_effect=lambda codes: {code for code in codes if code in self.COVERS},
+            ),
+            patch.object(stainguard_edit, "_find_offer", side_effect=self._find_offer),
+            patch.object(
+                stainguard_edit, "_cover_price", side_effect=lambda owner, code: self.BANDS[code][2]
+            ),
+            patch.object(stainguard_edit.frappe.db, "get_value", side_effect=self._get_value),
+            patch.object(sales_orders, "_serialize_managed_sales_order", side_effect=lambda d: {"name": d.name}),
+            patch.object(sales_orders, "_settle_managed_sales_order_surplus"),
+            patch.object(
+                sales_orders,
+                "_managed_sales_order_projected_grand_total",
+                side_effect=lambda doc, items: sum(row["qty"] * row["rate"] for row in items),
+            ),
+            # What the order holds once the update ran: the swap has landed.
+            patch.object(stainguard_edit.frappe, "get_all", side_effect=self._get_all),
+            patch("customer_due_dates.api.update_child_qty_rate.update_child_qty_rate", self.update_items),
+        ):
+            target.start()
+            self.stack.append(target)
+
+    def tearDown(self):
+        for target in reversed(self.stack):
+            target.stop()
+
+    # The order after a band change from 2 x 100 to 6 x 100: the goods and the STG-B cover.
+    persisted_rows = [
+        {"item_code": "ITEM-1", "qty": 6, "rate": 100},
+        {"item_code": "STG-B", "qty": 1, "rate": 35.0},
+    ]
+    # Grand total each order holds once saved (what the update left in the database); a
+    # missing order holds what the preview said.
+    saved_totals = None
+
+    def _get_value(self, doctype, name=None, fieldname=None, *a, **k):
+        if doctype == "Sales Order" and fieldname == "grand_total":
+            return (self.saved_totals or {}).get(name, 635.0)
+        return ("Nos", "Stainguard cover")
+
+    def _get_all(self, doctype, *a, **k):
+        if doctype == "Sales Order Item":
+            return list(self.persisted_rows)
+        return []
+
+    def _find_offer(self, amount):
+        for code, (low, high, _premium) in sorted(self.BANDS.items(), reverse=True):
+            if low <= amount <= high:
+                return {"item_code": code, "item_name": f"Cover {code}"}
+        return None
+
+    def _row(self, name, code, qty, rate):
+        return SimpleNamespace(
+            name=name, item_code=code, item_name=code, description=f"{code} desc", warehouse="Main - TC",
+            uom="Nos", qty=qty, stock_qty=qty, picked_qty=0, delivered_qty=0, returned_qty=0, rate=rate,
+            amount=qty * rate, delivery_date="2026-12-01", bom_no=None, conversion_factor=1,
+        )
+
+    def _order(self, name="SO-STG-1", rows=None, payload="undelivered", warranty_id="SG-1", batch=None):
+        if payload == "undelivered":
+            payload = json.dumps({"warranty_product_id": 1, "delivery_date": None})
+        elif payload == "delivered":
+            payload = json.dumps({"warranty_product_id": 1, "delivery_date": "2026-11-20"})
+        order = SimpleNamespace(
+            doctype="Sales Order", name=name, docstatus=1, rfs_order=1, is_pos=1, customer="RFS-001",
+            pos_profile="Main POS", selling_price_list="Retail", currency="GBP", transaction_date="2026-11-01",
+            delivery_date="2026-12-01", discount_amount=0, reload=MagicMock(), split_order_batch=batch,
+            staingard_warranty_id=warranty_id, staingard_warranty_reference="SGR-1" if warranty_id else None,
+            staingard_warranty_payload=payload if warranty_id else None,
+            precision=lambda fieldname: 2, grand_total=220, advance_paid=0, check_permission=MagicMock(),
+            flags=SimpleNamespace(), save=MagicMock(),
+            items=rows
+            if rows is not None
+            else [self._row("SOI-GOODS", "ITEM-1", 2, 100), self._row("SOI-COVER", "STG-A", 1, 20)],
+        )
+        return order
+
+    def _goods_edit(self, qty, cover=True, cover_qty=1, extra=None):
+        items = [
+            {"docname": "SOI-GOODS", "item_code": "ITEM-1", "uom": "Nos", "description": "ITEM-1 desc",
+             "bom_no": None, "qty": qty, "conversion_factor": 1},
+        ]
+        if cover:
+            items.append(
+                {"docname": "SOI-COVER", "item_code": "STG-A", "uom": "Nos", "description": "STG-A desc",
+                 "bom_no": None, "qty": cover_qty, "conversion_factor": 1}
+            )
+        return items + (extra or [])
+
+    def _guard(self, order, delivery=None):
+        """A cdd with the order guard installed, holding `order`'s warranty."""
+        guard = types.ModuleType("customer_due_dates.staingard.order_guard")
+        guard.vet_update_items = lambda parent, payload: None
+        guard.follow_band = lambda context, parent, payload: payload
+        guard._warranty_context = lambda doc: {"owner": order, "group": [order], "delivery": delivery}
+        package = types.ModuleType("customer_due_dates.staingard")
+        package.__path__ = []
+        package.order_guard = guard
+        return patch.dict(
+            sys.modules, {"customer_due_dates.staingard": package, "customer_due_dates.staingard.order_guard": guard}
+        )
+
+    def _update(self, order, items, guard=False):
+        payload = {"name": order.name, "items": items}
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order):
+            if guard:
+                with self._guard(order):
+                    return sales_orders.update_managed_sales_order_items(payload)
+            return sales_orders.update_managed_sales_order_items(payload)
+
+    def _applied_rows(self):
+        return json.loads(self.update_items.call_args.kwargs["trans_items"])
+
+    # ---- when the warranty locks the order ----
+
+    def test_edit_is_allowed_before_the_warranty_has_a_delivery_date(self):
+        order = self._order()
+        self.assertIsNone(sales_orders._managed_sales_order_has_stainguard(order))
+
+        result = self._update(order, self._goods_edit(qty=3))
+
+        self.update_items.assert_called_once()
+        self.assertEqual([row["qty"] for row in self._applied_rows()], [3.0, 1.0])
+        self.assertNotIn("stainguard_swap", result)
+
+    def test_edit_is_blocked_once_the_warranty_has_a_delivery_date(self):
+        order = self._order(payload="delivered")
+
+        with self.assertRaisesRegex(RuntimeError, r"delivery date 2026-11-20.*Customer Services"):
+            self._update(order, self._goods_edit(qty=3))
+        self.update_items.assert_not_called()
+        lock = sales_orders._build_managed_sales_order_order_level_lock(order, [])
+        self.assertTrue(lock["is_locked"])
+        self.assertIn("SGR-1", lock["reason"])
+
+    def test_preview_and_payment_are_blocked_too_once_delivered(self):
+        order = self._order(payload="delivered")
+        payload = {"name": order.name, "items": self._goods_edit(qty=3)}
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order):
+            with self.assertRaisesRegex(RuntimeError, "Customer Services"):
+                sales_orders.preview_managed_sales_order_items(payload)
+            with self.assertRaisesRegex(RuntimeError, "Customer Services"):
+                sales_orders.update_managed_sales_order_items_with_payment(
+                    {**payload, "payment": {"mode_of_payment": "Cash"}}
+                )
+
+    def test_warranty_registered_without_a_stored_payload_counts_as_delivered(self):
+        order = self._order(payload=None)
+        self.assertIn("registered after delivery", sales_orders._managed_sales_order_has_stainguard(order))
+
+    def test_fully_delivered_split_without_a_date_yet_is_locked(self):
+        rows = [self._row("SOI-GOODS", "ITEM-1", 2, 100), self._row("SOI-COVER", "STG-A", 1, 20)]
+        rows[0].delivered_qty = 2
+        order = self._order(rows=rows)
+        self.assertIn("every item has been delivered", sales_orders._managed_sales_order_has_stainguard(order))
+
+    def test_order_with_no_registered_warranty_is_not_locked_by_it(self):
+        order = self._order(warranty_id=None)
+        self.assertIsNone(sales_orders._managed_sales_order_has_stainguard(order))
+
+    def test_a_delivered_sibling_order_of_the_split_locks_this_one(self):
+        owner = self._order(name="SO-OWNER", payload="delivered", batch="BATCH-1")
+        sibling = self._order(
+            name="SO-SIBLING", rows=[self._row("SOI-X", "ITEM-2", 1, 50)], warranty_id=None, batch="BATCH-1"
+        )
+        with patch.object(
+            stainguard_edit.frappe, "get_all", side_effect=lambda *a, **k: ["SO-OWNER", "SO-SIBLING"]
+            if k.get("pluck") == "name" else []
+        ), patch.object(
+            stainguard_edit.frappe, "get_doc", side_effect=lambda dt, name: {"SO-OWNER": owner}[name]
+        ):
+            reason = sales_orders._managed_sales_order_has_stainguard(sibling)
+        self.assertIn("delivery date 2026-11-20", reason)
+
+    def test_cdd_order_guard_is_the_authority_when_installed(self):
+        order = self._order()
+        with self._guard(order, delivery="delivery date 2026-12-31"), patch.object(
+            stainguard_edit, "_mirrored_warranty_context", side_effect=AssertionError("mirror used")
+        ):
+            self.assertIn("delivery date 2026-12-31", sales_orders._managed_sales_order_has_stainguard(order))
+
+    def test_a_failing_cdd_check_falls_back_to_the_local_rule(self):
+        order = self._order(payload="delivered")
+        with self._guard(order):
+            sys.modules["customer_due_dates.staingard.order_guard"]._warranty_context = MagicMock(
+                side_effect=ValueError("boom")
+            )
+            reason = sales_orders._managed_sales_order_has_stainguard(order)
+        self.assertIn("delivery date 2026-11-20", reason)
+
+    # ---- the cover line ----
+
+    def test_cover_line_is_serialised_as_a_locked_cover(self):
+        lock = sales_orders._build_managed_sales_order_item_lock(
+            self._row("SOI-COVER", "STG-A", 1, 20), [], is_stainguard_cover=True
+        )
+        self.assertTrue(lock["is_locked"])
+        self.assertIn("cannot be edited or removed", lock["lock_reason"])
+
+    def test_cover_line_cannot_be_removed(self):
+        order = self._order()
+        with self.assertRaisesRegex(RuntimeError, "STG-A cannot be removed from POS"):
+            self._update(order, self._goods_edit(qty=3, cover=False))
+        self.update_items.assert_not_called()
+
+    def test_cover_line_qty_cannot_be_edited(self):
+        order = self._order()
+        with self.assertRaisesRegex(RuntimeError, "STG-A cannot be updated from POS"):
+            self._update(order, self._goods_edit(qty=2, cover_qty=2))
+        self.update_items.assert_not_called()
+
+    def test_cover_line_cannot_be_changed_to_another_item(self):
+        order = self._order()
+        items = self._goods_edit(qty=2, cover=False)
+        items.append(
+            {"docname": "SOI-COVER", "item_code": "STG-B", "uom": "Nos", "description": "STG-B desc",
+             "bom_no": None, "qty": 1, "conversion_factor": 1}
+        )
+        with self.assertRaisesRegex(RuntimeError, "cannot be updated from POS"):
+            self._update(order, items)
+
+    def test_a_cover_cannot_be_added_by_hand(self):
+        order = self._order()
+        extra = [{"docname": None, "item_code": "STG-B", "uom": "Nos", "description": "x",
+                  "bom_no": None, "qty": 1, "conversion_factor": 1, "rate": 35}]
+        with self.assertRaisesRegex(RuntimeError, "cannot be added in POS"):
+            self._update(order, self._goods_edit(qty=2, extra=extra))
+        self.update_items.assert_not_called()
+
+    def test_a_cover_cannot_be_picked_as_a_new_item(self):
+        order = self._order()
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order):
+            with self.assertRaisesRegex(RuntimeError, "cannot be added in POS"):
+                sales_orders.get_managed_sales_order_new_item_details(order.name, "STG-B")
+
+    # ---- the band swap ----
+
+    def test_edit_that_keeps_the_band_changes_nothing_about_the_cover(self):
+        order = self._order()
+        plan = stainguard_edit.plan_cover_swap(
+            order, sales_orders._prepare_managed_sales_order_item_rows(order, self._goods_edit(qty=4))
+        )
+        self.assertIsNone(plan.swap)
+        self.assertIs(plan.apply_items, plan.project_items)
+
+    def test_band_change_is_left_to_cdd_when_its_guard_is_installed(self):
+        order = self._order()
+        result = self._update(order, self._goods_edit(qty=6), guard=True)
+
+        # 6 x 100 = 600: the STG-B band. cdd swaps the line itself, so the cover row goes
+        # to it as it stands (a payload that swapped it already would be refused).
+        rows = self._applied_rows()
+        self.assertEqual([(row["docname"], row["item_code"]) for row in rows],
+                         [("SOI-GOODS", "ITEM-1"), ("SOI-COVER", "STG-A")])
+        self.assertEqual(result["stainguard_swap"]["from_item"], "STG-A")
+        self.assertEqual(result["stainguard_swap"]["to_item"], "STG-B")
+        self.assertEqual(result["stainguard_swap"]["rate"], 35.0)
+
+    def test_band_change_is_applied_by_pos_without_the_cdd_guard(self):
+        order = self._order()
+        self.update_items.side_effect = lambda **kw: order.items.append(self._row("SOI-NEW", "STG-B", 1, 35))
+        result = self._update(order, self._goods_edit(qty=6))
+
+        rows = self._applied_rows()
+        self.assertEqual([row["item_code"] for row in rows], ["ITEM-1", "STG-B"])
+        self.assertEqual(rows[1]["docname"], None)
+        self.assertEqual(rows[1]["rate"], 35.0)
+        self.assertEqual(rows[1]["qty"], 1)
+        self.assertEqual(result["stainguard_swap"]["to_item"], "STG-B")
+
+    def test_preview_prices_the_swapped_cover(self):
+        order = self._order()
+        seen = {}
+
+        def project(doc, items):
+            seen["items"] = items
+            return sum(row["qty"] * row["rate"] for row in items)
+
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order), patch.object(
+            sales_orders, "_managed_sales_order_projected_grand_total", side_effect=project
+        ), patch.object(sales_orders, "_get_managed_sales_order_customer_credit", return_value={}):
+            preview = sales_orders.preview_managed_sales_order_items(
+                {"name": order.name, "items": self._goods_edit(qty=6)}
+            )
+
+        self.assertEqual([row["item_code"] for row in seen["items"]], ["ITEM-1", "STG-B"])
+        self.assertEqual(preview["projected_grand_total"], 635.0)
+        self.assertEqual(preview["stainguard_swap"]["to_item"], "STG-B")
+
+    def test_payment_is_taken_for_the_swapped_cover_too(self):
+        order = self._order()
+        order.status = "To Deliver and Bill"
+        order.company = "Test Company"
+        order.hold_log = []
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order), patch.object(
+            sales_orders, "_managed_sales_order_projected_grand_total",
+            side_effect=lambda doc, items: sum(row["qty"] * row["rate"] for row in items),
+        ), patch.object(sales_orders, "create_payment_entry", return_value=_RecordingPaymentEntry()) as create, patch.object(
+            sales_orders, "_queue_receipt_email"
+        ), patch.object(sales_orders, "_release_managed_sales_order_from_hold"):
+            result = sales_orders.update_managed_sales_order_items_with_payment(
+                {"name": order.name, "items": self._goods_edit(qty=6), "payment": {"mode_of_payment": "Cash"}}
+            )
+
+        self.assertEqual(create.call_args.kwargs["amount"], 635.0)
+        self.assertEqual(result["stainguard_swap"]["to_item"], "STG-B")
+
+    def test_edit_into_a_value_no_band_covers_is_refused(self):
+        order = self._order()
+        with self.assertRaisesRegex(RuntimeError, "no Stainguard cover covers"):
+            self._update(order, self._goods_edit(qty=20))
+        self.update_items.assert_not_called()
+
+    def test_no_offer_also_blocks_the_preview(self):
+        order = self._order()
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order):
+            with self.assertRaisesRegex(RuntimeError, "no Stainguard cover covers"):
+                sales_orders.preview_managed_sales_order_items(
+                    {"name": order.name, "items": self._goods_edit(qty=20)}
+                )
+
+    def test_additional_discount_is_taken_off_the_covered_value(self):
+        order = self._order()
+        order.discount_amount = 150  # 600 - 150 = 450: still the STG-A band
+        plan = stainguard_edit.plan_cover_swap(
+            order, sales_orders._prepare_managed_sales_order_item_rows(order, self._goods_edit(qty=6))
+        )
+        self.assertIsNone(plan.swap)
+
+    def test_swap_not_found_on_the_order_afterwards_rolls_the_edit_back(self):
+        swap = {"order": "SO-STG-1", "from_item": "STG-A", "to_item": "STG-B", "rate": 35.0}
+        rows = lambda *codes: [{"item_code": code, "qty": 1, "rate": 35.0} for code in codes]  # noqa: E731
+        with patch.object(stainguard_edit.frappe, "get_all", return_value=rows("ITEM-1", "STG-A")):
+            with self.assertRaisesRegex(RuntimeError, "could not be changed to STG-B"):
+                stainguard_edit.verify_swap(swap)
+        # The old cover must be gone too, not just the new one present.
+        with patch.object(stainguard_edit.frappe, "get_all", return_value=rows("ITEM-1", "STG-A", "STG-B")):
+            with self.assertRaisesRegex(RuntimeError, "could not be changed to STG-B"):
+                stainguard_edit.verify_swap(swap)
+        with patch.object(stainguard_edit.frappe, "get_all", return_value=rows("ITEM-1", "STG-B")):
+            stainguard_edit.verify_swap(swap)
+        stainguard_edit.verify_swap(None)
+
+    def test_cover_saved_at_another_premium_than_quoted_rolls_the_edit_back(self):
+        swap = {"order": "SO-STG-1", "from_item": "STG-A", "to_item": "STG-B", "rate": 35.0}
+        for rate, qty in ((40.0, 1), (35.0, 2)):
+            with patch.object(
+                stainguard_edit.frappe,
+                "get_all",
+                return_value=[{"item_code": "ITEM-1", "qty": 1, "rate": 100}, {"item_code": "STG-B", "qty": qty, "rate": rate}],
+            ):
+                with self.assertRaisesRegex(RuntimeError, "saved at .* instead of the 35.0 quoted"):
+                    stainguard_edit.verify_swap(swap)
+
+    def test_order_without_a_cover_is_untouched(self):
+        order = self._order(
+            warranty_id=None, rows=[self._row("SOI-GOODS", "ITEM-1", 2, 100)]
+        )
+        items = self._goods_edit(qty=20, cover=False)
+        plan = stainguard_edit.plan_cover_swap(order, sales_orders._prepare_managed_sales_order_item_rows(order, items))
+        self.assertIsNone(plan.swap)
+
+    # ---- review round: header edits, the payment total, the sibling swap, unreadable payloads ----
+
+    def _header_update(self, order, orders=None, **fields):
+        by_name = {order.name: order, **(orders or {})}
+        with patch.object(sales_orders.frappe, "get_doc", side_effect=lambda dt, name: by_name[name]):
+            return sales_orders.update_managed_sales_order({"name": order.name, **fields})
+
+    def test_header_edit_is_refused_once_the_warranty_is_delivered(self):
+        order = self._order(payload="delivered")
+        for fields in ({"customer_ref": "NEW"}, {"posa_notes": "x"}, {"prefered_earliest_delivery_date": "2026-12-25"}):
+            with self.assertRaisesRegex(RuntimeError, r"SGR-1.*delivery date 2026-11-20"):
+                self._header_update(order, **fields)
+        order.save.assert_not_called()
+
+    def test_header_edit_is_refused_when_a_sibling_of_the_split_is_delivered(self):
+        owner = self._order(name="SO-OWNER", payload="delivered", batch="BATCH-1")
+        sibling = self._order(
+            name="SO-SIBLING", rows=[self._row("SOI-X", "ITEM-2", 1, 50)], warranty_id=None, batch="BATCH-1"
+        )
+        with patch.object(
+            stainguard_edit.frappe, "get_all", side_effect=lambda *a, **k: ["SO-OWNER", "SO-SIBLING"]
+            if k.get("pluck") == "name" else []
+        ):
+            with self.assertRaisesRegex(RuntimeError, "delivery date 2026-11-20"):
+                self._header_update(sibling, orders={"SO-OWNER": owner}, customer_ref="NEW")
+        sibling.save.assert_not_called()
+
+    def test_header_edit_is_allowed_before_the_warranty_is_delivered(self):
+        order = self._order()
+        self._header_update(order, customer_ref="NEW REF")
+        self.assertEqual(order.customer_ref, "NEW REF")
+        order.save.assert_called_once()
+
+    def test_header_edit_is_allowed_on_an_order_with_no_warranty(self):
+        order = self._order(warranty_id=None)
+        self._header_update(order, customer_ref="NEW REF")
+        order.save.assert_called_once()
+
+    def _serialised(self, order):
+        """The real serializer (setUp stubs it) over an order, with its other lookups stubbed."""
+        helpers = {
+            "_get_sales_order_pick_list_links": ({}, [], []),
+            "_get_managed_sales_order_shipping_address": None,
+            "_get_managed_sales_order_delivery_charge": (None, 0),
+            "_get_managed_sales_order_ns_default_warehouse": None,
+            "_get_managed_sales_order_payment_types": [],
+            "_get_managed_sales_order_payments": [],
+            "_get_managed_sales_order_surplus": None,
+            "_managed_sales_order_receipt_email_state": {},
+            "_get_managed_sales_order_revolut_link": None,
+        }
+        patches = [patch.object(sales_orders, name, return_value=value) for name, value in helpers.items()]
+        patches.append(patch.object(sales_orders, "_serialize_managed_sales_order", _REAL_SERIALIZE))
+        if not hasattr(order, "_loose"):
+            order = _Loose(**vars(order), _loose=True)
+        with contextlib.ExitStack() as stack:
+            for target in patches:
+                stack.enter_context(target)
+            return sales_orders._serialize_managed_sales_order(order)
+
+    def test_serialised_order_says_whether_the_warranty_locks_its_header(self):
+        locked = self._serialised(self._order(payload="delivered"))
+        self.assertTrue(locked["warranty_lock"]["is_locked"])
+        self.assertIn("SGR-1", locked["warranty_lock"]["reason"])
+        self.assertEqual(locked["order_level_lock"]["reason"], locked["warranty_lock"]["reason"])
+
+        open_order = self._serialised(self._order())
+        self.assertEqual(open_order["warranty_lock"], {"is_locked": False, "reason": None})
+        self.assertFalse(open_order["order_level_lock"]["is_locked"])
+
+    def test_other_order_level_locks_do_not_close_the_header(self):
+        # Fully picked: items are locked, but the header was always editable and stays so.
+        order = self._order(warranty_id=None)
+        with patch.object(
+            sales_orders, "_managed_sales_order_completion", return_value={"fully_picked": True, "fully_delivered": False}
+        ):
+            data = self._serialised(order)
+        self.assertTrue(data["order_level_lock"]["is_locked"])
+        self.assertFalse(data["warranty_lock"]["is_locked"])
+
+    # -- the total charged is the total saved
+
+    def test_projection_gives_new_rows_the_item_tax_defaults_core_gives_them(self):
+        existing = SimpleNamespace(name="SOI-OLD", item_code="ITEM-1")
+        preview = SimpleNamespace(
+            name="SO-STG-1", items=[existing], delivery_date="2026-12-01", set_warehouse=None, taxes=[],
+            calculate_taxes_and_totals=MagicMock(), grand_total=255.0,
+        )
+        item_doc = SimpleNamespace(item_code="STG-B", item_group="Warranty")
+        fake_core = types.ModuleType("erpnext.controllers.accounts_controller")
+        fake_core.set_child_tax_template_and_map = MagicMock()
+        fake_core.add_taxes_from_tax_template = MagicMock()
+        modules = {
+            "erpnext.controllers": types.ModuleType("erpnext.controllers"),
+            "erpnext.controllers.accounts_controller": fake_core,
+        }
+
+        def get_doc(doctype, name=None):
+            return preview if doctype == "Sales Order" else item_doc
+
+        with patch.dict(sys.modules, modules), patch.object(
+            sales_orders.frappe, "get_doc", side_effect=get_doc
+        ), patch.object(sales_orders.frappe, "new_doc", side_effect=lambda dt: SimpleNamespace(), create=True):
+            total = _REAL_PROJECTION(
+                SimpleNamespace(name="SO-STG-1"),
+                [
+                    {"docname": "SOI-OLD", "item_code": "ITEM-1", "qty": 2, "rate": 100, "uom": "Nos"},
+                    {"docname": None, "item_code": "STG-B", "qty": 1, "rate": 35, "uom": "Nos"},
+                ],
+            )
+
+        self.assertEqual(total, 255.0)
+        (item, row, parent), _kwargs = fake_core.set_child_tax_template_and_map.call_args
+        self.assertIs(item, item_doc)
+        self.assertEqual(row.item_code, "STG-B")
+        self.assertIs(parent, preview)
+        # Only the new row; the existing one already carries its own template.
+        fake_core.set_child_tax_template_and_map.assert_called_once()
+        # Tax rows the template implies go on the in-memory copy only, never into the database.
+        (tax_row, tax_parent), tax_kwargs = fake_core.add_taxes_from_tax_template.call_args
+        self.assertIs(tax_row, row)
+        self.assertIs(tax_parent, preview)
+        self.assertIs(tax_kwargs["db_insert"], False)
+        # And both ran before the totals were calculated.
+        self.assertTrue(preview.calculate_taxes_and_totals.called)
+
+    def _payment_args(self, order, qty=6):
+        order.status = "To Deliver and Bill"
+        order.company = "Test Company"
+        order.hold_log = []
+        return {"name": order.name, "items": self._goods_edit(qty=qty), "payment": {"mode_of_payment": "Cash"}}
+
+    def _pay(self, order, data):
+        with patch.object(sales_orders.frappe, "get_doc", return_value=order), patch.object(
+            sales_orders, "create_payment_entry", return_value=_RecordingPaymentEntry()
+        ) as create, patch.object(sales_orders, "_queue_receipt_email"), patch.object(
+            sales_orders, "_release_managed_sales_order_from_hold"
+        ):
+            try:
+                return sales_orders.update_managed_sales_order_items_with_payment(data), create
+            except RuntimeError as error:
+                self.paid = create.called
+                raise error
+
+    def test_payment_is_refused_when_the_saved_total_is_not_the_one_shown(self):
+        order = self._order()
+        # The save came out 5.00 over what was projected (e.g. a tax the projection missed).
+        self.saved_totals = {order.name: 640.0}
+        with self.assertRaisesRegex(RuntimeError, r"SO-STG-1 totals 640.0 .* instead of the 635.0.*nothing was charged"):
+            self._pay(order, self._payment_args(order))
+        self.assertFalse(self.paid)
+
+    def test_payment_goes_ahead_when_the_saved_total_is_the_one_shown(self):
+        order = self._order()
+        self.saved_totals = {order.name: 635.0}
+        result, create = self._pay(order, self._payment_args(order))
+        create.assert_called_once()
+        self.assertEqual(result["amount_paid"], 635.0)
+
+    def test_a_total_reverted_by_permissions_is_caught_before_charging(self):
+        # What the permlevel reset did before the till-login fix: the order keeps its old total.
+        order = self._order()
+        self.saved_totals = {order.name: 220.0}
+        with self.assertRaisesRegex(RuntimeError, "instead of the 635.0"):
+            self._pay(order, self._payment_args(order))
+        self.assertFalse(self.paid)
+
+    # -- a cover on another order of the split
+
+    def _split(self):
+        """An owner order holding the STG-A cover and another order whose goods are edited,
+        with a stand-in for cdd's update that works on them."""
+        owner = self._order(
+            name="SO-OWNER",
+            rows=[self._row("SOI-OG", "ITEM-1", 1, 100), self._row("SOI-COVER", "STG-A", 1, 20)],
+            batch="BATCH-1",
+        )
+        other = self._order(
+            name="SO-OTHER", rows=[self._row("SOI-GOODS", "ITEM-1", 2, 100)], warranty_id=None, batch="BATCH-1"
+        )
+        return {"SO-OWNER": owner, "SO-OTHER": other}
+
+    def _fake_cdd(self, orders, guard):
+        """cdd's update_child_qty_rate over `orders`: applies the rows it is given. With its
+        guard installed it also refuses a payload that adds a cover and swaps the cover itself
+        when the band changes; without, it knows nothing about covers. Every cover that comes
+        into an order is recorded in `swaps` as (order, item)."""
+        swaps = []
+
+        def update(parent_doctype, trans_items, parent_doctype_name, child_docname):
+            rows = json.loads(trans_items)
+            order = orders[parent_doctype_name]
+            added = [row for row in rows if not row.get("docname")]
+            if guard and any(row["item_code"] in self.COVERS for row in added):
+                raise RuntimeError("second cover refused by cdd")
+            by_name = {row["docname"]: row for row in rows if row.get("docname")}
+            kept = [row for row in order.items if row.name in by_name]
+            for row in kept:
+                row.qty = by_name[row.name]["qty"]
+            order.items = kept + [
+                self._row(f"NEW-{len(swaps)}-{i}", row["item_code"], row["qty"], row["rate"])
+                for i, row in enumerate(added)
+            ]
+            swaps.extend((parent_doctype_name, row["item_code"]) for row in added if row["item_code"] in self.COVERS)
+            if not guard:
+                return
+            group = list(orders.values())
+            offer = self._find_offer(stainguard_edit._covered_amount(group, covers=self.COVERS))
+            holder = next(o for o in group if any(r.item_code in self.COVERS for r in o.items))
+            line = next(r for r in holder.items if r.item_code in self.COVERS)
+            if offer and offer["item_code"] != line.item_code:
+                price = self.BANDS[offer["item_code"]][2]
+                holder.items = [r for r in holder.items if r is not line] + [
+                    self._row("CDD-SWAP", offer["item_code"], 1, price)
+                ]
+                swaps.append((holder.name, offer["item_code"]))
+
+        update.swaps = swaps
+        return update
+
+    def _run_edit(self, orders, edited, items, guard, guard_order=None):
+        """update_managed_sales_order_items on `orders[edited]` against the fake cdd."""
+        cdd = self._fake_cdd(orders, guard)
+        names = sorted(orders)
+        persisted = lambda doctype, *a, **k: (  # noqa: E731
+            [
+                {"item_code": row.item_code, "qty": row.qty, "rate": row.rate}
+                for row in orders[k["filters"]["parent"]].items
+            ]
+            if doctype == "Sales Order Item"
+            else names if k.get("pluck") == "name" else []
+        )
+        saved = lambda doctype, name=None, fieldname=None, *a, **k: (  # noqa: E731
+            sum(row.qty * row.rate for row in orders[name].items)
+            if (doctype, fieldname) == ("Sales Order", "grand_total")
+            else ("Nos", "Stainguard cover")
+        )
+        patches = [
+            patch("customer_due_dates.api.update_child_qty_rate.update_child_qty_rate", cdd),
+            patch.object(stainguard_edit.frappe, "get_all", side_effect=persisted),
+            patch.object(stainguard_edit.frappe.db, "get_value", side_effect=saved),
+            patch.object(stainguard_edit.frappe, "get_doc", side_effect=lambda dt, name: orders[name]),
+        ]
+        if guard:
+            patches.append(self._guard(orders[guard_order or "SO-OWNER"]))
+        for target in patches:
+            target.start()
+        try:
+            result = sales_orders.update_managed_sales_order_items({"name": edited, "items": items})
+        finally:
+            for target in reversed(patches):
+                target.stop()
+        return result, cdd
+
+    def _edit_other_goods(self, qty=6):
+        return [{"docname": "SOI-GOODS", "item_code": "ITEM-1", "uom": "Nos", "description": "ITEM-1 desc",
+                 "bom_no": None, "qty": qty, "conversion_factor": 1}]
+
+    def test_cover_on_another_order_is_swapped_there_by_pos_without_the_cdd_guard(self):
+        orders = self._split()
+        owner = orders["SO-OWNER"]
+        result, cdd = self._run_edit(orders, "SO-OTHER", self._edit_other_goods(), guard=False)
+
+        # 100 + 6 x 100 = 700: the STG-B band. Exactly one swap, on the order holding the cover.
+        self.assertEqual(cdd.swaps, [("SO-OWNER", "STG-B")])
+        self.assertEqual([(r.item_code, r.rate) for r in owner.items], [("ITEM-1", 100), ("STG-B", 35.0)])
+        self.assertEqual([(r.item_code, r.qty) for r in orders["SO-OTHER"].items], [("ITEM-1", 6)])
+        self.assertEqual(result["stainguard_swap"]["order"], "SO-OWNER")
+        owner.check_permission.assert_called_with("write")
+
+    def test_cover_on_another_order_is_left_to_cdd_when_its_guard_is_installed(self):
+        orders = self._split()
+        owner = orders["SO-OWNER"]
+        result, cdd = self._run_edit(orders, "SO-OTHER", self._edit_other_goods(), guard=True)
+
+        # cdd swapped it; POS sent no cover row of its own (cdd would have refused it) and
+        # did not leave the cover as it was either.
+        self.assertEqual(cdd.swaps, [("SO-OWNER", "STG-B")])
+        self.assertEqual([(r.item_code, r.rate) for r in owner.items], [("ITEM-1", 100), ("STG-B", 35.0)])
+        self.assertEqual(result["stainguard_swap"]["to_item"], "STG-B")
+
+    def test_same_order_cover_is_swapped_exactly_once_in_each_mode(self):
+        for guard in (False, True):
+            with self.subTest(guard=guard):
+                order = self._order(
+                    rows=[self._row("SOI-GOODS", "ITEM-1", 2, 100), self._row("SOI-COVER", "STG-A", 1, 20)]
+                )
+                orders = {order.name: order}
+                items = self._goods_edit(qty=6)
+                _, cdd = self._run_edit(orders, order.name, items, guard=guard, guard_order=order.name)
+
+                self.assertEqual(cdd.swaps, [(order.name, "STG-B")])
+                self.assertEqual(
+                    [(r.item_code, r.rate) for r in order.items], [("ITEM-1", 100), ("STG-B", 35.0)]
+                )
+
+    def test_pos_sends_cdd_the_unswapped_rows_when_its_guard_is_installed(self):
+        orders = self._split()
+        cdd_calls = []
+        real = self._fake_cdd(orders, True)
+
+        def recording(**kwargs):
+            cdd_calls.append((kwargs["parent_doctype_name"], json.loads(kwargs["trans_items"])))
+            return real(**kwargs)
+
+        with patch.object(self, "_fake_cdd", return_value=recording):
+            self._run_edit(orders, "SO-OTHER", self._edit_other_goods(), guard=True)
+        self.assertEqual([name for name, _rows in cdd_calls], ["SO-OTHER"])
+        self.assertTrue(all(row["docname"] for row in cdd_calls[0][1]))
+
+    def test_pos_swaps_the_sibling_after_the_edit_with_the_old_cover_removed(self):
+        orders = self._split()
+        calls = []
+        real = self._fake_cdd(orders, False)
+
+        def recording(**kwargs):
+            calls.append((kwargs["parent_doctype_name"], json.loads(kwargs["trans_items"])))
+            return real(**kwargs)
+
+        with patch.object(self, "_fake_cdd", return_value=recording):
+            self._run_edit(orders, "SO-OTHER", self._edit_other_goods(), guard=False)
+
+        self.assertEqual([name for name, _rows in calls], ["SO-OTHER", "SO-OWNER"])
+        owner_rows = calls[1][1]
+        # The old cover row is not in the payload (so it is removed); the rest is as it was.
+        self.assertEqual([row["docname"] for row in owner_rows], ["SOI-OG", None])
+        self.assertEqual((owner_rows[1]["item_code"], owner_rows[1]["qty"], owner_rows[1]["rate"]), ("STG-B", 1, 35.0))
+
+    def test_the_sibling_is_saved_inside_the_permlevel_guard_under_a_till_login(self):
+        """On a till login the cover order's recomputed totals are reverted unless that order
+        is exempted too, whoever (POS or cdd) saves it."""
+        from frappe.model.document import Document
+
+        for guard in (False, True):
+            with self.subTest(guard=guard):
+                orders = self._split()
+                seen = {}
+                inner = self._fake_cdd(orders, guard)
+
+                def update(**kwargs):
+                    for name in ("SO-OTHER", "SO-OWNER"):
+                        doc = Document()
+                        doc.doctype, doc.name, doc.permlevel_reset_ran = "Sales Order", name, False
+                        doc.validate_higher_perm_levels()
+                        seen.setdefault(name, doc.permlevel_reset_ran)
+                    return inner(**kwargs)
+
+                with patch.object(self, "_fake_cdd", return_value=update):
+                    self._run_edit(orders, "SO-OTHER", self._edit_other_goods(), guard=guard)
+                self.assertEqual(seen, {"SO-OTHER": False, "SO-OWNER": False})
+
+    def test_payment_is_refused_when_the_order_holding_the_cover_totals_something_else(self):
+        orders = self._split()
+        other = orders["SO-OTHER"]
+        data = self._payment_args(other)
+        data["items"] = self._edit_other_goods()
+        cdd = self._fake_cdd(orders, False)
+        # The swap lands, but the order holding it comes out 2.00 over the quoted premium
+        # (a tax on the cover the projection did not have).
+        saved = lambda doctype, name=None, fieldname=None, *a, **k: (  # noqa: E731
+            sum(row.qty * row.rate for row in orders[name].items) + (2.0 if name == "SO-OWNER" else 0)
+            if (doctype, fieldname) == ("Sales Order", "grand_total")
+            else ("Nos", "Stainguard cover")
+        )
+        persisted = lambda doctype, *a, **k: (  # noqa: E731
+            [{"item_code": r.item_code, "qty": r.qty, "rate": r.rate} for r in orders[k["filters"]["parent"]].items]
+            if doctype == "Sales Order Item"
+            else list(orders) if k.get("pluck") == "name" else []
+        )
+        with patch("customer_due_dates.api.update_child_qty_rate.update_child_qty_rate", cdd), patch.object(
+            stainguard_edit.frappe, "get_all", side_effect=persisted
+        ), patch.object(stainguard_edit.frappe.db, "get_value", side_effect=saved), patch.object(
+            sales_orders.frappe, "get_doc", side_effect=lambda dt, name: orders[name]
+        ), patch.object(
+            sales_orders, "create_payment_entry", return_value=_RecordingPaymentEntry()
+        ) as create, patch.object(sales_orders, "_queue_receipt_email"):
+            with self.assertRaisesRegex(RuntimeError, r"SO-OWNER totals 137.0 .* instead of the 135.0.*nothing was charged"):
+                sales_orders.update_managed_sales_order_items_with_payment(data)
+        create.assert_not_called()
+
+    def test_preview_prices_the_order_holding_the_cover_too(self):
+        orders = self._split()
+        other = orders["SO-OTHER"]
+        with patch.object(sales_orders.frappe, "get_doc", side_effect=lambda dt, name: orders[name]), patch.object(
+            stainguard_edit.frappe, "get_all", side_effect=lambda *a, **k: list(orders) if k.get("pluck") == "name" else []
+        ), patch.object(stainguard_edit.frappe, "get_doc", side_effect=lambda dt, name: orders[name]), patch.object(
+            sales_orders, "_get_managed_sales_order_customer_credit", return_value={}
+        ):
+            preview = sales_orders.preview_managed_sales_order_items(
+                {"name": other.name, "items": self._edit_other_goods()}
+            )
+        self.assertEqual(preview["projected_grand_total"], 600.0)
+        self.assertEqual(preview["stainguard_swap"]["order"], "SO-OWNER")
+        # 1 x 100 goods + the STG-B premium: what the save and its check will hold the order to.
+        self.assertEqual(preview["stainguard_swap"]["order_grand_total"], 135.0)
+
+    # -- which cdd counts as having the guard
+
+    def test_cdd_guard_is_recognised_by_its_update_items_entry_points(self):
+        order = self._order()
+        for name in ("vet_update_items", "prepare_update_items"):
+            guard = types.ModuleType("customer_due_dates.staingard.order_guard")
+            setattr(guard, name, lambda *a: None)
+            package = types.ModuleType("customer_due_dates.staingard")
+            package.__path__ = []
+            package.order_guard = guard
+            with patch.dict(
+                sys.modules,
+                {"customer_due_dates.staingard": package, "customer_due_dates.staingard.order_guard": guard},
+            ):
+                self.assertIs(stainguard_edit._cdd_order_guard(), guard)
+
+        bare = types.ModuleType("customer_due_dates.staingard.order_guard")
+        package = types.ModuleType("customer_due_dates.staingard")
+        package.__path__ = []
+        package.order_guard = bare
+        with patch.dict(
+            sys.modules, {"customer_due_dates.staingard": package, "customer_due_dates.staingard.order_guard": bare}
+        ):
+            self.assertIsNone(stainguard_edit._cdd_order_guard())
+        self.assertIsNotNone(order)
+
+    # -- a stored warranty payload that is not JSON
+
+    def test_an_unreadable_warranty_payload_locks_the_order_with_its_own_message(self):
+        order = self._order(payload="{not json")
+        reason = sales_orders._managed_sales_order_has_stainguard(order)
+        self.assertIn("could not be read", reason)
+        self.assertIn("SGR-1", reason)
+        with self.assertRaisesRegex(RuntimeError, "could not be read"):
+            self._update(order, self._goods_edit(qty=3))
+        self.update_items.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "could not be read"):
+            self._header_update(order, customer_ref="NEW")
+
+    def test_an_unreadable_payload_locks_the_order_when_cdd_raises_on_it_too(self):
+        # cdd's own check raises a bare JSON error on it; POS agrees with it (locked) without
+        # crashing, and without filling the Error Log on every load.
+        order = self._order(payload="{not json")
+        with self._guard(order):
+            sys.modules["customer_due_dates.staingard.order_guard"]._warranty_context = MagicMock(
+                side_effect=ValueError("Expecting property name")
+            )
+            with patch.object(stainguard_edit.frappe, "log_error") as log_error:
+                reason = sales_orders._managed_sales_order_has_stainguard(order)
+        self.assertIn("could not be read", reason)
+        log_error.assert_not_called()
+
+    def test_a_payload_that_is_valid_json_but_not_an_object_counts_as_registered_after_delivery(self):
+        # cdd's _stored_payload returns None for it, which its _delivery_state reads this way.
+        order = self._order(payload="[1, 2]")
+        self.assertIn("registered after delivery", sales_orders._managed_sales_order_has_stainguard(order))
