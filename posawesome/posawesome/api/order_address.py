@@ -138,6 +138,17 @@ def _parse_address(address) -> dict:
     return clean
 
 
+def _order_type_name(order_type) -> str | None:
+    """``Delivery Charges.order_type`` links to an Order Type by document id, not by name.
+
+    The id is generated, so the DHD type is recognised by its ``order_type_name`` (as the
+    customer_due_dates seed does), never by comparing the link value to "DHD".
+    """
+    if not order_type:
+        return None
+    return frappe.db.get_value("Order Type", order_type, "order_type_name")
+
+
 def _validated_dhd_charge(delivery_charge, customer, partners):
     """The charge, once it is known to be offerable here and to be a DHD one, else an error."""
     from . import charge_pricing
@@ -156,18 +167,25 @@ def _validated_dhd_charge(delivery_charge, customer, partners):
             )
         charge_pricing.assert_available(delivery_charge)
 
-    if charge is None or charge.order_type != DHD_ORDER_TYPE:
+    if charge is None or _order_type_name(charge.order_type) != DHD_ORDER_TYPE:
         frappe.throw(
             _("A delivery address can only be added for a DHD delivery charge."), frappe.ValidationError
         )
     return charge
 
 
-def _existing_address(customer, line1, postcode):
+def _existing_address(customer, line1, postcode, check_read=False):
     """A live Shipping address linked to the customer with this line 1 and postcode.
 
-    ``FOR UPDATE`` makes this a current read, so an address committed by a concurrent
-    request is seen even inside this request's older snapshot.
+    Plain (non-locking) read. A ``FOR UPDATE``/``FOR SHARE`` range scan over Dynamic Link takes
+    next-key/gap locks that can deadlock two requests for different customers, so serialisation
+    is done only by the single-row Customer lock in ``create_order_address``. Caveat: under
+    REPEATABLE READ this read uses the request's snapshot, so an address committed by a
+    request we waited on may be missed and a duplicate Shipping address created; that is
+    harmless, and preferable to deadlocks.
+
+    ``check_read`` (staff): a match the caller cannot read is skipped, so its name is never
+    returned.
     """
     rows = frappe.db.sql(
         """
@@ -180,7 +198,6 @@ def _existing_address(customer, line1, postcode):
             AND address.address_type = 'Shipping'
             AND address.disabled = 0
         ORDER BY address.creation
-        FOR UPDATE
         """,
         (customer,),
         as_dict=True,
@@ -191,6 +208,7 @@ def _existing_address(customer, line1, postcode):
         if (
             normalise_line(row.address_line1) == wanted_line
             and normalise_postcode(row.pincode) == wanted_postcode
+            and (not check_read or frappe.has_permission("Address", "read", doc=row.name))
         ):
             return row.name
     return None
@@ -270,10 +288,30 @@ def create_order_address(customer, delivery_charge, address):
             frappe.ValidationError,
         )
 
-    # Serialise per customer: a second concurrent request waits here, then sees the first's address.
-    customer = frappe.db.get_value("Customer", customer, "name", for_update=True) or customer
+    return _create_with_retry(customer, delivery_charge, partners, fields)
 
-    existing = _existing_address(customer, fields["address_line1"], fields["pincode"])
+
+def _create_with_retry(customer, delivery_charge, partners, fields):
+    """Run the locked create once more if the database picks this request as a deadlock victim."""
+    try:
+        return _locked_create(customer, partners, fields)
+    except frappe.QueryDeadlockError:
+        frappe.db.rollback()  # InnoDB already rolled the transaction back
+        return _locked_create(customer, partners, fields)
+
+
+def _locked_create(customer, partners, fields):
+    # Serialise per customer on one row, by primary key (no range/gap locks). Read the partner
+    # from the LOCKED row: it may have been reassigned since the cheap pre-check.
+    locked = frappe.db.get_value(
+        "Customer", customer, ["name", "default_sales_partner"], for_update=True, as_dict=True
+    )
+    if not locked or (partners is not None and locked.default_sales_partner not in partners):
+        frappe.throw(_("Not permitted"), frappe.PermissionError)
+    customer = locked.name
+
+    check_read = partners is None
+    existing = _existing_address(customer, fields["address_line1"], fields["pincode"], check_read)
     if existing:
         return {"name": existing, "created": False}
 
@@ -286,10 +324,14 @@ def create_order_address(customer, delivery_charge, address):
             **fields,
         }
     )
+    save_point = "order_address_insert"
+    frappe.db.savepoint(save_point)
     try:
         doc.insert(ignore_permissions=partners is not None)
     except frappe.DuplicateEntryError:
-        existing = _existing_address(customer, fields["address_line1"], fields["pincode"])
+        # Undo only the failed insert, then reuse a visible match; otherwise re-raise.
+        frappe.db.rollback(save_point=save_point)
+        existing = _existing_address(customer, fields["address_line1"], fields["pincode"], check_read)
         if existing:
             return {"name": existing, "created": False}
         raise

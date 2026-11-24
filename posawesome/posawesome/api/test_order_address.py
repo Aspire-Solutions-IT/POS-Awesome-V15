@@ -30,6 +30,10 @@ class FakeDuplicateEntryError(Exception):
     pass
 
 
+class FakeDeadlockError(Exception):
+    pass
+
+
 class _dict(dict):
     __getattr__ = dict.get
 
@@ -52,7 +56,15 @@ def _reset():
         disabled_charges=set(),
         duplicate_once=False,
         customers={"CUST-A": "SP-A", "CUST-B": "SP-B"},
-        charges={"DHD-CHARGE": "DHD", "DDP": "DDP"},
+        # Delivery Charges.order_type is an Order Type document id, NOT the name "DHD".
+        charges={"DHD-CHARGE": "OT-0001", "DDP": "OT-0002"},
+        order_type_names={"OT-0001": "DHD", "OT-0002": "DDP"},
+        unreadable_addresses=set(),
+        reassign_on_lock=None,  # (customer, partner) applied when the customer row is locked
+        deadlocks=0,
+        savepoints=[],
+        rollbacks=[],
+        events=[],
         offered={"DHD-CHARGE", "DDP"},  # what a partner is offered
         countries={"United Kingdom"},
         addresses=[],  # existing {name, customer, address_line1, pincode}
@@ -68,6 +80,9 @@ class FakeDoc:
 
     def insert(self, ignore_permissions=False):
         STATE["insert_ignore"] = ignore_permissions
+        if STATE["deadlocks"]:
+            STATE["deadlocks"] -= 1
+            raise FakeDeadlockError("deadlock")
         if STATE["duplicate_once"]:
             STATE["duplicate_once"] = False
             # the concurrent request's address is now there
@@ -103,15 +118,21 @@ def _load():
     frappe.PermissionError = FakePermissionError
     frappe.DoesNotExistError = FakeDoesNotExistError
     frappe.DuplicateEntryError = FakeDuplicateEntryError
+    frappe.QueryDeadlockError = FakeDeadlockError
     frappe.generate_hash = lambda length=10: "h" * length
 
     class Session:
         user = property(lambda self: STATE["user"])
 
     frappe.session = Session()
-    frappe.has_permission = lambda doctype, ptype="read", doc=None: (
-        STATE["can_create_address"] if doctype == "Address" else STATE["can_read_customer"]
-    )
+    def has_permission(doctype, ptype="read", doc=None):
+        if doctype == "Address":
+            if ptype == "read" and doc is not None:
+                return doc not in STATE["unreadable_addresses"]
+            return STATE["can_create_address"]
+        return STATE["can_read_customer"]
+
+    frappe.has_permission = has_permission
     frappe._ = lambda text: text
     frappe.bold = lambda text: text
 
@@ -134,17 +155,30 @@ def _load():
             return name in STATE["countries"]
         return False
 
-    def get_value(doctype, name, field, for_update=False):
+    def get_value(doctype, name, field, for_update=False, as_dict=False):
         if doctype == "User":
             return STATE["user_types"].get(name)
+        if doctype == "Order Type":
+            assert field == "order_type_name"
+            return STATE["order_type_names"].get(name)
         if doctype == "Customer":
-            return name if name in STATE["customers"] else None
+            if for_update:
+                STATE["events"].append("lock")
+                if STATE["reassign_on_lock"]:
+                    cust, partner = STATE["reassign_on_lock"]
+                    STATE["customers"][cust] = partner
+            if name not in STATE["customers"]:
+                return None
+            if as_dict:
+                return _dict(name=name, default_sales_partner=STATE["customers"][name])
+            return name
         assert doctype == "Delivery Charges"
         return 1 if name in STATE["disabled_charges"] else 0
 
     def sql(query, params, as_dict=False):
         STATE["lookups"].append(params[0])
-        assert "FOR UPDATE" in query and "'Shipping'" in query and "parenttype = 'Address'" in query
+        STATE["events"].append("sql")
+        assert "FOR UPDATE" not in query and "SHARE" not in query and "'Shipping'" in query and "parenttype = 'Address'" in query
         customer = params[0]
         return [
             _dict(a)
@@ -152,7 +186,16 @@ def _load():
             if a["customer"] == customer and a.get("address_type", "Shipping") == "Shipping" and not a.get("disabled")
         ]
 
-    frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value, sql=sql)
+    def rollback(save_point=None):
+        STATE["rollbacks"].append(save_point)
+
+    frappe.db = types.SimpleNamespace(
+        exists=exists,
+        get_value=get_value,
+        sql=sql,
+        savepoint=lambda name: STATE["savepoints"].append(name),
+        rollback=rollback,
+    )
     frappe.get_doc = FakeDoc
 
     utils = types.ModuleType("frappe.utils")
@@ -399,6 +442,84 @@ class TestCreateOrderAddress(unittest.TestCase):
     def test_duplicate_entry_returns_the_concurrent_address(self):
         STATE["duplicate_once"] = True
         self.assertEqual(create(), {"name": "ADDR-RACE-Shipping", "created": False})
+
+    def test_charge_order_type_is_resolved_by_name_not_compared_as_id(self):
+        # DHD-CHARGE stores the opaque id OT-0001; only its order_type_name is "DHD".
+        self.assertNotEqual(STATE["charges"]["DHD-CHARGE"], "DHD")
+        self.assertTrue(create()["created"])
+        STATE["order_type_names"]["OT-0001"] = "Other"
+        with self.assertRaises(FakeValidationError):
+            create()
+        # An id that merely equals the string "DHD" is not enough either.
+        STATE["charges"]["DHD-CHARGE"] = "DHD"
+        with self.assertRaises(FakeValidationError):
+            create()
+
+    def test_staff_match_without_address_read_is_not_reused_or_revealed(self):
+        STATE["partners"] = None
+        STATE["addresses"].append(
+            {"name": "SECRET-Shipping", "customer": "CUST-A", "address_line1": "10 High Street",
+             "pincode": "PE1 1AA", "address_type": "Shipping", "disabled": 0}
+        )
+        STATE["unreadable_addresses"].add("SECRET-Shipping")
+        result = create()
+        self.assertTrue(result["created"])
+        self.assertNotEqual(result["name"], "SECRET-Shipping")
+        STATE["unreadable_addresses"].clear()
+        self.assertEqual(create(), {"name": "SECRET-Shipping", "created": False})
+
+    def test_partner_reassigned_while_waiting_for_lock_is_denied(self):
+        STATE["reassign_on_lock"] = ("CUST-A", "SP-B")  # pre-check passes, locked row differs
+        with self.assertRaises(FakePermissionError):
+            create()
+        self.assertEqual(STATE["inserted"], [])
+        self.assertEqual(STATE["lookups"], [])
+
+    def test_customer_gone_at_lock_is_denied(self):
+        original = FAKES["frappe"].db.get_value
+
+        def vanish(doctype, name, field, for_update=False, as_dict=False):
+            if doctype == "Customer" and for_update:
+                return None
+            return original(doctype, name, field, for_update, as_dict)
+
+        with mock.patch.object(FAKES["frappe"].db, "get_value", vanish):
+            with self.assertRaises(FakePermissionError):
+                create()
+
+    def test_lock_is_taken_before_the_dedupe_read(self):
+        create()
+        self.assertEqual(STATE["events"][:2], ["lock", "sql"])
+
+    def test_deadlock_is_retried_once(self):
+        STATE["deadlocks"] = 1
+        self.assertTrue(create()["created"])
+        self.assertEqual(STATE["events"].count("lock"), 2)
+        self.assertIn(None, STATE["rollbacks"])  # whole-transaction rollback before the retry
+        STATE["addresses"].clear()
+        STATE["deadlocks"] = 2
+        with self.assertRaises(FakeDeadlockError):
+            create()
+
+    def test_duplicate_rolls_back_to_savepoint_only(self):
+        STATE["duplicate_once"] = True
+        create()
+        self.assertEqual(STATE["savepoints"], ["order_address_insert"])
+        self.assertEqual(STATE["rollbacks"], ["order_address_insert"])
+
+    def test_duplicate_without_a_match_is_reraised(self):
+        STATE["duplicate_once"] = True
+        original = MODULE._existing_address
+        calls = []
+
+        def none_after_insert(*a, **k):
+            calls.append(1)
+            return None
+
+        with mock.patch.object(MODULE, "_existing_address", none_after_insert):
+            with self.assertRaises(FakeDuplicateEntryError):
+                create()
+        self.assertEqual(STATE["rollbacks"], ["order_address_insert"])
 
     # --- plain text only ------------------------------------------------------------------
     def test_markup_and_json_rejected_in_every_field(self):

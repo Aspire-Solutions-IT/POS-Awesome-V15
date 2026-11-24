@@ -4,9 +4,11 @@ Run from the bench ``sites`` dir with a connected site (never agile.localhost), 
 
     ../env/bin/python <runner> posawesome.posawesome.api.test_order_address_db
 
-The charge checks (covered by the stub tests in test_order_address.py) are patched out
-because the test site has no DHD Delivery Charge; everything else, including permissions,
-naming and the Address/Dynamic Link rows, is real. Nothing is committed.
+The test site has no DHD Delivery Charge, so only the charge *fetch* (charge_pricing.get_charge,
+plus the availability check) is stubbed, returning a charge whose ``order_type`` is the opaque
+document id of a real Order Type named DHD (created here if the site has none, and rolled
+back). The order-type resolution in ``_validated_dhd_charge`` runs for real. Everything else,
+including permissions, naming and the Address/Dynamic Link rows, is real. Nothing is committed.
 """
 
 import unittest
@@ -14,7 +16,7 @@ from unittest import mock
 
 import frappe
 
-from posawesome.posawesome.api import order_address
+from posawesome.posawesome.api import charge_pricing, order_address
 
 GOOD = {
 	"address_line1": "10 High Street",
@@ -49,9 +51,21 @@ class TestCreateOrderAddressDB(unittest.TestCase):
 		self.customer = frappe.db.get_value("Customer", {"disabled": 0}, "name")
 		self.staff = _user("zz-oa-staff@example.com", "System User", ["Sales User"])
 		self.web = _user("zz-oa-web@example.com", "Website User", [])
-		patcher = mock.patch.object(order_address, "_validated_dhd_charge", return_value=None)
-		patcher.start()
-		self.addCleanup(patcher.stop)
+		self.dhd_type = frappe.db.get_value("Order Type", {"order_type_name": "DHD"})
+		if not self.dhd_type:
+			self.dhd_type = frappe.get_doc({"doctype": "Order Type", "order_type_name": "DHD"}).insert().name
+		self.assertNotEqual(self.dhd_type, "DHD")  # generated id: the link value is not the name
+		self.charge_order_type = self.dhd_type
+		for patcher in (
+			mock.patch.object(
+				charge_pricing,
+				"get_charge",
+				side_effect=lambda name: frappe._dict(name=name, order_type=self.charge_order_type),
+			),
+			mock.patch.object(charge_pricing, "assert_available", return_value=None),
+		):
+			patcher.start()
+			self.addCleanup(patcher.stop)
 		self.addCleanup(frappe.set_user, "Administrator")
 		self.addCleanup(frappe.db.rollback)
 
@@ -99,6 +113,16 @@ class TestCreateOrderAddressDB(unittest.TestCase):
 			}
 		).insert(ignore_permissions=True)
 		self.assertTrue(self.call()["created"])
+
+	def test_charge_with_other_order_type_rejected(self):
+		other = frappe.get_doc({"doctype": "Order Type", "order_type_name": "Zz not dhd"}).insert().name
+		frappe.set_user(self.staff)
+		self.charge_order_type = other
+		with self.assertRaises(frappe.ValidationError):
+			self.call()
+		self.charge_order_type = "DHD"  # the literal string is not a valid Order Type id
+		with self.assertRaises(frappe.ValidationError):
+			self.call()
 
 	def test_markup_rejected(self):
 		frappe.set_user(self.staff)
