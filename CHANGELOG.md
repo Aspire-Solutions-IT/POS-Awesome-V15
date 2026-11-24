@@ -11,7 +11,8 @@ Release 15.36.0 — November 23, 2026
 - Applying item changes with a payment link now only accepts a POST request.
 - If a pro forma PDF cannot be made, no email is sent and the cashier or partner is told; sending again sends the whole pro forma.
 - An order on a ship-complete delivery charge (the container order types: DDP, FOB, Cabinet and Snugg Container) is never split into delivery groups, for partners and staff alike. The fulfilment step shows "This order ships complete: no partial deliveries" and hides Split Delivery, and the server saves the order fully allocated and refuses a split request, whatever the browser sends, and a split request on a charge the customer or POS profile cannot use is refused as unavailable rather than as ship-complete. A delivery charge saved by an older POS build (no ship-complete flag) is refreshed from the server when online and never offers Split Delivery offline, and a saved split is cleared whenever a ship-complete draft is loaded. This needs customer_due_dates 2.42.0 (planned release).
-_Total: 7 changes_
+- A delivery address typed for a DHD order can now be saved on the customer as a reusable Shipping address (server side only; the POS form follows). It is only accepted for a DHD delivery charge the user may use, and for partners only on their own customers. Only the address lines, city, county, postcode, country, phone and email are accepted. Typing the same first line and postcode again returns the existing address instead of making a duplicate.
+_Total: 8 changes_
 
 Release 15.35.0 — November 19, 2026
 ### ✨ Features

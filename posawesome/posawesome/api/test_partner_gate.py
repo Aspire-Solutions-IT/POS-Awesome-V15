@@ -213,6 +213,15 @@ class TestCustomerArguments(unittest.TestCase):
             with self.assertRaises(FakePermissionError):
                 call(method, {"customer": "CUST-B"})
 
+    def test_create_order_address_is_scoped_to_own_customer(self):
+        method = f"{API}order_address.create_order_address"
+        call(method, {"customer": "CUST-A"})
+        for form in ({"customer": "CUST-B"}, {"customer": "CUST-NONE"}, {"customer": ""}, {}):
+            with self.subTest(form=form), self.assertRaises(FakePermissionError):
+                call(method, form)
+        with self.assertRaises(FakePermissionError):
+            call(method, {"customer": "CUST-A"}, scope=NO_PARTNER_SCOPE)
+
     def test_optional_customer(self):
         call(f"{API}items.get_items")
         call(f"{API}items.get_items", {"customer": ""})

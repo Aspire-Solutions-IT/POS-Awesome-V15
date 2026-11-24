@@ -20,6 +20,9 @@ from frappe.utils import cint
 
 from customer_due_dates.selling.pos_availability import is_available
 
+# The Order Type of a direct home delivery charge (seeded by customer_due_dates).
+DHD_ORDER_TYPE = "DHD"
+
 
 def _is_partner_mode() -> bool:
     from .partner_gate import is_partner_user

@@ -154,6 +154,9 @@ POS_METHODS: dict[str, dict] = {
         },
     ),
     **_methods("customer.", {"get_customer_balance": REQUIRED_CUSTOMER}),
+    # The one partner write to Address: a typed DHD delivery address on an in-scope customer.
+    # The function revalidates the charge (DHD, offered to partners) and the field whitelist.
+    **_methods("order_address.", {"create_order_address": REQUIRED_CUSTOMER}),
     **_methods(
         "sales_orders.",
         {
