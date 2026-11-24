@@ -122,9 +122,9 @@ def get_applicable_delivery_charges(
         # created yet: keep the legacy is_default checkbox as stored.
         for charge in available:
             charge["is_default"] = 1 if cint(charge.get("is_default")) else 0
-        return _without_default_for(available)
+        return _without_default_for(_with_order_type_name(available))
 
-    return _without_default_for(mark_default(available, _is_partner_mode()))
+    return _without_default_for(_with_order_type_name(mark_default(available, _is_partner_mode())))
 
 
 PARTNER_AVAILABLE_TO = ("Agile only", "Both")
@@ -141,6 +141,25 @@ def _partner_safe(charges):
     # Same rule as customer_due_dates is_available(..., partner_mode=True); a blank value
     # means "TFW only", so it is hidden.
     return [c for c in charges if c.get("available_to") in PARTNER_AVAILABLE_TO]
+
+
+def _with_order_type_name(charges):
+    """Add ``order_type_name`` (e.g. "DHD"): ``order_type`` is a generated Order Type id.
+
+    The POS shows the delivery address form for a DHD charge, so it needs the name.
+    """
+    ids = {c.get("order_type") for c in charges if c.get("order_type")}
+    names = {}
+    if ids:
+        names = {
+            r.name: r.order_type_name
+            for r in frappe.get_all(
+                "Order Type", filters={"name": ["in", list(ids)]}, fields=["name", "order_type_name"]
+            )
+        }
+    for charge in charges:
+        charge["order_type_name"] = names.get(charge.get("order_type")) or ""
+    return charges
 
 
 def _without_default_for(charges):

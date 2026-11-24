@@ -157,6 +157,8 @@
 							:show-collect-from-store-tag="shouldUseStoreCollectionFlow"
 							:show-split-delivery="showSplitDeliveryOption"
 							:ship-complete="isShipCompleteSelected"
+							:show-dhd-address-form="isDhdChargeSelected"
+							:delivery-charge="selectedChargeRow?.name || ''"
 							:show-preferred-delivery-date="preferredDeliveryDateEnabled"
 							:show-collection-date="showCollectionDate"
 							:collection-date="collection_date"
@@ -203,6 +205,7 @@
 								}
 							"
 							@new-address="handlePaymentNewAddress"
+							@dhd-address-saved="handleDhdAddressSaved"
 						/>
 						<div class="payment-next-step">
 							<v-btn variant="text" color="error" @click="back_to_invoice">
@@ -503,6 +506,7 @@ import PaymentDialogs from "./payments/PaymentDialogs.vue";
 import MissingOrderAddressDialog from "./payments/MissingOrderAddressDialog.vue";
 import { useYellowTicketPhotoGate } from "../../composables/pos/payments/useYellowTicketPhotoGate";
 import { canSplitDelivery, isShipCompleteCharge } from "../../composables/pos/invoice/shipComplete";
+import { canShowAddAddressAction, isDhdCharge } from "../../services/orderAddressService";
 
 const props = defineProps({
 	dialogMode: {
@@ -731,6 +735,10 @@ const selectedChargeRow = computed(() => {
 		) || null
 	);
 });
+
+// A DHD (direct home delivery) charge takes a typed delivery address, saved on the customer.
+// The server names the Order Type on each offered charge; a cached row without it never matches.
+const isDhdChargeSelected = computed(() => isDhdCharge(selectedChargeRow.value));
 
 // Collect-from-store orders can still be split; customer collections and ship-complete orders can't,
 // nor can a charge whose cached row cannot say whether it ships complete.
@@ -2540,7 +2548,11 @@ const shippingAddressLabel = computed(() =>
 		: __("Shipping Address *"),
 );
 
-const showAddressAction = computed(() => !shouldUseStoreCollectionFlow.value);
+// "Add Customer Address" saves an Address the partner has no permission to create, so it is
+// staff only; a partner on a DHD charge types the address into the Delivery address form.
+const showAddressAction = computed(() =>
+	canShowAddAddressAction(isPartner, shouldUseStoreCollectionFlow.value),
+);
 
 const showCollectionItemsValidationError = () => {
 	frappe.msgprint({
@@ -2707,6 +2719,32 @@ const ensureStoreCollectionAddressLinked = async (addressName) => {
 	return String(response?.message?.address_name || normalizedName).trim();
 };
 
+const handleDhdAddressSaved = (saved) => {
+	if (!invoice_doc.value || !saved?.name) {
+		return;
+	}
+	const typed = saved.address || {};
+	const entry = normalizeAddress({
+		name: saved.name,
+		address_line1: typed.address_line1,
+		address_line2: typed.address_line2,
+		city: typed.city,
+		county: typed.county,
+		pincode: typed.pincode,
+		country: typed.country,
+		phone: typed.phone,
+		email_id: typed.email_id,
+	});
+	// The address list is what "address picked" is checked against, so the new one joins it.
+	const existing = (Array.isArray(addresses.value) ? addresses.value : []).filter(
+		(addr) => addr.name !== saved.name,
+	);
+	addresses.value = [...existing, entry || { name: saved.name, address_line1: typed.address_line1 }];
+	selectedStoreCollectionAddressName.value = null;
+	invoice_doc.value.shipping_address_name = saved.name;
+	invoice_doc.value.customer_address = saved.name;
+};
+
 const handleShippingAddressSelection = async (addressName) => {
 	if (!invoice_doc.value) {
 		return;
@@ -2751,6 +2789,20 @@ const openMissingOrderAddressEntry = () => {
 };
 
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	// A DHD order is delivered to a typed address: save one (or pick one) before submitting.
+	if (
+		invoiceType.value === "Order" &&
+		isDhdChargeSelected.value &&
+		!String(invoice_doc.value?.shipping_address_name || "").trim()
+	) {
+		fulfillmentValidationVisible.value = true;
+		toastStore.show({
+			title: __("Save the delivery address before placing a DHD order."),
+			color: "error",
+		});
+		return;
+	}
+
 	if (!hasOnlyNsItemsForCollection.value) {
 		showCollectionItemsValidationError();
 		return;
