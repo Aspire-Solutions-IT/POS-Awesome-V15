@@ -205,7 +205,9 @@
 								}
 							"
 							@new-address="handlePaymentNewAddress"
+							@dhd-address-saving="handleDhdAddressSaving"
 							@dhd-address-saved="handleDhdAddressSaved"
+							@dhd-address-save-ended="handleDhdAddressSaveEnded"
 						/>
 						<div class="payment-next-step">
 							<v-btn variant="text" color="error" @click="back_to_invoice">
@@ -464,6 +466,7 @@ import { useEmployeeStore } from "../../stores/employeeStore";
 import { usePaymentCalculations } from "../../composables/pos/payments/usePaymentCalculations";
 import { usePaymentSubmission } from "../../composables/pos/payments/usePaymentSubmission";
 import { useRedemptionLogic } from "../../composables/pos/payments/useRedemptionLogic";
+import { useDhdAddressSave } from "../../composables/pos/payments/useDhdAddressSave";
 import { usePaymentPrinting } from "../../composables/pos/payments/usePaymentPrinting";
 import { usePaymentMethods } from "../../composables/pos/payments/usePaymentMethods";
 import { useInvoiceDetails } from "../../composables/pos/invoice/useInvoiceDetails";
@@ -1163,6 +1166,7 @@ const canProceedToPayment = computed(() => {
 		return true;
 	}
 	return (
+		!dhdSavePending.value &&
 		hasFulfillmentAddress.value &&
 		hasFulfillmentNotes.value &&
 		hasOnlyNsItemsForCollection.value &&
@@ -2437,7 +2441,7 @@ const scheduleBackgroundStatusCheck = ({
 // Submission Wrapper
 const submit = async (_event, payment_received = false, print = false) => {
 	if (isWizardFlow.value && currentStep.value === 1) {
-		if (canProceedToPayment.value) {
+		if (!blockWhileDhdSavePending() && canProceedToPayment.value) {
 			currentStep.value = 2;
 		}
 		return;
@@ -2449,7 +2453,7 @@ const submit = async (_event, payment_received = false, print = false) => {
 
 const submitWithoutPaymentOrder = async () => {
 	if (isWizardFlow.value && currentStep.value === 1) {
-		if (canProceedToPayment.value) {
+		if (!blockWhileDhdSavePending() && canProceedToPayment.value) {
 			currentStep.value = 2;
 		}
 		return;
@@ -2474,7 +2478,7 @@ const submitWithPaymentType = async (paymentType, extraOptions = {}) => {
 		return;
 	}
 	if (isWizardFlow.value && currentStep.value === 1) {
-		if (canProceedToPayment.value) {
+		if (!blockWhileDhdSavePending() && canProceedToPayment.value) {
 			currentStep.value = 2;
 		}
 		return;
@@ -2568,6 +2572,9 @@ const showCollectionItemsValidationError = () => {
 };
 
 const proceedFromFulfillmentStep = () => {
+	if (blockWhileDhdSavePending()) {
+		return;
+	}
 	fulfillmentValidationVisible.value = true;
 	if (!hasOnlyNsItemsForCollection.value) {
 		showCollectionItemsValidationError();
@@ -2581,6 +2588,9 @@ const proceedFromFulfillmentStep = () => {
 };
 
 const proceedToPaymentStep = () => {
+	if (blockWhileDhdSavePending()) {
+		return;
+	}
 	if (isSplitDeliveryEnabled.value && !canProceedFromGrouping.value) {
 		return;
 	}
@@ -2724,50 +2734,35 @@ const ensureStoreCollectionAddressLinked = async (addressName) => {
 	return String(response?.message?.address_name || normalizedName).trim();
 };
 
-const handleDhdAddressSaved = async (saved) => {
-	if (!invoice_doc.value || !saved?.name) {
-		return;
+const {
+	pending: dhdSavePending,
+	abandon: abandonDhdSave,
+	blockWhilePending: blockWhileDhdSavePendingBase,
+	onSaving: handleDhdAddressSaving,
+	onSaved: handleDhdAddressSaved,
+	onSaveEnded: handleDhdAddressSaveEnded,
+} = useDhdAddressSave({
+	getDoc: () => invoice_doc.value,
+	getCharge: () =>
+		String(invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "").trim(),
+	isDhdChargeSelected: () => isDhdChargeSelected.value,
+	getAddresses: get_addresses,
+	invalidateAddressRequests,
+	addresses,
+	normalizeAddress,
+	clearStoreCollectionSelection: () => {
+		selectedStoreCollectionAddressName.value = null;
+	},
+	notify: (title, color) => toastStore.show({ title, color }),
+	translate: __,
+});
+
+const blockWhileDhdSavePending = () => {
+	const blocked = blockWhileDhdSavePendingBase();
+	if (blocked) {
+		fulfillmentValidationVisible.value = true;
 	}
-	// The response may belong to a checkout that has since changed: apply it only if the customer
-	// and the (DHD) charge it was saved for are still the ones selected.
-	const isStillCurrent = () =>
-		String(saved.customer || "") === String(invoice_doc.value?.customer || "") &&
-		String(saved.deliveryCharge || "") ===
-			String(invoice_doc.value?.posa_delivery_charges || selectedDeliveryCharge.value || "").trim() &&
-		isDhdChargeSelected.value;
-	if (!isStillCurrent()) {
-		return;
-	}
-	// Any list request already in flight predates this address and must not clear the selection.
-	invalidateAddressRequests();
-	selectedStoreCollectionAddressName.value = null;
-	// Use the persisted row: reload the list and select the saved address by name.
-	const selected = await get_addresses({ select: saved.name, isStillWanted: isStillCurrent });
-	if (selected) {
-		return;
-	}
-	// The list could not be reloaded (offline or failed): fall back to what was typed, if still current.
-	if (!isStillCurrent() || String(invoice_doc.value?.shipping_address_name || "").trim()) {
-		return;
-	}
-	const typed = saved.address || {};
-	const entry = normalizeAddress({
-		name: saved.name,
-		address_line1: typed.address_line1,
-		address_line2: typed.address_line2,
-		city: typed.city,
-		county: typed.county,
-		pincode: typed.pincode,
-		country: typed.country,
-		phone: typed.phone,
-		email_id: typed.email_id,
-	});
-	const existing = (Array.isArray(addresses.value) ? addresses.value : []).filter(
-		(addr) => addr.name !== saved.name,
-	);
-	addresses.value = [...existing, entry || { name: saved.name, address_line1: typed.address_line1 }];
-	invoice_doc.value.shipping_address_name = saved.name;
-	invoice_doc.value.customer_address = saved.name;
+	return blocked;
 };
 
 const handleShippingAddressSelection = async (addressName) => {
@@ -2775,6 +2770,8 @@ const handleShippingAddressSelection = async (addressName) => {
 		return;
 	}
 
+	// An explicit pick wins over a DHD address save still in flight.
+	abandonDhdSave();
 	const normalizedName = String(addressName || "").trim() || null;
 	if (shouldUseStoreCollectionFlow.value && normalizedName) {
 		selectedStoreCollectionAddressName.value = normalizedName;
@@ -2814,6 +2811,9 @@ const openMissingOrderAddressEntry = () => {
 };
 
 const submitInvoiceWrapper = async (print, callbackOverrides = {}, options = {}) => {
+	if (blockWhileDhdSavePending()) {
+		return;
+	}
 	// A charge whose order type is unknown (legacy cache, offline) may be a DHD charge.
 	if (invoiceType.value === "Order" && isChargeOrderTypeUnverified.value) {
 		fulfillmentValidationVisible.value = true;
@@ -3451,6 +3451,7 @@ watch(
 			return;
 		}
 
+		abandonDhdSave();
 		invoice_doc.value.shipping_address_name = null;
 		invoice_doc.value.customer_address = null;
 		selectedStoreCollectionAddressName.value = null;
@@ -3510,8 +3511,14 @@ watch(customerInfo, (newInfo) => {
 	set_print_format();
 });
 
+// The invoice or its customer changed (new invoice, reset, another customer): a DHD address save
+// in flight belongs to the old one.
+watch(() => invoice_doc.value, () => abandonDhdSave());
+watch(() => invoice_doc.value?.customer, () => abandonDhdSave());
+
 watch(selectedCustomer, (newCustomer, oldCustomer) => {
 	if (newCustomer === oldCustomer) return;
+	abandonDhdSave();
 	customer_credit_dict.value = [];
 	redeem_customer_credit.value = false;
 	is_cashback.value = true;
@@ -3639,6 +3646,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+	abandonDhdSave();
 	currentStep.value = 1;
 	missingOrderAddressDialog.value = false;
 	pendingMissingAddressSubmit.value = null;

@@ -70,6 +70,9 @@
 		<div v-if="errorMessage" class="text-error text-caption mt-1" data-test="dhd-error" role="alert">
 			{{ errorMessage }}
 		</div>
+		<div v-if="saving" class="text-caption mt-1" data-test="dhd-saving">
+			{{ __("Saving the address and selecting it…") }}
+		</div>
 		<div v-if="savedName" class="text-success text-caption mt-1" data-test="dhd-saved">
 			{{ __("Saved address") }}: {{ savedName }}
 		</div>
@@ -83,7 +86,7 @@
 			data-test="dhd-save"
 			@click="save"
 		>
-			{{ __("Save address") }}
+			{{ saving ? __("Saving…") : retryable ? __("Retry") : __("Save address") }}
 		</v-btn>
 	</div>
 </template>
@@ -95,6 +98,7 @@ import {
 	createOrderAddress,
 	orderAddressErrorMessage,
 	type OrderAddressInput,
+	type DhdSaveSettlement,
 	type OrderAddressResult,
 } from "../../../services/orderAddressService";
 import { isValidOptionalEmail } from "../../../utils/emailValidation";
@@ -108,16 +112,24 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+	// A save began: the parent must treat the previous selection as stale until it is settled.
+	(e: "saving", payload: { saveId: number; customer: string; deliveryCharge: string }): void;
+	// The POST succeeded. Nothing is done until the parent calls `settle`.
 	(
 		e: "saved",
 		payload: {
+			saveId: number;
 			name: string;
 			created: boolean;
 			address: OrderAddressInput;
 			customer: string;
 			deliveryCharge: string;
+			settle: (result: DhdSaveSettlement) => void;
 		},
 	): void;
+	// The save ended without a selected address ("failed" POST, or "cancelled" by an edit, a reset
+	// or an unmount).
+	(e: "save-ended", payload: { saveId: number; reason: "failed" | "cancelled" }): void;
 }>();
 
 const blank = (): OrderAddressInput => ({
@@ -135,6 +147,8 @@ const form = reactive<OrderAddressInput>(blank());
 const saving = ref(false);
 const errorMessage = ref("");
 const savedName = ref("");
+// The address was saved but could not be selected: Save becomes a retry.
+const retryable = ref(false);
 
 const fieldProps = {
 	variant: "solo",
@@ -156,25 +170,42 @@ const canSave = computed(() => {
 	return Boolean(v.address_line1 && v.city && v.pincode && v.country) && Boolean(props.customer);
 });
 
-// Each Save owns a token. A reset (customer/charge change), an edit or an unmount invalidates the
-// token, so a response that arrives afterwards is thrown away instead of being applied.
+// Each Save owns a token covering the POST *and* the parent's picker reload. A reset
+// (customer/charge change), an edit or an unmount invalidates the token, so a result that arrives
+// afterwards is thrown away instead of being applied.
 let requestToken = 0;
+
+// Abandon the save in flight, if any, and tell the parent so it stops waiting on it.
+const cancelPending = () => {
+	if (!saving.value) {
+		return;
+	}
+	const saveId = requestToken;
+	requestToken += 1;
+	saving.value = false;
+	emit("save-ended", { saveId, reason: "cancelled" });
+};
 
 // A saved address belongs to one customer and one charge; editing the fields makes it a new one.
 watch(
 	() => [props.customer, props.deliveryCharge],
 	() => {
+		cancelPending();
 		requestToken += 1;
 		saving.value = false;
 		Object.assign(form, blank());
 		savedName.value = "";
 		errorMessage.value = "";
+		retryable.value = false;
 	},
 );
 watch(form, () => {
+	cancelPending();
 	savedName.value = "";
+	retryable.value = false;
 });
 onBeforeUnmount(() => {
+	cancelPending();
 	requestToken += 1;
 });
 
@@ -198,22 +229,44 @@ const save = async () => {
 		props.deliveryCharge === deliveryCharge &&
 		JSON.stringify(trimmed()) === snapshot;
 	saving.value = true;
+	retryable.value = false;
 	errorMessage.value = "";
+	emit("saving", { saveId: token, customer, deliveryCharge });
+	let result: OrderAddressResult;
 	try {
-		const result: OrderAddressResult = await createOrderAddress({ customer, deliveryCharge, address });
-		if (!isCurrent()) {
-			return;
-		}
-		emit("saved", { ...result, address, customer, deliveryCharge });
-		savedName.value = result.name;
+		result = await createOrderAddress({ customer, deliveryCharge, address });
 	} catch (error) {
 		if (isCurrent()) {
 			errorMessage.value = orderAddressErrorMessage(error, __("Could not save the address."));
-		}
-	} finally {
-		if (token === requestToken) {
 			saving.value = false;
+			emit("save-ended", { saveId: token, reason: "failed" });
 		}
+		return;
 	}
+	if (!isCurrent()) {
+		return;
+	}
+	// Stay pending until the parent confirms the new address is the selected one.
+	emit("saved", {
+		...result,
+		saveId: token,
+		address,
+		customer,
+		deliveryCharge,
+		settle: (settlement) => {
+			if (!isCurrent()) {
+				return;
+			}
+			saving.value = false;
+			if (settlement.status === "confirmed") {
+				savedName.value = result.name;
+			} else if (settlement.status === "failed") {
+				retryable.value = true;
+				errorMessage.value =
+					settlement.message ||
+					__("The address was saved but could not be selected. Press Retry.");
+			}
+		},
+	});
 };
 </script>

@@ -80,8 +80,8 @@ describe("DhdAddressForm", () => {
 		(globalThis as any).window.frappe = { csrf_token: "tok123" };
 	});
 
-	const mountForm = () => {
-		const onSaved = vi.fn();
+	// The parent confirms every save unless a test says otherwise (it settles the form's pending state).
+	const mountForm = (onSaved = vi.fn((payload: any) => payload.settle({ status: "confirmed" }))) => {
 		const wrapper = mount(DhdAddressForm, {
 			props: { customer: "CUST-1", deliveryCharge: "Home Delivery", onSaved },
 			global: { components },
@@ -135,6 +135,118 @@ describe("DhdAddressForm", () => {
 		});
 		expect(wrapper.find("[data-test='dhd-saved']").text()).toContain("Saved address");
 		expect(wrapper.find("[data-test='dhd-error']").exists()).toBe(false);
+	});
+
+	describe("pending until the parent confirms the selection", () => {
+		const hold = () => {
+			const onSaving = vi.fn();
+			const onEnded = vi.fn();
+			const onSaved = vi.fn();
+			const wrapper = mount(DhdAddressForm, {
+				props: {
+					customer: "CUST-1",
+					deliveryCharge: "Home Delivery",
+					onSaving,
+					onSaved,
+					onSaveEnded: onEnded,
+				},
+				global: { components },
+			});
+			return { wrapper, onSaving, onSaved, onEnded };
+		};
+		const saveButton = (wrapper: any) => wrapper.find("[data-test='dhd-save']");
+
+		it("announces the save and stays on Saving… after the POST until settled", async () => {
+			call.mockResolvedValue(respond(200, { message: { name: "NEW-ADDR", created: true } }));
+			const { wrapper, onSaving, onSaved } = hold();
+			await fill(wrapper, GOOD);
+			await saveButton(wrapper).trigger("click");
+			expect(onSaving).toHaveBeenCalledTimes(1);
+			expect(onSaving.mock.calls[0][0]).toMatchObject({ customer: "CUST-1", deliveryCharge: "Home Delivery" });
+			await flushPromises();
+
+			expect(onSaved).toHaveBeenCalledTimes(1);
+			expect(saveButton(wrapper).text()).toBe("Saving…");
+			expect(saveButton(wrapper).attributes("disabled")).toBeDefined();
+			expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
+
+			onSaved.mock.calls[0][0].settle({ status: "confirmed" });
+			await flushPromises();
+			expect(saveButton(wrapper).text()).toBe("Save address");
+			expect(wrapper.find("[data-test='dhd-saved']").text()).toContain("NEW-ADDR");
+		});
+
+		it("shows a retryable error when the parent could not select the saved address", async () => {
+			call.mockResolvedValue(respond(200, { message: { name: "NEW-ADDR", created: true } }));
+			const { wrapper, onSaved } = hold();
+			await fill(wrapper, GOOD);
+			await saveButton(wrapper).trigger("click");
+			await flushPromises();
+			onSaved.mock.calls[0][0].settle({ status: "failed" });
+			await flushPromises();
+
+			expect(wrapper.find("[data-test='dhd-error']").text()).toContain("could not be selected");
+			expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
+			expect(saveButton(wrapper).text()).toBe("Retry");
+			expect(saveButton(wrapper).attributes("disabled")).toBeUndefined();
+
+			await saveButton(wrapper).trigger("click");
+			await flushPromises();
+			expect(call).toHaveBeenCalledTimes(2);
+		});
+
+		it("a superseded settle just ends the pending state without a message", async () => {
+			call.mockResolvedValue(respond(200, { message: { name: "NEW-ADDR", created: true } }));
+			const { wrapper, onSaved } = hold();
+			await fill(wrapper, GOOD);
+			await saveButton(wrapper).trigger("click");
+			await flushPromises();
+			onSaved.mock.calls[0][0].settle({ status: "superseded" });
+			await flushPromises();
+			expect(saveButton(wrapper).text()).toBe("Save address");
+			expect(wrapper.find("[data-test='dhd-error']").exists()).toBe(false);
+			expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
+		});
+
+		it("editing while the picker reload is pending cancels the save, and a late settle is ignored", async () => {
+			call.mockResolvedValue(respond(200, { message: { name: "NEW-ADDR", created: true } }));
+			const { wrapper, onSaving, onSaved, onEnded } = hold();
+			await fill(wrapper, GOOD);
+			await saveButton(wrapper).trigger("click");
+			await flushPromises();
+			const first = onSaved.mock.calls[0][0];
+
+			await wrapper.find("[data-test='dhd-city']").setValue("York");
+			expect(onEnded).toHaveBeenCalledWith({ saveId: first.saveId, reason: "cancelled" });
+			expect(saveButton(wrapper).text()).toBe("Save address");
+
+			first.settle({ status: "confirmed" });
+			await flushPromises();
+			expect(wrapper.find("[data-test='dhd-saved']").exists()).toBe(false);
+
+			// A second save gets its own id.
+			await saveButton(wrapper).trigger("click");
+			await flushPromises();
+			expect(onSaving.mock.calls[1][0].saveId).not.toBe(first.saveId);
+		});
+
+		it("tells the parent when the POST fails, and when the form is unmounted mid-save", async () => {
+			call.mockResolvedValueOnce(respond(417, { exception: "frappe.exceptions.ValidationError: nope" }));
+			const { wrapper, onSaving, onEnded } = hold();
+			await fill(wrapper, GOOD);
+			await saveButton(wrapper).trigger("click");
+			await flushPromises();
+			expect(onEnded).toHaveBeenCalledWith({ saveId: onSaving.mock.calls[0][0].saveId, reason: "failed" });
+			expect(saveButton(wrapper).text()).toBe("Save address");
+
+			call.mockReturnValueOnce(new Promise(() => {}));
+			await saveButton(wrapper).trigger("click");
+			wrapper.unmount();
+			expect(onEnded).toHaveBeenLastCalledWith({
+				saveId: onSaving.mock.calls[1][0].saveId,
+				reason: "cancelled",
+			});
+		});
 	});
 
 	it("shows a 417 validation message from _server_messages inline, saves nothing", async () => {

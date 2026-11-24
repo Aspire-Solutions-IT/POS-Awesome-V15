@@ -27,6 +27,15 @@ export type OrderAddressResult = {
 	created: boolean;
 };
 
+/**
+ * How the parent finished a save. The form stays in its pending state ("Saving…") until it hears
+ * this, so a saved address only counts once the picker really holds it.
+ */
+export type DhdSaveSettlement =
+	| { status: "confirmed" }
+	| { status: "superseded" }
+	| { status: "failed"; message?: string };
+
 export type OrderAddressRequest = {
 	customer: string;
 	deliveryCharge: string;

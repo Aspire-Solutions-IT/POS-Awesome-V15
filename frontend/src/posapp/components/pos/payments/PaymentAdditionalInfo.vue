@@ -75,7 +75,9 @@
 				<DhdAddressForm
 					:customer="invoiceDoc.customer || ''"
 					:delivery-charge="deliveryCharge"
+					@saving="$emit('dhd-address-saving', $event)"
 					@saved="$emit('dhd-address-saved', $event)"
+					@save-ended="$emit('dhd-address-save-ended', $event)"
 				/>
 			</v-col>
 			<v-col
@@ -349,6 +351,8 @@ defineEmits([
 	"update:collectionDate",
 	"new-address",
 	"dhd-address-saved",
+	"dhd-address-saving",
+	"dhd-address-save-ended",
 ]);
 
 const $frappe = inject("frappe", window.frappe);

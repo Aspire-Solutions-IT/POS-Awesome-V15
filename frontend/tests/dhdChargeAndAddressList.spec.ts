@@ -77,9 +77,9 @@ describe("get_addresses supersession", () => {
 		vi.resetModules();
 		setActivePinia(createPinia());
 		(window as any).__ = (value: string) => value;
-		const pending: Array<{ args: any; callback: (r: any) => void }> = [];
+		const pending: Array<{ args: any; callback: (r: any) => void; error: () => void }> = [];
 		(window as any).frappe = {
-			call: vi.fn((opts: any) => pending.push({ args: opts.args, callback: opts.callback })),
+			call: vi.fn((opts: any) => pending.push({ args: opts.args, callback: opts.callback, error: opts.error })),
 			datetime: { nowdate: () => "2026-04-09", get_today: () => "2026-04-09" },
 		};
 		const { useInvoiceDetails } = await import("../src/posapp/composables/pos/invoice/useInvoiceDetails");
@@ -97,7 +97,7 @@ describe("get_addresses supersession", () => {
 		details.get_addresses(); // list request that will answer late, without the new address
 		const saved = details.get_addresses({ select: "NEW-ADDR" });
 		pending[1].callback({ message: [{ name: "NEW-ADDR", address_line1: "1 High St" }] });
-		expect(await saved).toBe(true);
+		expect(await saved).toBe("applied");
 		expect(invoiceDoc.value.shipping_address_name).toBe("NEW-ADDR");
 		expect(invoiceDoc.value.customer_address).toBe("NEW-ADDR");
 
@@ -111,7 +111,7 @@ describe("get_addresses supersession", () => {
 		const saved = details.get_addresses({ select: "NEW-ADDR" });
 		invoiceDoc.value.customer = "CUST-2";
 		pending[0].callback({ message: [{ name: "NEW-ADDR" }] });
-		expect(await saved).toBe(false);
+		expect(await saved).toBe("superseded");
 		expect(invoiceDoc.value.shipping_address_name).toBeNull();
 		expect(details.addresses.value).toEqual([]);
 	});
@@ -131,7 +131,38 @@ describe("get_addresses supersession", () => {
 		const saved = details.get_addresses({ select: "NEW-ADDR", isStillWanted: () => wanted });
 		wanted = false;
 		pending[0].callback({ message: [{ name: "NEW-ADDR" }] });
-		expect(await saved).toBe(false);
+		expect(await saved).toBe("superseded");
+		expect(invoiceDoc.value.shipping_address_name).toBeNull();
+	});
+
+	it("tells a failed load, a missing row and a superseded load apart", async () => {
+		const { details, invoiceDoc, pending } = await setup();
+		const missing = details.get_addresses({ select: "NEW-ADDR" });
+		pending[0].callback({ message: [{ name: "OTHER" }] });
+		expect(await missing).toBe("failed");
+		expect(invoiceDoc.value.shipping_address_name).toBeNull();
+
+		const errored = details.get_addresses({ select: "NEW-ADDR" });
+		pending[1].callback({ exc: "boom" });
+		expect(await errored).toBe("failed");
+
+		const failedCall = details.get_addresses({ select: "NEW-ADDR" });
+		pending[2].error();
+		expect(await failedCall).toBe("failed");
+
+		const first = details.get_addresses({ select: "NEW-ADDR" });
+		details.get_addresses();
+		pending[3].callback({ message: [{ name: "NEW-ADDR" }] });
+		expect(await first).toBe("superseded");
+		expect(invoiceDoc.value.shipping_address_name).toBeNull();
+	});
+
+	it("an invoice replaced mid-request is superseded", async () => {
+		const { details, invoiceDoc, pending } = await setup();
+		const saved = details.get_addresses({ select: "NEW-ADDR" });
+		invoiceDoc.value = { customer: "CUST-1", shipping_address_name: null };
+		pending[0].callback({ message: [{ name: "NEW-ADDR" }] });
+		expect(await saved).toBe("superseded");
 		expect(invoiceDoc.value.shipping_address_name).toBeNull();
 	});
 });

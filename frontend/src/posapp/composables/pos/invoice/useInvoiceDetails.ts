@@ -32,6 +32,8 @@ import {
 	setSalesPersonsStorage,
 } from "../../../../offline/index";
 
+export type AddressLoadResult = "applied" | "superseded" | "failed";
+
 declare const frappe: any;
 declare const __: (_str: string, _args?: any[]) => string;
 
@@ -169,18 +171,25 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 
 	/**
 	 * Loads the customer's addresses. `options.select` names an address (just saved) to select once
-	 * the list holds it; resolves true when it was selected. Superseded responses are ignored.
+	 * the list holds it. Resolves:
+	 *  - "applied": the list loaded (and, with `select`, that persisted row is now selected);
+	 *  - "superseded": a newer request, another customer/invoice or the caller's `isStillWanted`
+	 *    made this one obsolete. Nothing was applied and the caller must not fall back to anything;
+	 *  - "failed": the list could not be loaded, or (with `select`) it does not hold that row.
 	 */
-	const get_addresses = (options: { select?: string; isStillWanted?: () => boolean } = {}): Promise<boolean> => {
+	const get_addresses = (
+		options: { select?: string; isStillWanted?: () => boolean } = {},
+	): Promise<AddressLoadResult> => {
 		const doc = unref(invoiceDoc);
 		const seq = ++addressRequestSeq;
 		if (!doc || !doc.customer) {
 			addresses.value = [];
-			return Promise.resolve(false);
+			return Promise.resolve("superseded");
 		}
 		const requestedCustomer = doc.customer;
 		const stale = () =>
 			seq !== addressRequestSeq ||
+			unref(invoiceDoc) !== doc ||
 			unref(invoiceDoc)?.customer !== requestedCustomer ||
 			(options.isStillWanted ? !options.isStillWanted() : false);
 		const selectName = String(options.select || "").trim();
@@ -197,18 +206,19 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 			return true;
 		};
 
+		// A cached list cannot hold a row that was only just saved.
 		if (isOffline() && applyCachedAddresses()) {
-			return Promise.resolve(false);
+			return Promise.resolve(selectName ? "failed" : "applied");
 		}
 
-		return new Promise<boolean>((resolve) => {
+		return new Promise<AddressLoadResult>((resolve) => {
 			frappe.call({
 				method: "posawesome.posawesome.api.customers.get_customer_addresses",
 				args: { customer: doc.customer },
 				async: true,
 				callback: function (r: any) {
 					if (stale()) {
-						resolve(false);
+						resolve("superseded");
 						return;
 					}
 					if (!r.exc) {
@@ -219,10 +229,14 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 						addresses.value = normalized;
 						saveCustomerAddressesCache(doc.customer, normalized);
 
-						if (selectName && normalized.some((row) => row.name === selectName)) {
-							doc.shipping_address_name = selectName;
-							doc.customer_address = selectName;
-							resolve(true);
+						if (selectName) {
+							if (normalized.some((row) => row.name === selectName)) {
+								doc.shipping_address_name = selectName;
+								doc.customer_address = selectName;
+								resolve("applied");
+								return;
+							}
+							resolve("failed");
 							return;
 						}
 						if (
@@ -231,16 +245,23 @@ export function useInvoiceDetails(options: InvoiceDetailsOptions) {
 						) {
 							doc.shipping_address_name = null;
 						}
-					} else if (!applyCachedAddresses()) {
+						resolve("applied");
+						return;
+					}
+					if (!applyCachedAddresses()) {
 						addresses.value = [];
 					}
-					resolve(false);
+					resolve("failed");
 				},
 				error: function () {
-					if (!stale() && !applyCachedAddresses()) {
+					if (stale()) {
+						resolve("superseded");
+						return;
+					}
+					if (!applyCachedAddresses()) {
 						addresses.value = [];
 					}
-					resolve(false);
+					resolve("failed");
 				},
 			});
 		});
